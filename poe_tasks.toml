@@ -5,7 +5,7 @@
 
 [tasks]
 
-dev = { cmd = "uv run python -c \"from scripts.tasks import dev; dev()\"", help = "Run desktop application in hot-reload development mode" }
+dev = { cmd = "uv run python -c \"from scripts.tasks import dev; dev()\"", help = "Run PFETL Analytics Studio development server" }
 build = { cmd = "uv run python -c \"from scripts.tasks import build; build()\"", help = "Build standalone production binary using PyInstaller" }
 
 # GitHub Release Management

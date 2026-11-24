@@ -36,6 +36,7 @@ dev = [
     "pytest>=9.1.1",
     "rich>=15.0.0",
     "ruff>=0.15.22",
+    "tkreload>=1.0.4",
 ]
 
 [tool.uv]
