@@ -59,7 +59,7 @@ full = ["ruff-check", "ruff-format", "mypy", "pyright", "pytest"]
 
 [tool.project-forge.bump]
 tag_prefix = "v"
-files = ["pyproject.toml", "src/pfetl_analytics_studio/__init__.py"]
+files = ["pyproject.toml", "package.json", "src/pfetl_analytics_studio/__init__.py"]
 commit_all = true
 changelog_file = "CHANGELOG.md"
 
