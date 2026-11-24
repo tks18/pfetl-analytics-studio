@@ -1,0 +1,17 @@
+#!/usr/bin/env sh
+# pfetl-analytics-studio - Pre-Commit Quality Gate (Fast Tier)
+# Managed by Project Forge (pforge)
+echo "[Quality Gate] Running Pre-Commit Fast Verification..."
+
+uv run pforge quality --fast
+EXIT_CODE=$?
+
+if [ $EXIT_CODE -ne 0 ]; then
+    echo ""
+    echo "[Quality Gate] [FAIL] Pre-commit checks failed."
+    echo "[Quality Gate] Fix issues or run 'uv run pforge quality --fast --fix' to auto-fix formatting."
+    exit $EXIT_CODE
+fi
+
+echo "[Quality Gate] [PASS] Pre-commit checks passed cleanly."
+exit 0
