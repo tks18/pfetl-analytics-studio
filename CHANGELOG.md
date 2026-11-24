@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.5](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.4...0.1.5) (2026-11-24)
+
+
+### Features 🔥
+
+* **data:** implement bounded run-keyed in-memory query cache ([43028a8](https://github.com/tks18/pfetl-analytics-studio/commit/43028a8f7c2a05292e80c0e9d548f8a2ea37080d))
+* **semantic:** implement periods, filters, datasets, and metrics ([7529aff](https://github.com/tks18/pfetl-analytics-studio/commit/7529aff57327dfa959ae87836ca745edd0af11bb))
+
+
+### Tests 🧪
+
+* **semantic:** add period, filter, metric, and cache tests ([9afc35d](https://github.com/tks18/pfetl-analytics-studio/commit/9afc35dc1ea03c600a42975b8e34f8914a911604))
+
+
+### Styling 🎨
+
+* **tests:** format existing test suite with ruff ([44955bd](https://github.com/tks18/pfetl-analytics-studio/commit/44955bd1f275bf6e1850f5aafe373ef8f94e354e))
+
 ### [0.1.4](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.3...0.1.4) (2026-11-24)
 
 
