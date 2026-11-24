@@ -11,6 +11,7 @@ src = ["src"]
 extend-exclude = [
     "tests",
     "docs",
+    "scripts",
     "outputs",
     "backups",
     "scratch",
