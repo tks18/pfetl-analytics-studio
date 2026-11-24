@@ -126,7 +126,7 @@ module.exports = {
       updater: tracker,
     },
     {
-      filename: 'src/personal_finance_etl/__init__.py',
+      filename: 'src/pfetl_analytics_studio/__init__.py',
       updater: tracker,
     },
     {
