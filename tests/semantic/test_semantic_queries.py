@@ -1,4 +1,4 @@
-"""Tests for Phase 05 semantic periods, whitelisted filters, dataset/metric registries, and query cache."""
+"""Tests for semantic periods, whitelisted filters, dataset/metric registries, and query cache."""
 
 from __future__ import annotations
 

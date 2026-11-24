@@ -16,10 +16,7 @@ from pfetl_analytics_studio.data.catalog import SURFACE_ATLAS, SurfaceLayer
 
 
 def create_test_databases(target_dir: Path) -> tuple[Path, Path]:
-    """Generate minimal deterministic DuckDB and SQLite Control Plane test databases.
-
-    Preserves exact Phase 03 test contract schemas.
-    """
+    """Generate baseline DuckDB and SQLite Control Plane fixtures for reader unit tests."""
     target_dir.mkdir(parents=True, exist_ok=True)
     duckdb_path = target_dir / "Personal_Finance_DB.duckdb"
     control_plane_path = target_dir / "Personal_Finance_DB_Raw_Store.sqlite"
