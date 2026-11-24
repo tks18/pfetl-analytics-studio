@@ -41,9 +41,6 @@ dev = [
 [tool.uv]
 default-groups = ["dev"]
 
-[tool.uv.sources]
-pforge-cli = { path = "d:/Python Projects/project-forge", editable = true }
-
 [tool.project-forge]
 source = ["src"]
 tests = ["tests"]
