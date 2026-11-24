@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.3](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.2...0.1.3) (2026-11-24)
+
+
+### Features 🔥
+
+* **data:** implement read-only duckdb and control plane gateways ([fd078c0](https://github.com/tks18/pfetl-analytics-studio/commit/fd078c09fa3cca8d521199177996f383950ee703))
+
+
+### Tests 🧪
+
+* **data:** add read-only gateway and lock isolation tests ([068dfdc](https://github.com/tks18/pfetl-analytics-studio/commit/068dfdc4c8103d24d23dffbc173a9baa81ac1d68))
+* **fixtures:** add synthetic test database generation fixture ([99a6044](https://github.com/tks18/pfetl-analytics-studio/commit/99a604476e630c6c4d0b233bab07e9455f4a2fef))
+
 ### [0.1.2](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.1...0.1.2) (2026-11-24)
 
 
