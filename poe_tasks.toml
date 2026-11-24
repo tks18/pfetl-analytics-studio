@@ -24,10 +24,10 @@ release = { cmd = "pforge bump", help = "Bump version automatically based on Con
 # 3. Post-Release Automated Pipeline & End-to-End Flows
 # ------------------------------------------------------------------------------
 "release:pipeline" = { cmd = "pforge release pipeline", help = "Execute full post-release pipeline: git push -> create PR -> draft release" }
-"release:flow" = { sequence = ["release", "release:pipeline"], help = "Bump version automatically and execute full post-release pipeline" }
-"release:flow:patch" = { sequence = ["release:patch", "release:pipeline"], help = "Bump patch version and execute full post-release pipeline" }
-"release:flow:minor" = { sequence = ["release:minor", "release:pipeline"], help = "Bump minor version and execute full post-release pipeline" }
-"release:flow:major" = { sequence = ["release:major", "release:pipeline"], help = "Bump major version and execute full post-release pipeline" }
+"release:flow" = { cmd = "pforge release flow", help = "Bump version automatically and execute full post-release pipeline" }
+"release:flow:patch" = { cmd = "pforge release flow --patch", help = "Bump patch version and execute full post-release pipeline" }
+"release:flow:minor" = { cmd = "pforge release flow --minor", help = "Bump minor version and execute full post-release pipeline" }
+"release:flow:major" = { cmd = "pforge release flow --major", help = "Bump major version and execute full post-release pipeline" }
 
 # ------------------------------------------------------------------------------
 # 4. GitHub Release Management
