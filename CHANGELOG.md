@@ -2,6 +2,32 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.4](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.3...0.1.4) (2026-11-24)
+
+
+### Features 🔥
+
+* **app:** add compatibility and provenance summary card ([184ce2d](https://github.com/tks18/pfetl-analytics-studio/commit/184ce2dd30d9c994760eb86bd8362d04f6d6a277))
+* **data:** implement 82-surface catalog, provenance, drift, and logs ([cef7d3f](https://github.com/tks18/pfetl-analytics-studio/commit/cef7d3fcf1aeabbd15adc6b7c2d8f3126df9c48e))
+
+
+### Tests 🧪
+
+* **catalog:** add 82-surface fixtures and compatibility tests ([42805f9](https://github.com/tks18/pfetl-analytics-studio/commit/42805f964cd3e7c65b654dc6aa3bb8731941c3db))
+
+### [0.1.3](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.2...0.1.3) (2026-11-24)
+
+
+### Features 🔥
+
+* **data:** implement read-only duckdb and control plane gateways ([fd078c0](https://github.com/tks18/pfetl-analytics-studio/commit/fd078c09fa3cca8d521199177996f383950ee703))
+
+
+### Tests 🧪
+
+* **data:** add read-only gateway and lock isolation tests ([068dfdc](https://github.com/tks18/pfetl-analytics-studio/commit/068dfdc4c8103d24d23dffbc173a9baa81ac1d68))
+* **fixtures:** add synthetic test database generation fixture ([99a6044](https://github.com/tks18/pfetl-analytics-studio/commit/99a604476e630c6c4d0b233bab07e9455f4a2fef))
+
 ### [0.1.2](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.1...0.1.2) (2026-11-24)
 
 
