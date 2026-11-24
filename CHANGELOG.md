@@ -2,6 +2,24 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.6](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.5...0.1.6) (2026-11-24)
+
+
+### Features 🔥
+
+* **shell:** add local profile picker, 9 routes, and dark shell ([e9563e1](https://github.com/tks18/pfetl-analytics-studio/commit/e9563e1f20630f8824b209f6e07bd95b5fdb5f46))
+* **ui:** implement Core-aligned dark theme and reusable UI widgets ([d70b559](https://github.com/tks18/pfetl-analytics-studio/commit/d70b5593541bc86871c4f97e00d390d7f71ae4ee))
+
+
+### Code Refactoring 🖌
+
+* **tests:** organize domain suites into mirrored test packages ([c1f0a98](https://github.com/tks18/pfetl-analytics-studio/commit/c1f0a989b3e9087401624d1d7432ebf8043ef451))
+
+
+### Tests 🧪
+
+* **shell:** add UI, page shell, and interactive profile picker tests ([6334b6c](https://github.com/tks18/pfetl-analytics-studio/commit/6334b6c7c6888f8f5205349581ed9e3faa1222d1))
+
 ### [0.1.5](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.4...0.1.5) (2026-11-24)
 
 
