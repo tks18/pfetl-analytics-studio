@@ -1,0 +1,43 @@
+DEFAULT_CURRENCY_ID = "INR_INR"
+
+[MF_SCHEME_MAPPINGS]
+"Quant Tax Plan Direct Growth" = "Quant ELSS Tax Saver Fund Direct Growth"
+"IDBI India Top 100 Equity Fund Direct Growth" = "LIC MF Large Cap Fund Direct Growth"
+
+[income.active]
+category_ids = ["2"]
+sub_category_ids = []
+
+[income.dividends]
+category_ids = []
+sub_category_ids = ["E1FFA01B-86D4-4083-BC1A-A469299E5F41"]
+
+[income.interest]
+category_ids = []
+sub_category_ids = [
+    "951F62DE-F993-4937-91E7-F8EE15E4501B",
+    "6CDCA0D1-C831-4922-ABFD-84756C30219D"
+]
+
+[income.non_cash]
+category_ids = ["60de392d-466e-488b-9b4f-5910f94a2a04"]
+sub_category_ids = []
+
+[expense.core]
+category_ids = [
+    "CB261E83-6B2F-4D5B-A25B-B5C9CDA1C0F5",
+    "6B469543-721D-4F46-865E-87EA60C77112"
+]
+sub_category_ids = [
+    "B6EAF9F2-E747-4204-A3A8-D26386BC051B",
+    "172C2824-51B2-4CB5-B319-773FC5EE6DA4"
+]
+
+[assets.cashflow]
+cash_pools = ["1", "4", "11"]
+non_cash_pnl_sources = ["02037a46-0edf-438a-a0ab-8589f7696114"]
+working_capital_conduits = ["7"]
+investing_activities = ["EC2099EF-58BB-4CE6-84D9-4C306AFC6BCC"]
+financing_liabilities = ["2", "5"]
+investing_analysis_offset_months = -1
+

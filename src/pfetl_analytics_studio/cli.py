@@ -11,6 +11,8 @@ from nicegui import ui
 
 from pfetl_analytics_studio import __version__
 from pfetl_analytics_studio.app import create_app
+from pfetl_analytics_studio.profile import PFETLProfile
+from pfetl_analytics_studio.state import StudioStateStore
 
 ALLOWED_LOOPBACKS = {"127.0.0.1", "localhost", "::1"}
 
@@ -77,6 +79,18 @@ def main(args: list[str] | None = None) -> int:
         help="Port to listen on (default: 8080)",
     )
     parser.add_argument(
+        "--settings",
+        type=str,
+        default=None,
+        help="Path to PFETL Settings TOML configuration file",
+    )
+    parser.add_argument(
+        "--rules",
+        type=str,
+        default=None,
+        help="Path to PFETL FinancialRules TOML configuration file",
+    )
+    parser.add_argument(
         "--no-browser",
         action="store_true",
         help="Do not automatically open browser on startup",
@@ -101,7 +115,29 @@ def main(args: list[str] | None = None) -> int:
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
-    create_app()
+    profile: PFETLProfile | None = None
+    if parsed.settings or parsed.rules:
+        if not parsed.settings or not parsed.rules:
+            print(
+                "Error: Both --settings and --rules must be supplied together to load a profile.",
+                file=sys.stderr,
+            )
+            return 1
+
+        result = PFETLProfile.load(parsed.settings, parsed.rules)
+        if not result.is_ok or result.profile is None:
+            err_msg = result.error.message if result.error else "Unknown profile load error"
+            print(f"Error loading profile: {err_msg}", file=sys.stderr)
+            return 1
+
+        profile = result.profile
+        try:
+            with StudioStateStore() as store:
+                store.record_profile_opened(profile)
+        except OSError as exc:
+            print(f"Warning: Failed to record recent profile: {exc}", file=sys.stderr)
+
+    create_app(profile=profile)
 
     ui.run(  # pyright: ignore[reportUnknownMemberType]
         host=parsed.host,
@@ -111,3 +147,7 @@ def main(args: list[str] | None = None) -> int:
         reload=parsed.reload,
     )
     return 0
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    sys.exit(main())

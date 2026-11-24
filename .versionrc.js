@@ -23,24 +23,27 @@ const versionInfoTracker = {
   },
   writeVersion: function (contents, version) {
     // Convert SemVer '4.1.1' to '4, 1, 1, 0' for Windows fixed info
-    const tupleParts = version.split('.').concat(['0', '0', '0', '0']).slice(0, 4);
+    const tupleParts = version
+      .split('.')
+      .concat(['0', '0', '0', '0'])
+      .slice(0, 4);
     const tupleStr = tupleParts.join(', ');
-    
+
     let newContents = contents.replace(
       /filevers=\(\d+, \d+, \d+, \d+\)/g,
-      `filevers=(${tupleStr})`
+      `filevers=(${tupleStr})`,
     );
     newContents = newContents.replace(
       /prodvers=\(\d+, \d+, \d+, \d+\)/g,
-      `prodvers=(${tupleStr})`
+      `prodvers=(${tupleStr})`,
     );
     newContents = newContents.replace(
       /StringStruct\('FileVersion', '[^']+'\)/g,
-      `StringStruct('FileVersion', '${version}')`
+      `StringStruct('FileVersion', '${version}')`,
     );
     newContents = newContents.replace(
       /StringStruct\('ProductVersion', '[^']+'\)/g,
-      `StringStruct('ProductVersion', '${version}')`
+      `StringStruct('ProductVersion', '${version}')`,
     );
     return newContents;
   },
@@ -123,12 +126,12 @@ module.exports = {
       updater: tracker,
     },
     {
-      filename: 'src/personal_finance_etl/__init__.py',
+      filename: 'src/pfetl_analytics_studio/__init__.py',
       updater: tracker,
     },
     {
       filename: 'version_info.txt',
       updater: versionInfoTracker,
-    }
+    },
   ],
 };

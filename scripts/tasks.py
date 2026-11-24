@@ -8,10 +8,15 @@ from scripts.create_pr import main as create_pr_main
 from scripts.create_releases import run_release_cli
 
 
-def dev():
-    """Run the app with hot-reloading."""
-    print("Starting development server...")
-    sys.exit(subprocess.call(["tkreload", "main.py"]))
+def dev() -> None:
+    """Run the application with hot-reloading using tkreload."""
+    print("Starting development server with tkreload...")
+    target = (
+        "main.py"
+        if os.path.exists("main.py")
+        else os.path.join("src", "pfetl_analytics_studio", "__main__.py")
+    )
+    sys.exit(subprocess.call(["tkreload", target]))
 
 
 def build():

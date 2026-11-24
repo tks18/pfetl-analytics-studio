@@ -1,0 +1,47 @@
+[database]
+target_db_base_path = "tests/outputs"
+target_db_name = "Personal_Finance_DB.duckdb"
+raw_document_store_name = "Personal_Finance_DB_Raw_Store.sqlite"
+disable_file_discoverer = false
+
+[sources]
+household_database = "tests/fixtures/household"
+statements_root = "tests/fixtures/statements"
+column_master = "tests/fixtures/references/column_master.csv"
+mutual_fund_instrument_mapping = "tests/fixtures/references/mutual_fund_instrument_mapping.csv"
+instrument_master = "tests/fixtures/references/instrument_master.csv"
+benchmark_master = "tests/fixtures/references/benchmark_master.csv"
+currency_reference = "tests/fixtures/references/currency_reference.csv"
+financial_year_parameters = "tests/fixtures/references/financial_year_parameters.csv"
+opening_balances = "tests/fixtures/references/opening_balances.csv"
+
+[statement_patterns]
+stock_pl = "Stock PL Statements"
+mf_holdings = "Mutual Funds - Holdings"
+stock_orders = "Stock - Orders"
+mf_orders = "Mutual Funds - Orders"
+us_stock_transactions = ["IND Money (US Stocks)", "Transaction Reports"]
+
+[hash_policy]
+household_database = "CONTENT"
+statements = "NONE"
+reference_data = "CONTENT"
+
+[observability]
+logs_directory = "logs/runs"
+retain_last_n_runs = 5
+max_age_days = 30
+
+[performance]
+duckdb_threads = 4
+market_workers = 8
+isin_workers = 4
+
+[market_data]
+fetch_buffer_days = 15
+max_download_attempts = 3
+anomalous_drop_threshold = -0.50
+us_price_max_staleness_days = 7
+fx_backward_fill_days = 30
+benchmark_max_staleness_days = 7
+

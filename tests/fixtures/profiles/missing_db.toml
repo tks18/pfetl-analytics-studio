@@ -1,0 +1,3 @@
+[sources]
+household_database = "tests/fixtures/household"
+

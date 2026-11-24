@@ -1,6 +1,6 @@
 [project]
 name = "pfetl-analytics-studio"
-version = "0.1.1"
+version = "0.1.2"
 description = "Local-first, read-only analytical companion to Personal Finance ETL for visual exploration, reporting, and intelligence."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -36,6 +36,7 @@ dev = [
     "pytest>=9.1.1",
     "rich>=15.0.0",
     "ruff>=0.15.22",
+    "tkreload>=1.0.4",
 ]
 
 [tool.uv]
