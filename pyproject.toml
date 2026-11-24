@@ -1,6 +1,6 @@
 [project]
 name = "pfetl-analytics-studio"
-version = "0.1.0-dev"
+version = "0.1.0"
 description = "Local-first, read-only analytical companion to Personal Finance ETL for visual exploration, reporting, and intelligence."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -41,9 +41,6 @@ dev = [
 [tool.uv]
 default-groups = ["dev"]
 
-[tool.uv.sources]
-pforge-cli = { path = "d:/Python Projects/project-forge", editable = true }
-
 [tool.project-forge]
 source = ["src"]
 tests = ["tests"]
@@ -59,7 +56,7 @@ full = ["ruff-check", "ruff-format", "mypy", "pyright", "pytest"]
 
 [tool.project-forge.bump]
 tag_prefix = "v"
-files = ["pyproject.toml", "src/pfetl_analytics_studio/__init__.py"]
+files = ["pyproject.toml", "package.json", "src/pfetl_analytics_studio/__init__.py"]
 commit_all = true
 changelog_file = "CHANGELOG.md"
 
