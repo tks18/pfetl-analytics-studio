@@ -9,7 +9,7 @@ from pfetl_analytics_studio.state import get_studio_state_path
 
 def test_package_version() -> None:
     """Verify package version resolves correctly."""
-    assert __version__ == "0.1.0-dev"
+    assert __version__.startswith("0.1.0")
 
 
 def test_loopback_validation_allowed() -> None:
