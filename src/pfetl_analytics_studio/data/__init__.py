@@ -7,6 +7,20 @@ Forbidden: Does not import UI/NiceGUI or execute financial methodologies.
 
 from __future__ import annotations
 
+from pfetl_analytics_studio.data.catalog import (
+    SURFACE_ATLAS,
+    CatalogEntry,
+    ColumnInfo,
+    CompatibilityReport,
+    CompatibilityStatus,
+    DriftCheckResult,
+    PFETLCatalog,
+    RunProvenance,
+    SurfaceLayer,
+    SurfaceSpec,
+    SurfaceUsageCategory,
+    evaluate_profile_drift,
+)
 from pfetl_analytics_studio.data.control_plane_reader import ControlPlaneReader
 from pfetl_analytics_studio.data.duckdb_reader import DuckDBReader, validate_identifier
 from pfetl_analytics_studio.data.errors import (
@@ -18,16 +32,32 @@ from pfetl_analytics_studio.data.errors import (
     ReadOnlyViolationError,
     WarehouseState,
 )
+from pfetl_analytics_studio.data.log_reader import ArchivedLogReader, LogReadResult, LogSource
 
 __all__ = [
+    "SURFACE_ATLAS",
+    "ArchivedLogReader",
+    "CatalogEntry",
+    "ColumnInfo",
+    "CompatibilityReport",
+    "CompatibilityStatus",
     "ControlPlaneReader",
     "ControlPlaneState",
     "DatabaseCorruptedError",
     "DatabaseNotFoundError",
+    "DriftCheckResult",
     "DuckDBReader",
+    "LogReadResult",
+    "LogSource",
+    "PFETLCatalog",
     "PFETLDataAccessError",
     "PFETLLockedError",
     "ReadOnlyViolationError",
+    "RunProvenance",
+    "SurfaceLayer",
+    "SurfaceSpec",
+    "SurfaceUsageCategory",
     "WarehouseState",
+    "evaluate_profile_drift",
     "validate_identifier",
 ]
