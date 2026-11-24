@@ -76,7 +76,10 @@ def test_recent_profiles_crud(
 def test_app_preferences(temp_state_store: StudioStateStore) -> None:
     """Verify application preference get, set, update, and deletion."""
     assert temp_state_store.get_preference("reports.default_output_dir") is None
-    assert temp_state_store.get_preference("reports.default_output_dir", default="/default") == "/default"
+    assert (
+        temp_state_store.get_preference("reports.default_output_dir", default="/default")
+        == "/default"
+    )
 
     temp_state_store.set_preference("reports.default_output_dir", "/user/reports")
     assert temp_state_store.get_preference("reports.default_output_dir") == "/user/reports"
@@ -113,4 +116,3 @@ def test_state_persistence_across_connections(
         assert len(recents) == 1
         assert recents[0].profile_id == profile.profile_id
         assert store2.get_preference("theme.mode") == "dark"
-

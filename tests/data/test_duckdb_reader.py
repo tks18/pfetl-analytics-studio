@@ -146,4 +146,3 @@ def test_duckdb_reader_write_attempt_fails(profile_with_databases: PFETLProfile)
 
     with pytest.raises(ReadOnlyViolationError):
         reader.fetch_scalar("DELETE FROM meta.m_File_Registry;")
-

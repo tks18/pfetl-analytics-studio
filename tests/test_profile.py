@@ -118,9 +118,7 @@ def test_relative_logs_directory_resolution(
     assert res.profile.logs_path == expected_logs
 
 
-def test_toml_immutability_guarantee(
-    valid_settings_path: Path, valid_rules_path: Path
-) -> None:
+def test_toml_immutability_guarantee(valid_settings_path: Path, valid_rules_path: Path) -> None:
     """Verify Studio strictly reads TOML files and preserves exact byte identities."""
     settings_before = _compute_file_sha256(valid_settings_path)
     rules_before = _compute_file_sha256(valid_rules_path)

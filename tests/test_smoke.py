@@ -57,4 +57,3 @@ def test_cli_profile_flags_invalid_file() -> None:
     from pfetl_analytics_studio.cli import main
 
     assert main(["--settings", "non_existent.toml", "--rules", "non_existent.toml"]) == 1
-

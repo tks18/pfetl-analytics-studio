@@ -31,7 +31,9 @@ def test_control_plane_reader_fetch_scalar(profile_with_databases: PFETLProfile)
 def test_control_plane_reader_fetch_one(profile_with_databases: PFETLProfile) -> None:
     """Verify single row fetch returns column-mapped dictionary."""
     reader = ControlPlaneReader(profile_with_databases)
-    row = reader.fetch_one("SELECT run_id, status, version FROM cp_runs WHERE run_id = ?;", ("run-001",))
+    row = reader.fetch_one(
+        "SELECT run_id, status, version FROM cp_runs WHERE run_id = ?;", ("run-001",)
+    )
     assert row is not None
     assert row["run_id"] == "run-001"
     assert row["status"] == "SUCCESS"
@@ -104,4 +106,3 @@ def test_control_plane_reader_write_attempt_fails(profile_with_databases: PFETLP
 
     with pytest.raises(ReadOnlyViolationError):
         reader.fetch_scalar("DELETE FROM cp_runs;")
-

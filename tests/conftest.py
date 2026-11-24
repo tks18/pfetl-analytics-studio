@@ -100,5 +100,3 @@ logs_directory = "logs/runs"
     load_res = PFETLProfile.load(settings_file, rules_file, label="Full 82-Surface Test Profile")
     assert load_res.profile is not None
     return load_res.profile
-
-
