@@ -76,4 +76,3 @@ def test_partial_availability_missing_duckdb(
     # Control Plane is still available
     assert cp_reader.get_state() == ControlPlaneState.AVAILABLE
     assert cp_reader.fetch_scalar("SELECT count(*) FROM cp_runs;") == 2
-

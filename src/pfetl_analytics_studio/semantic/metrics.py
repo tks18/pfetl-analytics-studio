@@ -1,0 +1,529 @@
+"""Semantic metric registry enforcing additivity and dimension safety.
+
+Owns
+----
+- `MetricAggregation`, `MetricFormat`, `MetricSpec`, and `MetricRegistry`.
+- `FOUNDATIONAL_METRICS` and `DEFAULT_METRICS` covering Overview and core domain measures.
+- Guardrails rejecting invalid `SUM`/`AVG` aggregations on non-additive ratios/rates/balances.
+
+Does not own
+------------
+- PFETL financial calculation methodology.
+- Exhaustive column browsing (owned by Explorer raw catalog).
+"""
+
+from __future__ import annotations
+
+from collections.abc import Iterable, Sequence
+from enum import StrEnum
+
+from pydantic import BaseModel, ConfigDict, model_validator
+
+from pfetl_analytics_studio.semantic.datasets import DEFAULT_DATASETS, DatasetRegistry
+
+
+class MetricAggregation(StrEnum):
+    """Approved aggregation semantics for a registered `MetricSpec`."""
+
+    SUM = "sum"
+    AVG = "avg"
+    LATEST = "latest"
+    WEIGHTED = "weighted"
+    NONE = "none"
+
+
+class MetricFormat(StrEnum):
+    """Display formatting classification for KPI cards, charts, and exports."""
+
+    CURRENCY = "currency"
+    PERCENT = "percent"
+    RATIO = "ratio"
+    NUMBER = "number"
+    INTEGER = "integer"
+    DATE = "date"
+
+
+class MetricSpec(BaseModel):
+    """Semantic measure contract specifying safe aggregation and dimensional grain."""
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    label: str
+    dataset: str
+    expression: str
+    aggregation: MetricAggregation
+    format: MetricFormat
+    unit: str
+    allowed_dimensions: tuple[str, ...]
+    additive: bool
+    description: str
+
+    @model_validator(mode="after")
+    def _validate_invariants(self) -> MetricSpec:
+        """Reject empty identifiers or non-additive metrics configured with `SUM`."""
+        if not self.id.strip():
+            raise ValueError("MetricSpec id cannot be empty.")
+        if not self.expression.strip():
+            raise ValueError(f"MetricSpec '{self.id}' expression cannot be empty.")
+        if not self.additive and self.aggregation == MetricAggregation.SUM:
+            raise ValueError(
+                f"Non-additive metric '{self.id}' cannot use default aggregation 'sum'."
+            )
+        return self
+
+
+class MetricRegistry:
+    """Validated catalog of reusable semantic metrics bound to approved datasets."""
+
+    def __init__(
+        self,
+        dataset_registry: DatasetRegistry,
+        initial: Iterable[MetricSpec] = (),
+    ) -> None:
+        """Initialize metric registry bound to a `DatasetRegistry`.
+
+        Parameters
+        ----------
+        dataset_registry : DatasetRegistry
+            Dataset registry against which metric datasets and dimensions are validated.
+        initial : Iterable[MetricSpec], optional
+            Initial metric specs to register immediately.
+        """
+        self.dataset_registry = dataset_registry
+        self._metrics: dict[str, MetricSpec] = {}
+        for spec in initial:
+            self.register(spec)
+
+    def register(self, spec: MetricSpec) -> None:
+        """Register a `MetricSpec`, enforcing unique IDs and valid dataset/dimensions.
+
+        Parameters
+        ----------
+        spec : MetricSpec
+            Metric descriptor to register.
+
+        Raises
+        ------
+        ValueError
+            If ID is duplicated or allowed dimensions violate the backing `DatasetSpec`.
+        KeyError
+            If target `spec.dataset` is missing from `dataset_registry`.
+        """
+        if spec.id in self._metrics:
+            raise ValueError(f"Duplicate metric ID registered: '{spec.id}'.")
+        self.dataset_registry.validate_dimensions(spec.dataset, spec.allowed_dimensions)
+        self._metrics[spec.id] = spec
+
+    def get(self, metric_id: str) -> MetricSpec:
+        """Retrieve a registered `MetricSpec` by ID."""
+        if metric_id not in self._metrics:
+            raise KeyError(f"Unknown metric ID: '{metric_id}'.")
+        return self._metrics[metric_id]
+
+    def has(self, metric_id: str) -> bool:
+        """Check whether `metric_id` exists in this registry."""
+        return metric_id in self._metrics
+
+    def list_metrics(self, dataset_id: str | None = None) -> list[MetricSpec]:
+        """List registered metrics, optionally filtered by dataset ID."""
+        items = list(self._metrics.values())
+        if dataset_id is not None:
+            items = [m for m in items if m.dataset == dataset_id]
+        return sorted(items, key=lambda m: m.id)
+
+    def validate_query(
+        self,
+        metric_id: str,
+        dimensions: Sequence[str] = (),
+        requested_aggregation: MetricAggregation | None = None,
+    ) -> MetricSpec:
+        """Validate a metric query's dimensions and aggregation semantics.
+
+        Parameters
+        ----------
+        metric_id : str
+            Target registered metric identifier.
+        dimensions : Sequence[str], optional
+            Requested grouping dimensions.
+        requested_aggregation : MetricAggregation | None, optional
+            Explicit aggregation requested by caller/explorer; defaults to metric default.
+
+        Returns
+        -------
+        MetricSpec
+            Validated `MetricSpec` ready for SQL compilation.
+
+        Raises
+        ------
+        ValueError
+            If dimensions are disallowed or a non-additive metric is aggregated unsafely.
+        """
+        spec = self.get(metric_id)
+        allowed_dims = set(spec.allowed_dimensions)
+        bad_dims = [d for d in dimensions if d not in allowed_dims]
+        if bad_dims:
+            raise ValueError(
+                f"Metric '{metric_id}' does not permit dimension(s): {', '.join(bad_dims)}."
+            )
+        self.dataset_registry.validate_dimensions(spec.dataset, dimensions)
+
+        agg = requested_aggregation if requested_aggregation is not None else spec.aggregation
+        if not spec.additive and agg in (MetricAggregation.SUM, MetricAggregation.AVG):
+            raise ValueError(
+                f"Metric '{metric_id}' is non-additive and cannot be aggregated with '{agg.value}'."
+            )
+        if spec.aggregation == MetricAggregation.NONE and agg not in (
+            MetricAggregation.NONE,
+            MetricAggregation.LATEST,
+        ):
+            raise ValueError(
+                f"Metric '{metric_id}' requires native grain ('none'/'latest'), "
+                f"rejected '{agg.value}'."
+            )
+        return spec
+
+
+def _metric(
+    metric_id: str,
+    label: str,
+    dataset: str,
+    expression: str,
+    aggregation: MetricAggregation,
+    fmt: MetricFormat,
+    unit: str,
+    allowed_dimensions: tuple[str, ...],
+    additive: bool,
+    description: str,
+) -> MetricSpec:
+    """Construct a `MetricSpec` concisely."""
+    return MetricSpec(
+        id=metric_id,
+        label=label,
+        dataset=dataset,
+        expression=expression,
+        aggregation=aggregation,
+        format=fmt,
+        unit=unit,
+        allowed_dimensions=allowed_dimensions,
+        additive=additive,
+        description=description,
+    )
+
+
+_M_DIMS = ("MONTH_START_DATE", "MONTH_END_DATE")
+_M_YM_DIMS = ("MONTH_START_DATE", "MONTH_END_DATE", "YEAR_MONTH")
+
+FOUNDATIONAL_METRICS: tuple[MetricSpec, ...] = (
+    # --- Overview / Household Flows (Additive) ---
+    _metric(
+        "total_income",
+        "Total Income",
+        "core_monthly_fact",
+        '"Total_Income"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        True,
+        "Total monthly cash + non-cash household income across canonical flows.",
+    ),
+    _metric(
+        "total_expense",
+        "Total Expense",
+        "core_monthly_fact",
+        '"Total_Expense"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        True,
+        "Total monthly household expense (core + non-core).",
+    ),
+    _metric(
+        "total_core_expense",
+        "Core Expense",
+        "core_monthly_fact",
+        '"Total_Core_Expense"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        True,
+        "Essential recurring household expense classified by Core rules.",
+    ),
+    _metric(
+        "net_cashflow_month",
+        "Net Cashflow",
+        "core_monthly_fact",
+        '"Net_Cashflow_Month"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        True,
+        "Monthly net household savings flow (income minus expenses).",
+    ),
+    _metric(
+        "income_breakdown_amount",
+        "Category Income",
+        "cashflow_income_breakdown",
+        '"Total_Monthly_Income"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        (
+            "MONTH_START_DATE",
+            "MONTH_END_DATE",
+            "YEAR_MONTH",
+            "CATEGORY_NAME",
+            "CATEGORY_GROUPS",
+            "Is_Active_Income",
+            "Is_Passive_Income",
+        ),
+        True,
+        "Monthly income flow grouped by category/group/classification.",
+    ),
+    _metric(
+        "expense_breakdown_amount",
+        "Category Spend",
+        "cashflow_expense_breakdown",
+        '"Total_Monthly_Spend"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        (
+            "MONTH_START_DATE",
+            "MONTH_END_DATE",
+            "YEAR_MONTH",
+            "CATEGORY_NAME",
+            "CATEGORY_GROUPS",
+            "Spend_Type",
+            "Is_Core_Expense",
+        ),
+        True,
+        "Monthly expense flow grouped by category/group/core classification.",
+    ),
+    # --- Overview / Wealth Stock Balances (Non-Additive Point-in-Time) ---
+    _metric(
+        "net_worth_book",
+        "Book Net Worth",
+        "core_monthly_fact",
+        '"Total_Net_Worth"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        False,
+        "Point-in-time book net worth at month end (non-additive across months).",
+    ),
+    _metric(
+        "net_worth_market",
+        "Market Net Worth",
+        "core_monthly_fact",
+        '"Total_Net_Worth_Market"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        False,
+        "Point-in-time mark-to-market net worth at month end (non-additive).",
+    ),
+    _metric(
+        "liquid_assets_market",
+        "Liquid Assets (Market)",
+        "core_monthly_fact",
+        '"Liquid_Assets_Market"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_DIMS,
+        False,
+        "Point-in-time liquid market wealth balance (non-additive across months).",
+    ),
+    _metric(
+        "asset_closing_balance_market",
+        "Asset Market Balance",
+        "wealth_asset_breakdown",
+        '"Closing_Balance_Market"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        ("MONTH_START_DATE", "MONTH_END_DATE", "ASSET_SUBCATEGORY_ID"),
+        False,
+        "Point-in-time market balance per asset subcategory at month end.",
+    ),
+    # --- Efficiency & Resilience Ratios (Non-Additive) ---
+    _metric(
+        "savings_rate_pct",
+        "Savings Rate",
+        "cashflow_efficiency_analytics",
+        '"Savings_Rate_Pct"',
+        MetricAggregation.LATEST,
+        MetricFormat.PERCENT,
+        "percent",
+        _M_YM_DIMS,
+        False,
+        "Monthly canonical savings rate percentage (native/latest, non-additive).",
+    ),
+    _metric(
+        "investment_rate_pct",
+        "Investment Rate",
+        "cashflow_efficiency_analytics",
+        '"Investment_Rate_Pct"',
+        MetricAggregation.LATEST,
+        MetricFormat.PERCENT,
+        "percent",
+        _M_YM_DIMS,
+        False,
+        "Monthly capital deployment rate percentage (native/latest, non-additive).",
+    ),
+    _metric(
+        "passive_coverage_ratio",
+        "Passive / Core Coverage",
+        "cashflow_efficiency_analytics",
+        '"Passive_Income_Core_Expense_Coverage_Ratio"',
+        MetricAggregation.LATEST,
+        MetricFormat.RATIO,
+        "ratio",
+        _M_YM_DIMS,
+        False,
+        "Ratio of passive income to core household expenses (non-additive).",
+    ),
+    _metric(
+        "active_income_dependency_pct",
+        "Active Income Dependency",
+        "cashflow_efficiency_analytics",
+        '"Active_Income_Dependency_Pct"',
+        MetricAggregation.LATEST,
+        MetricFormat.PERCENT,
+        "percent",
+        _M_YM_DIMS,
+        False,
+        "Share of household income derived from active sources (non-additive).",
+    ),
+    # --- Investments & Portfolio Snapshot (Stock/Rates Non-Additive) ---
+    _metric(
+        "portfolio_current_value",
+        "Portfolio Value",
+        "investment_by_portfolio",
+        '"Total_Current_Value"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        ("Closing_Date",),
+        False,
+        "Total portfolio mark-to-market value at closing date (non-additive across dates).",
+    ),
+    _metric(
+        "portfolio_invested_value",
+        "Portfolio Cost Basis",
+        "investment_by_portfolio",
+        '"Total_Invested_Value"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        ("Closing_Date",),
+        False,
+        "Total open-lot cost basis at closing date (non-additive across dates).",
+    ),
+    _metric(
+        "portfolio_xirr",
+        "Portfolio XIRR",
+        "investment_by_portfolio",
+        '"XIRR"',
+        MetricAggregation.NONE,
+        MetricFormat.PERCENT,
+        "percent",
+        ("Closing_Date",),
+        False,
+        "Native money-weighted annualized portfolio XIRR (strictly non-additive).",
+    ),
+    _metric(
+        "portfolio_active_return",
+        "Active Return vs Benchmark",
+        "investment_by_portfolio",
+        '"Active_Return"',
+        MetricAggregation.NONE,
+        MetricFormat.PERCENT,
+        "percent",
+        ("Closing_Date",),
+        False,
+        "Portfolio XIRR minus benchmark XIRR (strictly non-additive).",
+    ),
+    _metric(
+        "portfolio_hhi_score",
+        "Concentration (HHI)",
+        "investment_by_portfolio",
+        '"HHI_Score"',
+        MetricAggregation.LATEST,
+        MetricFormat.NUMBER,
+        "index",
+        ("Closing_Date",),
+        False,
+        "Herfindahl-Hirschman portfolio concentration index (non-additive).",
+    ),
+    _metric(
+        "isin_weight",
+        "ISIN Portfolio Weight",
+        "investment_portfolio_summary",
+        '"ISIN_Weight"',
+        MetricAggregation.NONE,
+        MetricFormat.PERCENT,
+        "percent",
+        ("MONTH_START_DATE", "ISIN", "INSTRUMENT_CLASS", "SECTOR"),
+        False,
+        "Native weight of an ISIN inside portfolio at month close (non-summable).",
+    ),
+    # --- FIRE & Tax Snapshot ---
+    _metric(
+        "fire_coverage_pct",
+        "FI Coverage",
+        "wealth_fire_analytics",
+        '"Current_FI_Coverage_Pct"',
+        MetricAggregation.LATEST,
+        MetricFormat.PERCENT,
+        "percent",
+        _M_YM_DIMS,
+        False,
+        "Current wealth relative to Today's FI corpus target (non-additive).",
+    ),
+    _metric(
+        "fire_target_today",
+        "Target FI Corpus",
+        "wealth_fire_analytics",
+        '"Target_FI_Today"',
+        MetricAggregation.LATEST,
+        MetricFormat.CURRENCY,
+        "base_currency",
+        _M_YM_DIMS,
+        False,
+        "Financial independence corpus required today under active rules.",
+    ),
+    _metric(
+        "fire_success_probability",
+        "Monte Carlo Success",
+        "wealth_fire_analytics",
+        '"Probability_Of_Success_Pct"',
+        MetricAggregation.NONE,
+        MetricFormat.PERCENT,
+        "percent",
+        _M_YM_DIMS,
+        False,
+        "Simulated trajectory probability of success (non-additive).",
+    ),
+    _metric(
+        "tax_indicative_net_exposure",
+        "Indicative Net Tax Exposure",
+        "tax_financial_year_summary",
+        '"Indicative_Net_Tax_Exposure"',
+        MetricAggregation.SUM,
+        MetricFormat.CURRENCY,
+        "INR",
+        ("FY",),
+        True,
+        "Indicative net tax exposure summed safely across selected FY grain.",
+    ),
+)
+
+DEFAULT_METRICS = MetricRegistry(DEFAULT_DATASETS, FOUNDATIONAL_METRICS)

@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+import calendar
 import json
 import sqlite3
 import zlib
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -411,3 +413,135 @@ def create_full_atlas_databases(
         scon.close()
 
     return duckdb_path, cp_path
+
+
+def seed_calendar_and_gold_months(
+    duckdb_path: Path,
+    start: date = date(2024, 4, 1),
+    end: date = date(2026, 12, 31),
+    as_of_date: date = date(2026, 11, 24),
+    gold_cutoff_month: date = date(2026, 11, 1),
+) -> None:
+    """Populate realistic typed `silver.dim_calendar` and `gold.core_monthly_fact` rows."""
+    dcon = duckdb.connect(database=str(duckdb_path))
+    try:
+        dcon.execute("DROP TABLE IF EXISTS silver.dim_calendar;")
+        dcon.execute(
+            """
+            CREATE TABLE silver.dim_calendar (
+                "Date" DATE,
+                "Day" BIGINT,
+                "Month" BIGINT,
+                "Month_Year" VARCHAR,
+                "Start_of_Month" DATE,
+                "End_of_Month" DATE,
+                "Quarter" BIGINT,
+                "Quarter_Year" VARCHAR,
+                "Start_of_Quarter" DATE,
+                "End_of_Quarter" DATE,
+                "Year" BIGINT,
+                "Financial_Year" VARCHAR,
+                "FY_Year" BIGINT,
+                "FY_Month" BIGINT,
+                "FY_Quarter" BIGINT,
+                "FY_Quarter_Year" VARCHAR,
+                "FY_Start_of_Quarter" DATE,
+                "FY_End_of_Quarter" DATE,
+                "Is_Future_Date" BOOLEAN
+            );
+            """
+        )
+
+        cal_rows: list[tuple[Any, ...]] = []
+        month_bounds: list[tuple[date, date]] = []
+        seen_months: set[date] = set()
+        curr = start
+        while curr <= end:
+            last_day = calendar.monthrange(curr.year, curr.month)[1]
+            m_start = date(curr.year, curr.month, 1)
+            m_end = date(curr.year, curr.month, last_day)
+            if m_start not in seen_months:
+                seen_months.add(m_start)
+                month_bounds.append((m_start, m_end))
+
+            cal_q = (curr.month - 1) // 3 + 1
+            q_start_month = (cal_q - 1) * 3 + 1
+            q_end_month = q_start_month + 2
+            q_start = date(curr.year, q_start_month, 1)
+            q_end = date(curr.year, q_end_month, calendar.monthrange(curr.year, q_end_month)[1])
+            q_year_label = f"Q{cal_q}-{curr.year}"
+
+            fy_start_year = curr.year if curr.month >= 4 else curr.year - 1
+            fy_str = f"{fy_start_year}-{(fy_start_year + 1) % 100:02d}"
+            fy_month = curr.month - 3 if curr.month >= 4 else curr.month + 9
+            fy_q = (fy_month - 1) // 3 + 1
+            fy_q_year = f"Q{fy_q}-{fy_str}"
+
+            cal_rows.append(
+                (
+                    curr,
+                    curr.day,
+                    curr.month,
+                    curr.strftime("%b %Y"),
+                    m_start,
+                    m_end,
+                    cal_q,
+                    q_year_label,
+                    q_start,
+                    q_end,
+                    curr.year,
+                    fy_str,
+                    fy_start_year,
+                    fy_month,
+                    fy_q,
+                    fy_q_year,
+                    q_start,
+                    q_end,
+                    curr > as_of_date,
+                )
+            )
+            curr += timedelta(days=1)
+
+        dcon.executemany(
+            "INSERT INTO silver.dim_calendar VALUES "
+            "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            cal_rows,
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.core_monthly_fact;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.core_monthly_fact (
+                "MONTH_START_DATE" DATE,
+                "MONTH_END_DATE" DATE,
+                "Total_Income" DOUBLE,
+                "Total_Expense" DOUBLE,
+                "Total_Core_Expense" DOUBLE,
+                "Net_Cashflow_Month" DOUBLE,
+                "Total_Net_Worth" DOUBLE
+            );
+            """
+        )
+        gold_rows: list[tuple[Any, ...]] = []
+        for idx, (m_start, m_end) in enumerate(month_bounds):
+            if m_start > gold_cutoff_month:
+                continue
+            income = 100000.0 + idx * 1000.0
+            expense = 40000.0 + idx * 500.0
+            gold_rows.append(
+                (
+                    m_start,
+                    m_end,
+                    income,
+                    expense,
+                    expense * 0.7,
+                    income - expense,
+                    1000000.0 + idx * 60000.0,
+                )
+            )
+        dcon.executemany(
+            "INSERT INTO gold.core_monthly_fact VALUES (?, ?, ?, ?, ?, ?, ?);",
+            gold_rows,
+        )
+    finally:
+        dcon.close()
