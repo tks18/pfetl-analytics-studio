@@ -11,6 +11,8 @@ from nicegui import run, ui
 from pfetl_analytics_studio.analytics import (
     ExpenseCategoryRow,
     HouseholdAnalytics,
+    HouseholdBudgetSnapshot,
+    HouseholdCashflowSnapshot,
     HouseholdExpenseSnapshot,
     HouseholdIncomeSnapshot,
     IncomeCategoryRow,
@@ -24,6 +26,12 @@ from pfetl_analytics_studio.ui import (
     StudioColor,
     TableColumn,
     bounded_data_table,
+    build_budget_allocation_trend_figure,
+    build_budget_health_heatmap_figure,
+    build_budget_target_vs_actual_figure,
+    build_cashflow_activity_trend_figure,
+    build_cashflow_waterfall_figure,
+    build_emergency_runway_figure,
     build_expense_account_mix_figure,
     build_expense_cash_vs_noncash_figure,
     build_expense_category_bars_figure,
@@ -63,6 +71,15 @@ _INCOME_KPI_ICONS: dict[str, str] = {
     "expense_non_core": "shopping_bag",
     "expense_cash_mix": "account_balance_wallet",
     "expense_real_growth": "trending_up",
+    "budget_actual_income": "track_changes",
+    "budget_core_spend": "home",
+    "budget_non_core_spend": "shopping_bag",
+    "budget_investment_funding": "savings",
+    "budget_emergency_runway": "health_and_safety",
+    "cashflow_operating": "account_balance",
+    "cashflow_investing_financing": "swap_horiz",
+    "cashflow_reconciliation": "verified",
+    "cashflow_net_movement": "swap_vert",
     "expense_fixed_variable": "tune",
     "expense_to_nw": "speed",
     "expense_concentration": "donut_large",
@@ -896,6 +913,397 @@ def _render_expense_tab(
     ui.timer(0.01, _load_async, once=True)
 
 
+def _render_budget_health_ribbon(
+    budget_snap: HouseholdBudgetSnapshot,
+    cashflow_snap: HouseholdCashflowSnapshot,
+) -> None:
+    """Render semantic status badges for Gold budget flags and cashflow reconciliation."""
+    flags = budget_snap.latest_flags
+    with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+        with ui.row().classes("items-center gap-2 flex-wrap"):
+            if flags.is_budget_healthy is True:
+                status_badge("Budget Healthy", tone=BadgeTone.SUCCESS)
+            elif flags.is_budget_healthy is False:
+                status_badge("Budget Attention", tone=BadgeTone.WARNING)
+
+            if flags.is_core_overspent is True:
+                status_badge("Core Overspent", tone=BadgeTone.ERROR)
+            elif flags.is_core_overspent is False:
+                status_badge("Core On Target", tone=BadgeTone.SUCCESS, outline=True)
+
+            if flags.is_non_core_overspent is True:
+                status_badge("Non-Core Overspent", tone=BadgeTone.WARNING)
+            elif flags.is_non_core_overspent is False:
+                status_badge("Non-Core On Target", tone=BadgeTone.SUCCESS, outline=True)
+
+            if flags.is_investment_underfunded is True:
+                status_badge("Investment Underfunded", tone=BadgeTone.WARNING)
+            elif flags.is_investment_underfunded is False:
+                status_badge("Investment Funded", tone=BadgeTone.SUCCESS, outline=True)
+
+            if flags.is_income_volatile is True:
+                status_badge("Income Volatile", tone=BadgeTone.WARNING, outline=True)
+
+            if cashflow_snap.state == "ready":
+                if cashflow_snap.is_reconciled:
+                    status_badge("Cashflow Reconciled", tone=BadgeTone.SUCCESS, outline=True)
+                else:
+                    diff_str = format_currency(
+                        cashflow_snap.unreconciled_difference,
+                        cashflow_snap.currency_id,
+                    )
+                    status_badge(f"Unreconciled Diff: {diff_str}", tone=BadgeTone.ERROR)
+
+        if budget_snap.state == "ready" and budget_snap.monthly_series:
+            latest = budget_snap.monthly_series[-1]
+            cid = budget_snap.currency_id
+            r_c = latest.rule_core_pct
+            r_nc = latest.rule_non_core_pct
+            r_i = latest.rule_investment_pct
+            r_b = latest.rule_buffer_pct
+            split_parts: list[str] = []
+            if r_c is not None:
+                split_parts.append(
+                    f"Core {format_currency(budget_snap.total_budget_core, cid)} ({r_c:.0f}%)"
+                )
+            if r_nc is not None:
+                split_parts.append(
+                    f"Non-Core {format_currency(budget_snap.total_budget_non_core, cid)} ({r_nc:.0f}%)"
+                )
+            if r_i is not None:
+                split_parts.append(
+                    f"Invest {format_currency(budget_snap.total_budget_investment, cid)} ({r_i:.0f}%)"
+                )
+            if r_b is not None:
+                split_parts.append(
+                    f"Buffer {format_currency(budget_snap.total_budget_buffer, cid)} ({r_b:.0f}%)"
+                )
+            split_text = (
+                "Budget Split: " + " • ".join(split_parts)
+                if split_parts
+                else (budget_snap.rules_overlay_summary or "")
+            )
+            if split_text:
+                ui.label(split_text).classes("text-xs font-mono").style(
+                    f"color: {StudioColor.MUTED}"
+                )
+        elif budget_snap.rules_overlay_summary:
+            ui.label(budget_snap.rules_overlay_summary).classes("text-xs font-mono").style(
+                f"color: {StudioColor.MUTED}"
+            )
+
+
+def _render_budget_cashflow_body(
+    context: AppContext,
+    budget_snap: HouseholdBudgetSnapshot,
+    cashflow_snap: HouseholdCashflowSnapshot,
+) -> None:
+    """Render ready/empty Budget Variance & Cashflow Activity cockpit."""
+    if budget_snap.state != "ready" and cashflow_snap.state != "ready":
+        empty_state_panel(
+            title="Budget & Cashflow Data Unavailable",
+            message=(
+                budget_snap.diagnostics[0]
+                if budget_snap.diagnostics
+                else "No populated Budget Variance or Cashflow Activity rows match this period."
+            ),
+            icon="track_changes",
+            action_label="Inspect Operations & Runs",
+            action_target="/operations",
+        )
+        return
+
+    cid = budget_snap.currency_id if budget_snap.state == "ready" else cashflow_snap.currency_id
+    _render_budget_health_ribbon(budget_snap, cashflow_snap)
+
+    all_kpis: tuple[OverviewKPI, ...] = (*budget_snap.kpis, *cashflow_snap.kpis)
+    if all_kpis:
+        ui.label("BUDGET TARGETS, RUNWAY & CASHFLOW RECONCILIATION").classes(
+            "text-xs font-semibold tracking-wider pt-1"
+        ).style(f"color: {StudioColor.DIM}")
+        _render_income_kpi_grid(all_kpis, cid)
+
+    with ui.grid(columns=1).classes("lg:grid-cols-2 w-full gap-4"):
+        chart_panel(
+            title="Budget Target vs Actual (Period)",
+            subtitle="Canonical Gold targets vs actual Income, Core, Non-Core, and Investments",
+            figure=build_budget_target_vs_actual_figure(budget_snap),
+            source_caption="Source: gold.forecast_budget_variance",
+        )
+        chart_panel(
+            title="Cashflow Statement Bridge",
+            subtitle="Opening Cash → Operating / Investing / Financing / Transfers → Closing Cash",
+            figure=build_cashflow_waterfall_figure(cashflow_snap),
+            source_caption="Source: gold.cashflow_activity_summary",
+        )
+
+    drill_state: dict[str, Any] = {"activity": "All", "search": "", "page": 1}
+    drill_controls: dict[str, Any] = {}
+
+    @ui.refreshable
+    def _transfer_table_body() -> None:
+        page_res = HouseholdAnalytics.transfer_transactions(
+            context.profile,  # type: ignore[arg-type]
+            context.period_context,
+            activity_filter=None if drill_state["activity"] == "All" else drill_state["activity"],
+            search=drill_state["search"] or None,
+            page=int(drill_state["page"]),
+            page_size=50,
+            catalog_snapshot=context.catalog_snapshot,
+        )
+        summary_lbl = drill_controls.get("summary_lbl")
+        if summary_lbl is not None:
+            summary_lbl.set_text(
+                f"{page_res.total_count} matching transfers • Total: "
+                f"{format_currency(page_res.total_base_amount, cid)}"
+            )
+        if not page_res.rows:
+            ui.label("No Silver transfer transactions match the active filter and period.").classes(
+                "text-xs italic py-2"
+            ).style(f"color: {StudioColor.DIM}")
+            return
+
+        cols = [
+            TableColumn(name="date", label="Analysis Date", field="date", align="left"),
+            TableColumn(name="activity", label="Activity", field="activity", align="left"),
+            TableColumn(name="from_acc", label="From Account", field="from_acc", align="left"),
+            TableColumn(name="to_acc", label="To Account", field="to_acc", align="left"),
+            TableColumn(name="ttype", label="Transfer Type", field="ttype", align="left"),
+            TableColumn(name="amount", label="Amount", field="amount", align="right"),
+            TableColumn(name="desc", label="Description", field="desc", align="left"),
+        ]
+        rows = [
+            {
+                "date": (r.adjusted_date or r.tx_date).isoformat(),
+                "activity": r.activity_bucket,
+                "from_acc": r.asset_name,
+                "to_acc": r.to_asset_name or "—",
+                "ttype": r.transfer_type or r.transaction_type or "—",
+                "amount": format_currency(r.amount, r.currency_id, signed=True),
+                "desc": r.description or r.paid or "—",
+            }
+            for r in page_res.rows
+        ]
+        bounded_data_table(cols, rows, row_key="date")
+
+    def _transfer_drill_section() -> None:
+        with ui.card().classes("studio-card w-full p-5 rounded-xl gap-3"):
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+                with ui.column().classes("gap-0"):
+                    ui.label("Silver Transfer Drill (silver.fact_transfer_transactions)").classes(
+                        "text-sm font-semibold"
+                    )
+                    drill_controls["summary_lbl"] = (
+                        ui.label("Loading transfers...")
+                        .classes("text-xs")
+                        .style(f"color: {StudioColor.MUTED}")
+                    )
+                with ui.row().classes("items-center gap-2"):
+
+                    def _on_act(evt: Any) -> None:
+                        drill_state["activity"] = str(evt.value or "All")
+                        drill_state["page"] = 1
+                        _transfer_table_body.refresh()
+
+                    drill_controls["activity_select"] = (
+                        ui.select(
+                            options=["All", "Investing", "Financing", "Internal Transfers"],
+                            value=drill_state["activity"],
+                            label="Activity",
+                            on_change=_on_act,
+                        )
+                        .props("dense outlined")
+                        .classes("w-44")
+                    )
+
+                    def _on_search(evt: Any) -> None:
+                        drill_state["search"] = str(evt.value or "")
+                        drill_state["page"] = 1
+                        _transfer_table_body.refresh()
+
+                    ui.input(
+                        label="Search",
+                        value=drill_state["search"],
+                        placeholder="Account, payee, note...",
+                        on_change=_on_search,
+                    ).props("debounce=200 dense outlined clearable").classes("w-52")
+
+            _transfer_table_body()
+
+    def _on_activity_click(evt: Any) -> None:
+        args = getattr(evt, "args", None)
+        if not isinstance(args, dict):
+            return
+        points = cast(dict[str, Any], args).get("points")
+        if isinstance(points, list) and points:
+            first = cast(dict[str, Any], points[0])
+            cd = first.get("customdata")
+            if isinstance(cd, str) and cd in {"Investing", "Financing", "Internal Transfers"}:
+                drill_state["activity"] = cd
+                drill_state["page"] = 1
+                sel = drill_controls.get("activity_select")
+                if sel is not None:
+                    sel.set_value(cd)
+                _transfer_table_body.refresh()
+
+    with ui.grid(columns=1).classes("lg:grid-cols-2 w-full gap-4"):
+        chart_panel(
+            title="Monthly Budget Allocation & Target Trend",
+            subtitle="Core, Non-Core, and Investment actuals vs rule target lines",
+            figure=build_budget_allocation_trend_figure(budget_snap.monthly_series, cid),
+            source_caption="Source: gold.forecast_budget_variance",
+        )
+        chart_panel(
+            title="Cashflow Activity Breakdown (Click Bar to Drill)",
+            subtitle="Operating, Investing, Financing & Internal Transfers (transfers excluded from P&L)",
+            figure=build_cashflow_activity_trend_figure(cashflow_snap.monthly_series, cid),
+            source_caption="Source: gold.cashflow_activity_summary",
+            on_point_click=_on_activity_click,
+        )
+
+    with ui.grid(columns=1).classes("lg:grid-cols-2 w-full gap-4"):
+        chart_panel(
+            title="Emergency Fund Reserve & Runway",
+            subtitle="Liquid reserve vs target and months of core expense coverage",
+            figure=build_emergency_runway_figure(budget_snap.monthly_series, cid),
+            source_caption="Source: gold.forecast_budget_variance",
+        )
+        chart_panel(
+            title="Monthly Budget & Cashflow Health Matrix",
+            subtitle="Overspend, underfunded investment, income volatility, and reconciliation flags",
+            figure=build_budget_health_heatmap_figure(
+                budget_snap.monthly_series, cashflow_snap.monthly_series
+            ),
+            source_caption="Source: gold.forecast_budget_variance + gold.cashflow_activity_summary",
+        )
+
+    if budget_snap.monthly_series:
+        with ui.card().classes("studio-card w-full p-5 rounded-xl gap-3"):
+            ui.label("Monthly Budget Variance Rollup (gold.forecast_budget_variance)").classes(
+                "text-sm font-semibold"
+            )
+            b_cols = [
+                TableColumn(name="ym", label="Month", field="ym", align="left"),
+                TableColumn(name="act_inc", label="Actual Inc", field="act_inc", align="right"),
+                TableColumn(name="bud_inc", label="Budget Inc", field="bud_inc", align="right"),
+                TableColumn(name="act_core", label="Core Actual", field="act_core", align="right"),
+                TableColumn(name="bud_core", label="Core Target", field="bud_core", align="right"),
+                TableColumn(name="act_nc", label="Non-Core", field="act_nc", align="right"),
+                TableColumn(name="act_inv", label="Invested", field="act_inv", align="right"),
+                TableColumn(name="buf", label="Buffer", field="buf", align="right"),
+                TableColumn(name="sav", label="Savings", field="sav", align="right"),
+                TableColumn(name="runway", label="Runway", field="runway", align="right"),
+            ]
+            b_rows = [
+                {
+                    "ym": p.year_month,
+                    "act_inc": format_currency(p.actual_income, cid),
+                    "bud_inc": format_currency(p.budget_income, cid),
+                    "act_core": format_currency(p.actual_core, cid),
+                    "bud_core": format_currency(p.budget_core, cid),
+                    "act_nc": format_currency(p.actual_non_core, cid),
+                    "act_inv": format_currency(p.actual_investment, cid),
+                    "buf": format_currency(p.budget_surplus_buffer, cid),
+                    "sav": format_currency(p.actual_savings, cid, signed=True),
+                    "runway": f"{p.runway_months:.1f} mos" if p.runway_months is not None else "—",
+                }
+                for p in reversed(budget_snap.monthly_series)
+            ]
+            bounded_data_table(b_cols, b_rows, row_key="ym")
+
+    if cashflow_snap.monthly_series:
+        with ui.card().classes("studio-card w-full p-5 rounded-xl gap-3"):
+            ui.label("Cashflow Activity Statement (gold.cashflow_activity_summary)").classes(
+                "text-sm font-semibold"
+            )
+            c_cols = [
+                TableColumn(name="ym", label="Month", field="ym", align="left"),
+                TableColumn(name="open", label="Opening", field="open", align="right"),
+                TableColumn(name="op", label="Operating", field="op", align="right"),
+                TableColumn(name="inv", label="Investing", field="inv", align="right"),
+                TableColumn(name="fin", label="Financing", field="fin", align="right"),
+                TableColumn(name="tr", label="Transfers", field="tr", align="right"),
+                TableColumn(name="calc", label="Calc Net", field="calc", align="right"),
+                TableColumn(name="close", label="Closing", field="close", align="right"),
+                TableColumn(name="unrec", label="Unreconciled", field="unrec", align="right"),
+            ]
+            c_rows = [
+                {
+                    "ym": p.year_month,
+                    "open": format_currency(p.opening_cash, cid),
+                    "op": format_currency(p.net_operating, cid),
+                    "inv": format_currency(p.net_investing, cid),
+                    "fin": format_currency(p.net_financing, cid),
+                    "tr": format_currency(p.net_transfers, cid),
+                    "calc": format_currency(p.calculated_net_cashflow, cid),
+                    "close": format_currency(p.closing_cash, cid),
+                    "unrec": format_currency(p.unreconciled_difference, cid),
+                }
+                for p in reversed(cashflow_snap.monthly_series)
+            ]
+            bounded_data_table(c_cols, c_rows, row_key="ym")
+
+    _transfer_drill_section()
+
+
+def _render_budget_cashflow_tab(
+    context: AppContext,
+    *,
+    cache: QueryCache | None = None,
+) -> None:
+    """Render Budget & Cashflow tab asynchronously without blocking NiceGUI event loop."""
+
+    def _fetch_sync() -> tuple[HouseholdBudgetSnapshot, HouseholdCashflowSnapshot]:
+        assert context.profile is not None
+        common: dict[str, Any] = {
+            "run_id": context.analytical_run_id,
+            "provenance": context.analytical_provenance or context.provenance,
+            "compatibility": context.compatibility,
+            "catalog_snapshot": context.catalog_snapshot,
+            "filters": context.filters,
+            "cache": cache,
+        }
+        return (
+            HouseholdAnalytics.budget_summary(context.profile, context.period_context, **common),
+            HouseholdAnalytics.cashflow_statement(
+                context.profile, context.period_context, **common
+            ),
+        )
+
+    try:
+        asyncio.get_running_loop()
+        has_loop = True
+    except RuntimeError:
+        has_loop = False
+
+    if not has_loop:
+        b_snap, c_snap = _fetch_sync()
+        _render_budget_cashflow_body(context, b_snap, c_snap)
+        return
+
+    body_slot = ui.column().classes("w-full gap-4")
+    with body_slot:
+        loading_state_card("Loading Budget Variance & Cashflow Activity...")
+
+    async def _load_async() -> None:
+        try:
+            b_snap, c_snap = await run.io_bound(_fetch_sync)
+        except Exception as exc:  # noqa: BLE001
+            body_slot.clear()
+            with body_slot:
+                error_state_panel(
+                    title="Failed to Load Budget & Cashflow Analytics",
+                    message="An error occurred while querying the read-only warehouse.",
+                    details=[str(exc)],
+                )
+            return
+        body_slot.clear()
+        with body_slot:
+            _render_budget_cashflow_body(context, b_snap, c_snap)
+
+    ui.timer(0.01, _load_async, once=True)
+
+
 def render_household_page(
     context: AppContext,
     *,
@@ -989,11 +1397,7 @@ def render_household_page(
                     _render_expense_tab(context, cache=cache)
             elif tab_key == "budget":
                 with budget_slot:
-                    empty_state_panel(
-                        title="Budget Variance & Cashflow Activity",
-                        message="FinancialRules income allocation targets, overspend alerts, and operating cashflow.",
-                        icon="track_changes",
-                    )
+                    _render_budget_cashflow_tab(context, cache=cache)
             elif tab_key == "transactions":
                 with tx_slot:
                     empty_state_panel(
