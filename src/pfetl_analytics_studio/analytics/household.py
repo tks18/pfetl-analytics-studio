@@ -16,6 +16,14 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any
 
+from pfetl_analytics_studio.analytics.household_budget_cashflow_queries import (
+    build_budget_kpis,
+    build_cashflow_kpis,
+    load_rules_budget_overlay,
+    query_budget_variance_series,
+    query_cashflow_activity_series,
+    query_transfer_transactions,
+)
 from pfetl_analytics_studio.analytics.household_expense_queries import (
     query_expense_account_mix,
     query_expense_category_breakdown,
@@ -30,12 +38,15 @@ from pfetl_analytics_studio.analytics.household_models import (
     ExpenseCategoryRow,
     ExpenseGroupRow,
     ExpenseTransactionPage,
+    HouseholdBudgetSnapshot,
+    HouseholdCashflowSnapshot,
     HouseholdExpenseSnapshot,
     HouseholdIncomeSnapshot,
     IncomeCategoryRow,
     IncomeGroupRow,
     IncomeTaxabilitySummary,
     IncomeTransactionPage,
+    TransferTransactionPage,
 )
 from pfetl_analytics_studio.analytics.household_queries import (
     query_income_account_mix_and_taxability,
@@ -1120,3 +1131,290 @@ class HouseholdAnalytics:
             (total_card, core_card, noncore_card, cash_card, real_card, fv_card),
             (nw_card, conc_card, acc_card),
         )
+
+    @classmethod
+    def budget_summary(
+        cls,
+        profile: PFETLProfile,
+        period_context: PeriodContext | None,
+        *,
+        run_id: str | None = None,
+        provenance: RunProvenance | None = None,
+        compatibility: CompatibilityReport | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        filters: FilterSet | None = None,
+        cache: QueryCache | None = None,
+    ) -> HouseholdBudgetSnapshot:
+        """Compute immutable Budget Variance snapshot from `gold.forecast_budget_variance`."""
+        currency_id = OverviewService.resolve_currency_id(profile, provenance)
+        run_health, has_success = OverviewService.load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=compatibility,
+        )
+        if not has_success:
+            return HouseholdBudgetSnapshot(
+                state="no_run",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                run_health=run_health,
+                diagnostics=("No completed PFETL run found in Control Plane.",),
+            )
+
+        duck_reader = DuckDBReader(profile)
+        wh_state = duck_reader.get_state()
+        if wh_state == WarehouseState.LOCKED:
+            return HouseholdBudgetSnapshot(
+                state="locked",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                run_health=run_health,
+                diagnostics=("PFETL pipeline.lock is active on DuckDB.",),
+            )
+        if (
+            wh_state != WarehouseState.AVAILABLE
+            or period_context is None
+            or period_context.is_empty
+        ):
+            return HouseholdBudgetSnapshot(
+                state="empty",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                run_health=run_health,
+                diagnostics=("DuckDB warehouse or period boundaries are unavailable.",),
+            )
+
+        assert period_context.start_date is not None and period_context.end_date is not None
+        active_filters = filters or FilterSet()
+        eff_run_id = run_id or (provenance.run_id if provenance else "latest")
+        cache_key = build_cache_key(
+            profile.profile_id,
+            eff_run_id,
+            "household_budget_v1",
+            period=period_context,
+            filters=active_filters,
+        )
+        if cache is not None:
+            cached = cache.get(cache_key)
+            if isinstance(cached, HouseholdBudgetSnapshot):
+                return cached
+
+        start_dt = period_context.start_date
+        end_dt = period_context.end_date
+        chart_start, _ = chart_window_start(start_dt, end_dt)
+
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                all_series = query_budget_variance_series(session_reader, chart_start, end_dt)
+                run_health = enrich_meta_counts(session_reader, run_health)
+            finally:
+                reset_catalog_snapshot(tok)
+
+        period_rows = tuple(p for p in all_series if start_dt <= p.month_end <= end_dt)
+        if not period_rows:
+            return HouseholdBudgetSnapshot(
+                state="empty",
+                currency_id=currency_id,
+                period_label=period_context.label,
+                chart_window_label=f"{chart_start.isoformat()} to {end_dt.isoformat()}",
+                run_health=run_health,
+                diagnostics=(
+                    f"No rows in gold.forecast_budget_variance for {period_context.label}.",
+                ),
+            )
+
+        rules_overlay = load_rules_budget_overlay(profile, provenance)
+        kpis = build_budget_kpis(period_rows, rules_overlay)
+        latest = period_rows[-1]
+        snap = HouseholdBudgetSnapshot(
+            state="ready",
+            currency_id=currency_id,
+            as_of_date=latest.month_end,
+            period_label=period_context.label,
+            chart_window_label=f"{chart_start.isoformat()} to {end_dt.isoformat()}",
+            kpis=kpis,
+            latest_flags=latest.flags,
+            monthly_series=all_series,
+            rules_overlay_summary=rules_overlay,
+            total_actual_income=sum(p.actual_income or 0.0 for p in period_rows),
+            total_budget_income=sum(p.budget_income or 0.0 for p in period_rows),
+            total_actual_core=sum(p.actual_core or 0.0 for p in period_rows),
+            total_budget_core=sum(p.budget_core or 0.0 for p in period_rows),
+            total_actual_non_core=sum(p.actual_non_core or 0.0 for p in period_rows),
+            total_budget_non_core=sum(p.budget_non_core or 0.0 for p in period_rows),
+            total_actual_investment=sum(p.actual_investment or 0.0 for p in period_rows),
+            total_budget_investment=sum(p.budget_investment or 0.0 for p in period_rows),
+            total_budget_buffer=sum(p.budget_surplus_buffer or 0.0 for p in period_rows),
+            total_actual_savings=sum(p.actual_savings or 0.0 for p in period_rows),
+            run_health=run_health,
+        )
+        if cache is not None:
+            cache.set(cache_key, snap)
+        return snap
+
+    @classmethod
+    def cashflow_statement(
+        cls,
+        profile: PFETLProfile,
+        period_context: PeriodContext | None,
+        *,
+        run_id: str | None = None,
+        provenance: RunProvenance | None = None,
+        compatibility: CompatibilityReport | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        filters: FilterSet | None = None,
+        cache: QueryCache | None = None,
+    ) -> HouseholdCashflowSnapshot:
+        """Compute immutable Cashflow Activity Statement from `gold.cashflow_activity_summary`."""
+        currency_id = OverviewService.resolve_currency_id(profile, provenance)
+        run_health, has_success = OverviewService.load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=compatibility,
+        )
+        if not has_success:
+            return HouseholdCashflowSnapshot(
+                state="no_run",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                run_health=run_health,
+                diagnostics=("No completed PFETL run found in Control Plane.",),
+            )
+
+        duck_reader = DuckDBReader(profile)
+        wh_state = duck_reader.get_state()
+        if wh_state == WarehouseState.LOCKED:
+            return HouseholdCashflowSnapshot(
+                state="locked",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                run_health=run_health,
+                diagnostics=("PFETL pipeline.lock is active on DuckDB.",),
+            )
+        if (
+            wh_state != WarehouseState.AVAILABLE
+            or period_context is None
+            or period_context.is_empty
+        ):
+            return HouseholdCashflowSnapshot(
+                state="empty",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                run_health=run_health,
+                diagnostics=("DuckDB warehouse or period boundaries are unavailable.",),
+            )
+
+        assert period_context.start_date is not None and period_context.end_date is not None
+        active_filters = filters or FilterSet()
+        eff_run_id = run_id or (provenance.run_id if provenance else "latest")
+        cache_key = build_cache_key(
+            profile.profile_id,
+            eff_run_id,
+            "household_cashflow_v1",
+            period=period_context,
+            filters=active_filters,
+        )
+        if cache is not None:
+            cached = cache.get(cache_key)
+            if isinstance(cached, HouseholdCashflowSnapshot):
+                return cached
+
+        start_dt = period_context.start_date
+        end_dt = period_context.end_date
+        chart_start, _ = chart_window_start(start_dt, end_dt)
+
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                all_series = query_cashflow_activity_series(session_reader, chart_start, end_dt)
+                run_health = enrich_meta_counts(session_reader, run_health)
+            finally:
+                reset_catalog_snapshot(tok)
+
+        period_rows = tuple(p for p in all_series if start_dt <= p.month_end <= end_dt)
+        if not period_rows:
+            return HouseholdCashflowSnapshot(
+                state="empty",
+                currency_id=currency_id,
+                period_label=period_context.label,
+                chart_window_label=f"{chart_start.isoformat()} to {end_dt.isoformat()}",
+                run_health=run_health,
+                diagnostics=(
+                    f"No rows in gold.cashflow_activity_summary for {period_context.label}.",
+                ),
+            )
+
+        kpis = build_cashflow_kpis(period_rows)
+        opening_cash = period_rows[0].opening_cash
+        closing_cash = period_rows[-1].closing_cash
+        net_op = sum(p.net_operating for p in period_rows)
+        net_inv = sum(p.net_investing for p in period_rows)
+        net_fin = sum(p.net_financing for p in period_rows)
+        net_tr = sum(p.net_transfers for p in period_rows)
+        calc_net = sum(p.calculated_net_cashflow for p in period_rows)
+        act_chg = closing_cash - opening_cash
+        unrec = sum(p.unreconciled_difference for p in period_rows)
+        is_rec = all(p.is_reconciled for p in period_rows) and abs(unrec) < 0.01
+
+        snap = HouseholdCashflowSnapshot(
+            state="ready",
+            currency_id=currency_id,
+            as_of_date=period_rows[-1].month_end,
+            period_label=period_context.label,
+            chart_window_label=f"{chart_start.isoformat()} to {end_dt.isoformat()}",
+            kpis=kpis,
+            monthly_series=all_series,
+            opening_cash=opening_cash,
+            closing_cash=closing_cash,
+            net_operating=net_op,
+            net_investing=net_inv,
+            net_financing=net_fin,
+            net_transfers=net_tr,
+            calculated_net_cashflow=calc_net,
+            actual_cash_change=act_chg,
+            unreconciled_difference=unrec,
+            is_reconciled=is_rec,
+            run_health=run_health,
+        )
+        if cache is not None:
+            cache.set(cache_key, snap)
+        return snap
+
+    @classmethod
+    def transfer_transactions(
+        cls,
+        profile: PFETLProfile,
+        period_context: PeriodContext | None,
+        *,
+        activity_filter: str | None = None,
+        search: str | None = None,
+        page: int = 1,
+        page_size: int = 50,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ) -> TransferTransactionPage:
+        """Query Silver transfer transactions for cashflow activity drill."""
+        duck_reader = DuckDBReader(profile)
+        if (
+            duck_reader.get_state() != WarehouseState.AVAILABLE
+            or period_context is None
+            or period_context.is_empty
+        ):
+            return TransferTransactionPage(page=page, page_size=page_size)
+        assert period_context.start_date is not None and period_context.end_date is not None
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                return query_transfer_transactions(
+                    session_reader,
+                    period_context.start_date,
+                    period_context.end_date,
+                    activity_filter=activity_filter,
+                    search=search,
+                    page=page,
+                    page_size=page_size,
+                )
+            finally:
+                reset_catalog_snapshot(tok)

@@ -285,3 +285,167 @@ class HouseholdExpenseSnapshot(BaseModel):
     non_cash_spend: float = 0.0
     run_health: OverviewRunHealth = OverviewRunHealth()
     diagnostics: tuple[str, ...] = ()
+
+
+class BudgetHealthFlags(BaseModel):
+    """Canonical Gold budget health and overspend/underfunded flags."""
+
+    model_config = ConfigDict(frozen=True)
+
+    is_core_overspent: bool | None = None
+    is_non_core_overspent: bool | None = None
+    is_investment_underfunded: bool | None = None
+    is_income_volatile: bool | None = None
+    is_budget_healthy: bool | None = None
+
+
+class BudgetMonthlyPoint(BaseModel):
+    """Single monthly row from `gold.forecast_budget_variance`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    month_end: date
+    year_month: str
+    actual_income: float | None = None
+    budget_income: float | None = None
+    income_variance: float | None = None
+    actual_core: float | None = None
+    budget_core: float | None = None
+    core_variance: float | None = None
+    actual_non_core: float | None = None
+    budget_non_core: float | None = None
+    non_core_variance: float | None = None
+    actual_investment: float | None = None
+    budget_investment: float | None = None
+    investment_variance: float | None = None
+    investment_deployed: float | None = None
+    investment_redeemed: float | None = None
+    budget_surplus_buffer: float | None = None
+    actual_savings: float | None = None
+    rule_core_pct: float | None = None
+    rule_non_core_pct: float | None = None
+    rule_investment_pct: float | None = None
+    rule_buffer_pct: float | None = None
+    emergency_target: float | None = None
+    emergency_actual: float | None = None
+    emergency_gap: float | None = None
+    runway_months: float | None = None
+    target_runway_months: float | None = None
+    flags: BudgetHealthFlags = BudgetHealthFlags()
+
+
+class HouseholdBudgetSnapshot(BaseModel):
+    """Complete immutable Budget Variance snapshot consumed by Household."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    as_of_date: date | None = None
+    period_label: str = ""
+    chart_window_label: str = ""
+    kpis: tuple[OverviewKPI, ...] = ()
+    latest_flags: BudgetHealthFlags = BudgetHealthFlags()
+    monthly_series: tuple[BudgetMonthlyPoint, ...] = ()
+    rules_overlay_summary: str | None = None
+    total_actual_income: float = 0.0
+    total_budget_income: float = 0.0
+    total_actual_core: float = 0.0
+    total_budget_core: float = 0.0
+    total_actual_non_core: float = 0.0
+    total_budget_non_core: float = 0.0
+    total_actual_investment: float = 0.0
+    total_budget_investment: float = 0.0
+    total_budget_buffer: float = 0.0
+    total_actual_savings: float = 0.0
+    run_health: OverviewRunHealth = OverviewRunHealth()
+    diagnostics: tuple[str, ...] = ()
+
+
+class CashflowActivityPoint(BaseModel):
+    """Single monthly row from `gold.cashflow_activity_summary`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    month_end: date
+    year_month: str
+    opening_cash: float = 0.0
+    closing_cash: float = 0.0
+    operating_inflows: float | None = None
+    operating_outflows: float | None = None
+    net_operating: float = 0.0
+    investing_inflows: float | None = None
+    investing_outflows: float | None = None
+    net_investing: float = 0.0
+    financing_inflows: float | None = None
+    financing_outflows: float | None = None
+    net_financing: float = 0.0
+    transfer_inflows: float | None = None
+    transfer_outflows: float | None = None
+    net_transfers: float = 0.0
+    total_cash_inflow: float | None = None
+    total_cash_outflow: float | None = None
+    non_cash_adjustments: float | None = None
+    calculated_net_cashflow: float = 0.0
+    actual_cash_change: float = 0.0
+    unreconciled_difference: float = 0.0
+    is_reconciled: bool = True
+
+
+class TransferTransactionRow(BaseModel):
+    """Single Silver transfer transaction row for cashflow activity drill."""
+
+    model_config = ConfigDict(frozen=True)
+
+    uid: str
+    tx_date: date
+    adjusted_date: date | None = None
+    asset_id: str
+    asset_name: str
+    to_asset_id: str | None = None
+    to_asset_name: str | None = None
+    transfer_type: str
+    transaction_type: str
+    activity_bucket: str
+    amount: float
+    currency_id: str
+    paid: str
+    description: str
+
+
+class TransferTransactionPage(BaseModel):
+    """Bounded, paginated Silver transfer transaction drill result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rows: tuple[TransferTransactionRow, ...] = ()
+    total_count: int = 0
+    total_base_amount: float = 0.0
+    page: int = 1
+    page_size: int = 50
+
+
+class HouseholdCashflowSnapshot(BaseModel):
+    """Complete immutable Cashflow Activity Statement snapshot consumed by Household."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    as_of_date: date | None = None
+    period_label: str = ""
+    chart_window_label: str = ""
+    kpis: tuple[OverviewKPI, ...] = ()
+    monthly_series: tuple[CashflowActivityPoint, ...] = ()
+    opening_cash: float = 0.0
+    closing_cash: float = 0.0
+    net_operating: float = 0.0
+    net_investing: float = 0.0
+    net_financing: float = 0.0
+    net_transfers: float = 0.0
+    calculated_net_cashflow: float = 0.0
+    actual_cash_change: float = 0.0
+    unreconciled_difference: float = 0.0
+    is_reconciled: bool = True
+    run_health: OverviewRunHealth = OverviewRunHealth()
+    diagnostics: tuple[str, ...] = ()
