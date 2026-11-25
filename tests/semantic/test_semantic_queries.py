@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
+import shutil
 from datetime import date
 from pathlib import Path
-import shutil
 
 import duckdb
 import pytest
@@ -23,6 +23,7 @@ from pfetl_analytics_studio.semantic import (
     ComparisonMode,
     DatasetRegistry,
     DatasetSpec,
+    FilterCatalogResolver,
     FilterField,
     FilterOperator,
     FilterSet,
@@ -35,6 +36,7 @@ from pfetl_analytics_studio.semantic import (
     PeriodRequest,
     PeriodResolver,
     compile_filter_clause,
+    format_comparison_label,
     format_period_label,
 )
 from tests.fixtures.build_fixture_databases import (
@@ -420,3 +422,71 @@ def test_query_cache_isolation_invalidation_and_lru(
     removed = cache.invalidate_run("prof1", "run-002")
     assert removed == 2
     assert cache.stats().entries == 0
+
+
+def test_period_catalog_options_and_overview_metrics(
+    semantic_profile: PFETLProfile,
+) -> None:
+    """Verify PeriodResolver enumerates descending months/FYs and Overview metrics register."""
+    opts = PeriodResolver(DuckDBReader(semantic_profile)).list_available_options()
+    assert len(opts.months) >= 12
+    assert opts.months[0][0] == "2026-11"
+    assert "(2026-11)" in opts.months[0][1]
+    assert "2026-27" in opts.financial_years
+    assert opts.default_selected_month == "2026-10"
+    assert opts.default_custom_start == date(2026, 10, 1)
+    assert opts.default_custom_end == date(2026, 10, 31)
+
+    for metric_id in (
+        "net_savings_flow",
+        "market_return_flow",
+        "liquidity_ratio_months",
+        "portfolio_bm_xirr",
+        "portfolio_effective_holdings",
+        "fire_gap",
+    ):
+        assert DEFAULT_METRICS.has(metric_id)
+
+
+def test_extended_period_presets_comparison_modes_and_filter_catalog(
+    semantic_profile: PFETLProfile,
+) -> None:
+    """Verify MTD, prior completed FY, Rolling 36M, FY comparison strategies, and FilterCatalogResolver."""
+    reader = DuckDBReader(semantic_profile)
+    resolver = PeriodResolver(reader)
+
+    mtd = resolver.resolve(PeriodRequest(preset=PeriodPreset.CURRENT_MONTH_MTD))
+    assert mtd.start_date == date(2026, 11, 1)
+    assert mtd.end_date == date(2026, 11, 24)
+
+    prev_fy = resolver.resolve(PeriodRequest(preset=PeriodPreset.LAST_COMPLETED_FY))
+    assert prev_fy.start_date == date(2025, 4, 1)
+    assert prev_fy.end_date == date(2026, 3, 31)
+    assert prev_fy.financial_year == "2025-26"
+
+    r36 = resolver.resolve(PeriodRequest(preset=PeriodPreset.ROLLING_36M))
+    assert r36.is_empty is False
+
+    fy_base = resolver.resolve(
+        PeriodRequest(
+            preset=PeriodPreset.LATEST_COMPLETE_MONTH,
+            comparison_mode=ComparisonMode.FY_START_MONTH,
+        )
+    )
+    assert fy_base.comparison is not None
+    assert fy_base.comparison.start_date == date(2026, 4, 1)
+    assert fy_base.comparison.end_date == date(2026, 4, 30)
+    assert format_comparison_label(fy_base.comparison) is not None
+
+    prior_fy_comp = resolver.resolve(
+        PeriodRequest(
+            preset=PeriodPreset.FYTD,
+            comparison_mode=ComparisonMode.PRIOR_COMPLETED_FY,
+        )
+    )
+    assert prior_fy_comp.comparison is not None
+    assert prior_fy_comp.comparison.financial_year == "2025-26"
+
+    f_opts = FilterCatalogResolver(reader).list_available_options()
+    assert "2026-27" in f_opts.options_for(FilterField.FY)
+    assert f_opts.options_for(FilterField.IS_CORE_EXPENSE) == ("true", "false")

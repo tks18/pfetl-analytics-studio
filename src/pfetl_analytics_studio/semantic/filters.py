@@ -22,6 +22,8 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, field_validator, model_validator
 
+from pfetl_analytics_studio.semantic.periods import CalendarQueryPort
+
 FilterScalar = str | int | float | bool | date
 
 _COLUMN_IDENTIFIER_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -331,3 +333,81 @@ def compile_filter_clause(
             params.extend(spec.value)
 
     return " AND ".join(clauses), params
+
+
+class FilterCatalogOptions(BaseModel):
+    """Distinct filterable domain values discovered read-only from PFETL Gold/Silver tables."""
+
+    model_config = ConfigDict(frozen=True)
+
+    values_by_field: dict[FilterField, tuple[str, ...]] = {}
+
+    def options_for(self, field: FilterField) -> tuple[str, ...]:
+        """Return discovered distinct values for a `FilterField`, or empty tuple."""
+        return self.values_by_field.get(field, ())
+
+
+_FILTER_SOURCE_QUERIES: tuple[tuple[FilterField, str, str, str, bool], ...] = (
+    (FilterField.FY, "silver", "dim_calendar", "Financial_Year", True),
+    (FilterField.INCOME_GROUP, "gold", "cashflow_income_breakdown", "CATEGORY_GROUPS", False),
+    (FilterField.INCOME_CATEGORY, "gold", "cashflow_income_breakdown", "CATEGORY_NAME", False),
+    (FilterField.EXPENSE_GROUP, "gold", "cashflow_expense_breakdown", "CATEGORY_GROUPS", False),
+    (FilterField.EXPENSE_CATEGORY, "gold", "cashflow_expense_breakdown", "CATEGORY_NAME", False),
+    (FilterField.INSTRUMENT_CLASS, "gold", "investment_by_class", "INSTRUMENT_CLASS", False),
+    (FilterField.SECTOR, "gold", "investment_by_sector", "SECTOR", False),
+    (FilterField.CURRENCY_ID, "gold", "investment_by_currency", "CURRENCY_ID", False),
+)
+
+
+class FilterCatalogResolver:
+    """Queries safe distinct filter option lists from existing PFETL warehouse surfaces."""
+
+    def __init__(self, query_port: CalendarQueryPort) -> None:
+        """Initialize filter catalog resolver bound to a read-only SQL port.
+
+        Parameters
+        ----------
+        query_port : CalendarQueryPort
+            Read-only query adapter supporting `table_exists`, `fetch_one`, and `fetch_all`.
+        """
+        self.query_port = query_port
+
+    def _column_exists(self, schema: str, table: str, column: str) -> bool:
+        """Verify table & column existence cleanly before querying distinct values."""
+        if not self.query_port.table_exists(schema, table):
+            return False
+        hit = self.query_port.fetch_one(
+            """
+            SELECT 1 AS ok
+            FROM information_schema.columns
+            WHERE table_schema = ? AND table_name = ? AND column_name = ?
+            LIMIT 1;
+            """,
+            (schema, table, column),
+        )
+        return hit is not None
+
+    def list_available_options(self) -> FilterCatalogOptions:
+        """Enumerate sorted distinct values per whitelisted `FilterField` safely."""
+        values: dict[FilterField, tuple[str, ...]] = {
+            FilterField.IS_CORE_EXPENSE: ("true", "false"),
+            FilterField.IS_ACTIVE_INCOME: ("true", "false"),
+            FilterField.IS_PASSIVE_INCOME: ("true", "false"),
+        }
+        for field, schema, table, col, desc in _FILTER_SOURCE_QUERIES:
+            if not self._column_exists(schema, table, col):
+                continue
+            order = "DESC" if desc else "ASC"
+            rows = self.query_port.fetch_all(
+                f"""
+                SELECT DISTINCT CAST("{col}" AS VARCHAR) AS val
+                FROM "{schema}"."{table}"
+                WHERE "{col}" IS NOT NULL AND TRIM(CAST("{col}" AS VARCHAR)) <> ''
+                ORDER BY val {order}
+                LIMIT 200;
+                """
+            )
+            extracted = tuple(str(r["val"]) for r in rows if r.get("val") is not None)
+            if extracted:
+                values[field] = extracted
+        return FilterCatalogOptions(values_by_field=values)

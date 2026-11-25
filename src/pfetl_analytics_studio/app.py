@@ -38,12 +38,19 @@ from pfetl_analytics_studio.profile import (
     ProfileLoadErrorCode,
     ProfileLoadResult,
 )
-from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest, format_period_label
+from pfetl_analytics_studio.semantic import (
+    FilterField,
+    FilterSet,
+    FilterSpec,
+    PeriodRequest,
+    format_period_label,
+)
 from pfetl_analytics_studio.state import RecentProfileRecord, StudioStateStore
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     StudioColor,
     apply_studio_theme,
+    filter_chips_bar,
     locked_warehouse_banner,
     period_selector,
     status_badge,
@@ -507,33 +514,47 @@ def _compat_tone(status: CompatibilityStatus) -> BadgeTone:
 
 
 def _render_navigation_drawer(active_route_id: str, ctx: AppContext) -> ui.left_drawer:
-    """Render persistent collapsible left sidebar matching PFETL Core `#101624`."""
-    drawer = ui.left_drawer(value=True, bordered=True).classes("p-3 justify-between")
+    """Render sleek left sidebar with categorized routes and subtle active accent bar."""
+    drawer = ui.left_drawer(value=True, bordered=True).classes("p-3.5 justify-between")
     with drawer:
         with ui.column().classes("w-full gap-1"):
-            ui.label("NAVIGATION").classes("text-xs font-semibold px-3 py-1 tracking-wider").style(
-                f"color: {StudioColor.MUTED}"
+            ui.label("WORKSPACE").classes("text-xs font-semibold px-3 py-1.5 tracking-wider").style(
+                f"color: {StudioColor.DIM}"
             )
-            for route in NAV_ROUTES:
+            for idx, route in enumerate(NAV_ROUTES):
+                if idx == 6:
+                    ui.element("div").classes("w-full my-2").style(
+                        "height: 1px; background-color: rgba(255, 255, 255, 0.08);"
+                    )
+                    ui.label("OPERATIONS & DATA").classes(
+                        "text-xs font-semibold px-3 py-1 tracking-wider"
+                    ).style(f"color: {StudioColor.DIM}")
+
                 is_active = route.route_id == active_route_id
-                bg = StudioColor.ACCENT if is_active else "transparent"
-                fg = "#FFFFFF" if is_active else StudioColor.TEXT
+                bg = "rgba(59, 130, 246, 0.16)" if is_active else "transparent"
+                fg = StudioColor.TEXT if is_active else StudioColor.MUTED
+                border_left = (
+                    f"3px solid {StudioColor.ACC_HOV}" if is_active else "3px solid transparent"
+                )
                 with (
                     ui.row()
-                    .classes("w-full items-center gap-3 px-3 py-2 rounded-md cursor-pointer")
-                    .style(f"background-color: {bg}; color: {fg}")
+                    .classes("w-full items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer")
+                    .style(f"background-color: {bg}; color: {fg}; border-left: {border_left};")
                     .on("click", lambda _, p=route.path: ui.navigate.to(p))
                 ):
-                    ui.icon(route.icon, size="xs")
-                    ui.label(route.label).classes("text-sm font-medium")
+                    icon_color = StudioColor.ACC_HOV if is_active else StudioColor.DIM
+                    ui.icon(route.icon, size="18px").style(f"color: {icon_color}")
+                    ui.label(route.label).classes(
+                        "text-sm font-semibold" if is_active else "text-sm font-medium"
+                    )
 
         with (
             ui.column()
             .classes("w-full gap-2 pt-3 border-t")
-            .style(f"border-color: {StudioColor.BORDER}")
+            .style("border-color: rgba(255, 255, 255, 0.08)")
         ):
             with ui.row().classes("items-center justify-between w-full px-1"):
-                status_badge("READ-ONLY", tone=BadgeTone.SUCCESS, outline=True)
+                status_badge("READ-ONLY", tone=BadgeTone.SUCCESS)
                 ui.label(f"v{__version__}").classes("text-xs font-mono").style(
                     f"color: {StudioColor.MUTED}"
                 )
@@ -545,31 +566,96 @@ def _render_navigation_drawer(active_route_id: str, ctx: AppContext) -> ui.left_
     return drawer
 
 
+def _open_profile_diagnostics_dialog(session: AppSessionManager, ctx: AppContext) -> None:
+    """Open crisp modal showing active profile file paths, 82-surface counts, and recent switcher."""
+    if ctx.profile is None:
+        return
+    dialog = ui.dialog()
+    with dialog, ui.card().classes("studio-card w-[760px] max-w-full p-6 rounded-xl gap-4"):
+        with ui.row().classes("w-full items-center justify-between"):
+            with ui.row().classes("items-center gap-2.5"):
+                ui.icon("verified_user", size="sm").style(f"color: {StudioColor.ACCENT}")
+                ui.label("Profile Paths & Upstream Surface Coverage").classes(
+                    "text-lg font-semibold"
+                )
+            ui.button(icon="close", on_click=dialog.close).props("flat round dense color=white")
+
+        with ui.grid(columns=2).classes("w-full gap-3 text-xs"):
+            for title, val in (
+                ("Settings TOML", str(ctx.profile.settings_path)),
+                ("FinancialRules TOML", str(ctx.profile.rules_path)),
+                ("DuckDB Warehouse", str(ctx.profile.duckdb_path)),
+                ("Control Plane SQLite", str(ctx.profile.control_plane_path)),
+            ):
+                with ui.column().classes("gap-0"):
+                    ui.label(title).style(f"color: {StudioColor.MUTED}")
+                    ui.label(val).classes("font-mono break-all")
+
+        if ctx.compatibility is not None:
+            with ui.grid(columns=5).classes("w-full gap-2 text-center"):
+                for label, layer, target in (
+                    ("Bronze", SurfaceLayer.BRONZE, 20),
+                    ("Silver", SurfaceLayer.SILVER, 24),
+                    ("Gold", SurfaceLayer.GOLD, 22),
+                    ("Meta", SurfaceLayer.META, 6),
+                    ("Control Plane", SurfaceLayer.CONTROL_PLANE, 10),
+                ):
+                    found = ctx.compatibility.layer_counts.get(layer, 0)
+                    with (
+                        ui.column()
+                        .classes("items-center p-2 rounded-lg border")
+                        .style(
+                            f"background-color: {StudioColor.SIDEBAR}; "
+                            f"border-color: rgba(148, 163, 184, 0.16);"
+                        )
+                    ):
+                        ui.label(label).classes("text-xs").style(f"color: {StudioColor.MUTED}")
+                        ui.label(f"{found}/{target}").classes("text-sm font-bold tabular-nums")
+
+        _render_recent_profiles_card(session)
+    dialog.open()
+
+
 def _render_shell_header(
     session: AppSessionManager,
     ctx: AppContext,
     drawer: ui.left_drawer,
     active_path: str,
 ) -> None:
-    """Render persistent top bar with profile/run/period controls and health badges."""
-    with ui.header().classes("items-center justify-between px-4 py-2 gap-3 flex-wrap"):
-        with ui.row().classes("items-center gap-2"):
+    """Render sleek single-row top bar with profile switcher, run selector, and health pills."""
+    with ui.header().classes("items-center justify-between px-4 py-2 gap-3 no-wrap"):
+        with ui.row().classes("items-center gap-2.5 min-w-0 no-wrap"):
             ui.button(icon="menu", on_click=drawer.toggle).props("flat round dense color=white")
             ui.icon("analytics", size="sm").style(f"color: {StudioColor.ACCENT}")
-            ui.label("PFETL Analytics Studio").classes("text-base font-bold tracking-tight")
+            ui.label("PFETL Analytics Studio").classes(
+                "text-sm font-bold tracking-tight whitespace-nowrap"
+            )
 
             if ctx.profile is not None:
-                status_badge(ctx.profile.label, tone=BadgeTone.INFO, outline=True)
+                ui.button(
+                    ctx.profile.label,
+                    icon="swap_horiz",
+                    on_click=lambda: _open_profile_picker_dialog(session, ctx, active_path),
+                ).props("outline dense size=sm color=primary no-caps").classes("px-2.5 text-xs")
+                if ctx.compatibility is not None:
+                    cov_text = (
+                        f"{ctx.compatibility.total_discovered}/"
+                        f"{ctx.compatibility.total_expected} Surfaces"
+                    )
+                    ui.button(
+                        cov_text,
+                        icon="verified_user",
+                        on_click=lambda: _open_profile_diagnostics_dialog(session, ctx),
+                    ).props("flat dense size=sm no-caps color=positive").classes("text-xs px-2")
             else:
                 status_badge("No Profile", tone=BadgeTone.WARNING, outline=True)
+                ui.button(
+                    "Open Profile",
+                    icon="folder_open",
+                    on_click=lambda: _open_profile_picker_dialog(session, ctx, active_path),
+                ).props("outline dense size=sm color=primary no-caps")
 
-            ui.button(
-                "Open Profile" if ctx.profile is None else "Switch Profile",
-                icon="folder_open",
-                on_click=lambda: _open_profile_picker_dialog(session, ctx, active_path),
-            ).props("outline dense size=sm color=primary no-caps")
-
-        with ui.row().classes("items-center gap-3 flex-wrap"):
+        with ui.row().classes("items-center gap-2 shrink-0 no-wrap"):
             if ctx.profile is not None and ctx.available_runs:
                 run_opts: dict[str, str] = {_LATEST_SENTINEL: "Latest Successful Run"}
                 for opt in ctx.available_runs:
@@ -591,48 +677,77 @@ def _render_shell_header(
                     value=current_run_val,
                     label="PFETL Run",
                     on_change=_on_run_change,
-                ).props("dense outlined dark options-dark").classes("min-w-[205px]")
+                ).props("dense filled dark options-dark").classes("studio-field min-w-[205px]")
 
+            if ctx.provenance and ctx.provenance.application_version:
+                status_badge(
+                    f"Core {ctx.provenance.application_version}",
+                    tone=BadgeTone.NEUTRAL,
+                )
+            if ctx.drift is not None:
+                status_badge(ctx.drift.status.value, tone=_drift_tone(ctx.drift.status))
+            if ctx.compatibility is not None:
+                status_badge(
+                    ctx.compatibility.status.value,
+                    tone=_compat_tone(ctx.compatibility.status),
+                )
             if ctx.profile is not None:
 
-                def _on_period_change(preset: PeriodPreset) -> None:
-                    session.set_period(PeriodRequest(preset=preset))
+                def _on_refresh() -> None:
+                    session.refresh()
                     ui.navigate.to(active_path)
 
-                badge_text = (
-                    format_period_label(ctx.period_context)
-                    if ctx.period_context is not None
-                    else None
-                )
-                period_selector(
-                    current_preset=ctx.period_request.preset,
-                    on_preset_change=_on_period_change,
-                    resolved_badge=badge_text,
+                ui.button(icon="refresh", on_click=_on_refresh).props(
+                    "flat round dense color=white"
                 )
 
-            with ui.row().classes("items-center gap-2"):
-                if ctx.provenance and ctx.provenance.application_version:
-                    status_badge(
-                        f"Core {ctx.provenance.application_version}",
-                        tone=BadgeTone.NEUTRAL,
-                        outline=True,
-                    )
-                if ctx.drift is not None:
-                    status_badge(ctx.drift.status.value, tone=_drift_tone(ctx.drift.status))
-                if ctx.compatibility is not None:
-                    status_badge(
-                        ctx.compatibility.status.value,
-                        tone=_compat_tone(ctx.compatibility.status),
-                    )
-                if ctx.profile is not None:
 
-                    def _on_refresh() -> None:
-                        session.refresh()
-                        ui.navigate.to(active_path)
+def _render_analytical_toolbar(
+    session: AppSessionManager,
+    ctx: AppContext,
+    active_path: str,
+) -> None:
+    """Render interactive semantic period controls and global domain filter bar."""
+    if ctx.profile is None:
+        return
 
-                    ui.button(icon="refresh", on_click=_on_refresh).props(
-                        "flat round dense color=white"
-                    )
+    def _on_period_request(req: PeriodRequest) -> None:
+        session.set_period(req)
+        ui.navigate.to(active_path)
+
+    def _on_add_filter(spec: FilterSpec) -> None:
+        updated = ctx.filters.without_field(spec.field).with_filter(spec)
+        session.set_filters(updated)
+        ui.navigate.to(active_path)
+
+    def _on_remove_filter(field: FilterField) -> None:
+        session.set_filters(ctx.filters.without_field(field))
+        ui.navigate.to(active_path)
+
+    def _on_clear_filters() -> None:
+        session.set_filters(FilterSet())
+        ui.navigate.to(active_path)
+
+    badge_text = format_period_label(ctx.period_context) if ctx.period_context else None
+    avail_fys = ctx.period_options.financial_years if ctx.period_options is not None else ()
+
+    with ui.card().classes("studio-toolbar w-full px-4 py-3.5 rounded-2xl gap-3"):
+        period_selector(
+            current_request=ctx.period_request,
+            on_request_change=_on_period_request,
+            period_options=ctx.period_options,
+            period_context=ctx.period_context,
+            resolved_badge=badge_text,
+        )
+        filter_chips_bar(
+            ctx.filters,
+            on_remove=_on_remove_filter,
+            on_clear=_on_clear_filters,
+            on_add=_on_add_filter,
+            available_fys=avail_fys,
+            filter_options=ctx.filter_options,
+            scope_hint="Filters dynamically slice Overview breakups, FY Tax, and drill views",
+        )
 
 
 def _load_recent_profiles() -> list[RecentProfileRecord]:
@@ -653,7 +768,7 @@ def _render_recent_profiles_card(session: AppSessionManager) -> None:
         Active application session manager.
     """
     recent = _load_recent_profiles()
-    with ui.card().classes("studio-card w-full p-5 rounded-lg h-full gap-2"):
+    with ui.card().classes("studio-card w-full p-5 rounded-xl h-full gap-2"):
         ui.label("Recent PFETL Profiles").classes("text-base font-semibold")
         if not recent:
             ui.label("No recent profiles recorded in Studio state.").classes(
@@ -692,7 +807,7 @@ def _render_recent_profiles_card(session: AppSessionManager) -> None:
 
 
 def _render_overview_context_cards(session: AppSessionManager, ctx: AppContext) -> None:
-    """Render active profile diagnostics, upstream surface coverage, and profile switcher.
+    """Render onboarding profile picker & recent profiles when no profile is active.
 
     Parameters
     ----------
@@ -701,79 +816,29 @@ def _render_overview_context_cards(session: AppSessionManager, ctx: AppContext) 
     ctx : AppContext
         Resolved runtime application context.
     """
-    if ctx.profile is None:
-        with ui.grid(columns=1).classes("lg:grid-cols-12 w-full gap-4 items-stretch"):
-            with ui.card().classes("studio-card w-full p-5 rounded-lg gap-4 h-full lg:col-span-7"):
-                with ui.row().classes("items-center gap-3"):
-                    with (
-                        ui.element("div")
-                        .classes("w-9 h-9 rounded-lg flex items-center justify-center shrink-0")
-                        .style(
-                            f"background-color: {StudioColor.SURFACE_ALT}; "
-                            f"border: 1px solid {StudioColor.BORDER};"
-                        )
-                    ):
-                        ui.icon("folder_open", size="20px").style(f"color: {StudioColor.ACCENT}")
-                    with ui.column().classes("gap-0"):
-                        ui.label("Connect PFETL Profile").classes("text-base font-semibold")
-                        ui.label(
-                            "Select Settings TOML and FinancialRules TOML files to inspect."
-                        ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
-                _render_profile_picker_form(session, ctx, redirect_path="/overview")
-            with ui.column().classes("w-full h-full lg:col-span-5"):
-                _render_recent_profiles_card(session)
+    if ctx.profile is not None:
         return
 
-    with ui.card().classes("studio-card w-full p-5 rounded-lg"):
-        with ui.row().classes("items-center justify-between w-full"):
-            ui.label("Active Profile & Upstream Surface Health").classes("text-base font-semibold")
-            with ui.row().classes("items-center gap-2"):
-                if ctx.compatibility is not None:
-                    status_badge(
-                        f"{ctx.compatibility.total_discovered}/{ctx.compatibility.total_expected} "
-                        "Surfaces",
-                        tone=_compat_tone(ctx.compatibility.status),
-                        outline=True,
+    with ui.grid(columns=1).classes("lg:grid-cols-12 w-full gap-4 items-stretch"):
+        with ui.card().classes("studio-card w-full p-5 rounded-xl gap-4 h-full lg:col-span-7"):
+            with ui.row().classes("items-center gap-3"):
+                with (
+                    ui.element("div")
+                    .classes("w-9 h-9 rounded-lg flex items-center justify-center shrink-0")
+                    .style(
+                        f"background-color: {StudioColor.SURFACE_ALT}; "
+                        f"border: 1px solid {StudioColor.BORDER};"
                     )
-                ui.button(
-                    "Change TOMLs",
-                    icon="edit",
-                    on_click=lambda: _open_profile_picker_dialog(session, ctx, "/overview"),
-                ).props("outline dense size=xs no-caps")
-
-        with ui.grid(columns=2).classes("w-full gap-3 text-xs mt-3"):
-            for title, val in (
-                ("Settings TOML", str(ctx.profile.settings_path)),
-                ("FinancialRules TOML", str(ctx.profile.rules_path)),
-                ("DuckDB Warehouse", str(ctx.profile.duckdb_path)),
-                ("Control Plane SQLite", str(ctx.profile.control_plane_path)),
-            ):
-                with ui.column().classes("gap-0"):
-                    ui.label(title).style(f"color: {StudioColor.MUTED}")
-                    ui.label(val).classes("font-mono break-all")
-
-        if ctx.compatibility is not None:
-            with ui.grid(columns=5).classes("w-full gap-2 text-center mt-4"):
-                for label, layer, target in (
-                    ("Bronze", SurfaceLayer.BRONZE, 20),
-                    ("Silver", SurfaceLayer.SILVER, 24),
-                    ("Gold", SurfaceLayer.GOLD, 22),
-                    ("Meta", SurfaceLayer.META, 6),
-                    ("Control Plane", SurfaceLayer.CONTROL_PLANE, 10),
                 ):
-                    found = ctx.compatibility.layer_counts.get(layer, 0)
-                    with (
-                        ui.column()
-                        .classes("items-center p-2 rounded border")
-                        .style(
-                            f"background-color: {StudioColor.SIDEBAR}; "
-                            f"border-color: {StudioColor.BORDER}"
-                        )
-                    ):
-                        ui.label(label).classes("text-xs").style(f"color: {StudioColor.MUTED}")
-                        ui.label(f"{found}/{target}").classes("text-sm font-bold")
-
-    _render_recent_profiles_card(session)
+                    ui.icon("folder_open", size="20px").style(f"color: {StudioColor.ACCENT}")
+                with ui.column().classes("gap-0"):
+                    ui.label("Connect PFETL Profile").classes("text-base font-semibold")
+                    ui.label(
+                        "Select Settings TOML and FinancialRules TOML files to inspect."
+                    ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
+            _render_profile_picker_form(session, ctx, redirect_path="/overview")
+        with ui.column().classes("w-full h-full lg:col-span-5"):
+            _render_recent_profiles_card(session)
 
 
 def create_app(profile: PFETLProfile | None = None) -> None:
@@ -796,12 +861,17 @@ def create_app(profile: PFETLProfile | None = None) -> None:
         drawer = _render_navigation_drawer(route.route_id, ctx)
         _render_shell_header(session, ctx, drawer, active_path)
 
-        with ui.column().classes("w-full max-w-7xl mx-auto p-6 gap-5"):
+        with ui.column().classes("w-full max-w-[1440px] mx-auto px-6 py-5 gap-4"):
             if ctx.is_warehouse_locked:
                 locked_warehouse_banner()
 
-            renderer = _PAGE_RENDERERS[route.route_id]
-            renderer(ctx)
+            _render_analytical_toolbar(session, ctx, active_path)
+
+            if route.route_id == "overview":
+                render_overview_page(ctx, cache=session.cache)
+            else:
+                renderer = _PAGE_RENDERERS[route.route_id]
+                renderer(ctx)
 
             if show_profile_cards:
                 _render_overview_context_cards(session, ctx)

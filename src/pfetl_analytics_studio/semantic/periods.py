@@ -26,32 +26,38 @@ class PeriodPreset(StrEnum):
     """Supported standardized analysis time horizons."""
 
     LATEST_COMPLETE_MONTH = "latest_complete_month"
+    CURRENT_MONTH_MTD = "current_month_mtd"
     SELECTED_MONTH = "selected_month"
     CALENDAR_QUARTER = "calendar_quarter"
     FY_QUARTER = "fy_quarter"
     CALENDAR_YTD = "calendar_ytd"
     FYTD = "fytd"
     SELECTED_FY = "selected_fy"
+    LAST_COMPLETED_FY = "last_completed_fy"
     ROLLING_3M = "rolling_3m"
     ROLLING_6M = "rolling_6m"
     ROLLING_12M = "rolling_12m"
     ROLLING_24M = "rolling_24m"
+    ROLLING_36M = "rolling_36m"
     SINCE_INCEPTION = "since_inception"
     CUSTOM = "custom"
 
 
 PRESET_LABELS: dict[PeriodPreset, str] = {
     PeriodPreset.LATEST_COMPLETE_MONTH: "Latest Complete Month",
+    PeriodPreset.CURRENT_MONTH_MTD: "Current Month (MTD)",
     PeriodPreset.SELECTED_MONTH: "Selected Month",
     PeriodPreset.CALENDAR_QUARTER: "Calendar Quarter",
     PeriodPreset.FY_QUARTER: "FY Quarter",
     PeriodPreset.CALENDAR_YTD: "Calendar YTD",
     PeriodPreset.FYTD: "FYTD",
     PeriodPreset.SELECTED_FY: "Selected Financial Year",
+    PeriodPreset.LAST_COMPLETED_FY: "Previous Financial Year",
     PeriodPreset.ROLLING_3M: "Rolling 3M",
     PeriodPreset.ROLLING_6M: "Rolling 6M",
     PeriodPreset.ROLLING_12M: "Rolling 12M",
     PeriodPreset.ROLLING_24M: "Rolling 24M",
+    PeriodPreset.ROLLING_36M: "Rolling 36M",
     PeriodPreset.SINCE_INCEPTION: "Since Inception",
     PeriodPreset.CUSTOM: "Custom Range",
 }
@@ -63,6 +69,8 @@ class ComparisonMode(StrEnum):
     NONE = "none"
     PREVIOUS_PERIOD = "previous_period"
     SAME_PERIOD_PREVIOUS_YEAR = "same_period_previous_year"
+    FY_START_MONTH = "fy_start_month"
+    PRIOR_COMPLETED_FY = "prior_completed_fy"
     CUSTOM = "custom"
 
 
@@ -155,6 +163,25 @@ class ComparisonPeriod(BaseModel):
     is_empty: bool = False
 
 
+class PeriodCatalogOptions(BaseModel):
+    """Selectable calendar options discovered read-only from `silver.dim_calendar`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    months: tuple[tuple[str, str], ...] = ()
+    financial_years: tuple[str, ...] = ()
+    calendar_quarters: tuple[str, ...] = ()
+    fy_quarters: tuple[str, ...] = ()
+    min_date: date | None = None
+    max_date: date | None = None
+    default_selected_month: str | None = None
+    default_financial_year: str | None = None
+    default_calendar_quarter: str | None = None
+    default_fy_quarter: str | None = None
+    default_custom_start: date | None = None
+    default_custom_end: date | None = None
+
+
 class PeriodContext(BaseModel):
     """Resolved inclusive analytical date range anchored to `silver.dim_calendar`."""
 
@@ -195,6 +222,18 @@ def format_period_label(context: PeriodContext) -> str:
     if context.is_empty or context.start_date is None or context.end_date is None:
         return f"{context.label} (No data)"
     return f"{context.label} ({context.start_date.isoformat()} to {context.end_date.isoformat()})"
+
+
+def format_comparison_label(comparison: ComparisonPeriod | None) -> str | None:
+    """Format a concise comparison window label for active comparison badges."""
+    if comparison is None:
+        return None
+    if comparison.is_empty or comparison.start_date is None or comparison.end_date is None:
+        return f"{comparison.label} (Unavailable)"
+    return (
+        f"{comparison.label} "
+        f"({comparison.start_date.isoformat()} to {comparison.end_date.isoformat()})"
+    )
 
 
 def _coerce_date(value: Any) -> date | None:
@@ -278,6 +317,126 @@ class PeriodResolver:
             return ctx.model_copy(update={"comparison": comp})
         return ctx
 
+    def list_available_options(self) -> PeriodCatalogOptions:
+        """Enumerate valid months, quarters, FYs, and date bounds from `silver.dim_calendar`.
+
+        Returns
+        -------
+        PeriodCatalogOptions
+            Descending selectable options and safe initial defaults for UI controls.
+        """
+        if not self.query_port.table_exists("silver", "dim_calendar"):
+            return PeriodCatalogOptions()
+
+        as_of_date = self._resolve_as_of_date()
+        if as_of_date is None:
+            return PeriodCatalogOptions()
+
+        gold_months: set[date] = set()
+        if self._gold_has_monthly_dates():
+            g_rows = self.query_port.fetch_all(
+                'SELECT DISTINCT "MONTH_START_DATE" AS m_start FROM gold.core_monthly_fact;'
+            )
+            for row in g_rows:
+                parsed = _coerce_date(row.get("m_start"))
+                if parsed is not None:
+                    gold_months.add(parsed)
+
+        bounds_row = self.query_port.fetch_one(
+            """
+            SELECT MIN("Date") AS min_d, MAX("Date") AS max_d
+            FROM silver.dim_calendar
+            WHERE NOT COALESCE("Is_Future_Date", FALSE);
+            """
+        )
+        min_date = _coerce_date(bounds_row["min_d"]) if bounds_row else None
+        max_date = _coerce_date(bounds_row["max_d"]) if bounds_row else as_of_date
+
+        month_rows = self.query_port.fetch_all(
+            """
+            SELECT DISTINCT
+                "Start_of_Month" AS s_date,
+                "Year" AS yr,
+                "Month" AS mo,
+                "Month_Year" AS m_label
+            FROM silver.dim_calendar
+            WHERE "Start_of_Month" <= ?
+            ORDER BY "Start_of_Month" DESC;
+            """,
+            (as_of_date,),
+        )
+        months: list[tuple[str, str]] = []
+        for row in month_rows:
+            yr = row.get("yr")
+            mo = row.get("mo")
+            if yr is None or mo is None:
+                continue
+            ym_key = f"{int(yr):04d}-{int(mo):02d}"
+            base_lbl = str(row.get("m_label") or ym_key)
+            s_dt = _coerce_date(row.get("s_date"))
+            if gold_months and s_dt is not None and s_dt not in gold_months:
+                display = f"{base_lbl} ({ym_key}, Partial)"
+            else:
+                display = f"{base_lbl} ({ym_key})"
+            months.append((ym_key, display))
+
+        fy_rows = self.query_port.fetch_all(
+            """
+            SELECT "Financial_Year" AS fy, MAX("Date") AS max_d
+            FROM silver.dim_calendar
+            WHERE "Date" <= ? AND "Financial_Year" IS NOT NULL
+            GROUP BY "Financial_Year"
+            ORDER BY max_d DESC;
+            """,
+            (as_of_date,),
+        )
+        fys = tuple(str(r["fy"]) for r in fy_rows if r.get("fy"))
+
+        cq_rows = self.query_port.fetch_all(
+            """
+            SELECT "Quarter_Year" AS q, MAX("Date") AS max_d
+            FROM silver.dim_calendar
+            WHERE "Date" <= ? AND "Quarter_Year" IS NOT NULL
+            GROUP BY "Quarter_Year"
+            ORDER BY max_d DESC;
+            """,
+            (as_of_date,),
+        )
+        cqs = tuple(str(r["q"]) for r in cq_rows if r.get("q"))
+
+        fq_rows = self.query_port.fetch_all(
+            """
+            SELECT "FY_Quarter_Year" AS q, MAX("Date") AS max_d
+            FROM silver.dim_calendar
+            WHERE "Date" <= ? AND "FY_Quarter_Year" IS NOT NULL
+            GROUP BY "FY_Quarter_Year"
+            ORDER BY max_d DESC;
+            """,
+            (as_of_date,),
+        )
+        fqs = tuple(str(r["q"]) for r in fq_rows if r.get("q"))
+
+        latest_complete = self._resolve_latest_complete_month(as_of_date)
+        default_ym = (
+            f"{latest_complete.start_date.year:04d}-{latest_complete.start_date.month:02d}"
+            if latest_complete.start_date is not None
+            else (months[0][0] if months else None)
+        )
+        return PeriodCatalogOptions(
+            months=tuple(months),
+            financial_years=fys,
+            calendar_quarters=cqs,
+            fy_quarters=fqs,
+            min_date=min_date,
+            max_date=max_date,
+            default_selected_month=default_ym,
+            default_financial_year=latest_complete.financial_year or (fys[0] if fys else None),
+            default_calendar_quarter=cqs[0] if cqs else None,
+            default_fy_quarter=fqs[0] if fqs else None,
+            default_custom_start=latest_complete.start_date or min_date,
+            default_custom_end=latest_complete.end_date or max_date,
+        )
+
     def _resolve_as_of_date(self) -> date | None:
         """Return latest non-future date in `silver.dim_calendar`."""
         row = self.query_port.fetch_one(
@@ -319,12 +478,15 @@ class PeriodResolver:
             PeriodPreset.ROLLING_6M: 6,
             PeriodPreset.ROLLING_12M: 12,
             PeriodPreset.ROLLING_24M: 24,
+            PeriodPreset.ROLLING_36M: 36,
         }
         if req.preset in rolling_months:
             return self._resolve_rolling(req.preset, rolling_months[req.preset], as_of_date)
 
         if req.preset == PeriodPreset.LATEST_COMPLETE_MONTH:
             return self._resolve_latest_complete_month(as_of_date)
+        if req.preset == PeriodPreset.CURRENT_MONTH_MTD:
+            return self._resolve_current_month_mtd(as_of_date)
         if req.preset == PeriodPreset.SELECTED_MONTH:
             return self._resolve_selected_month(req, as_of_date)
         if req.preset == PeriodPreset.CALENDAR_QUARTER:
@@ -337,9 +499,71 @@ class PeriodResolver:
             return self._resolve_fytd(as_of_date)
         if req.preset == PeriodPreset.SELECTED_FY:
             return self._resolve_selected_fy(req, as_of_date)
+        if req.preset == PeriodPreset.LAST_COMPLETED_FY:
+            return self._resolve_last_completed_fy(as_of_date)
         if req.preset == PeriodPreset.SINCE_INCEPTION:
             return self._resolve_since_inception(as_of_date)
         return self._resolve_custom(req, as_of_date)
+
+    def _resolve_current_month_mtd(self, as_of_date: date) -> PeriodContext:
+        """Resolve month-to-date window containing `as_of_date`."""
+        row = self.query_port.fetch_one(
+            """
+            SELECT "Start_of_Month" AS s_date, "Financial_Year" AS fy, "Month_Year" AS m_label
+            FROM silver.dim_calendar
+            WHERE "Date" = ?
+            LIMIT 1;
+            """,
+            (as_of_date,),
+        )
+        if row is None:
+            return self._empty_context(PeriodPreset.CURRENT_MONTH_MTD, as_of_date)
+        s_date = _coerce_date(row.get("s_date"))
+        label = f"{row['m_label']} (MTD)" if row.get("m_label") else "Current Month (MTD)"
+        return PeriodContext(
+            start_date=s_date,
+            end_date=as_of_date,
+            label=label,
+            preset=PeriodPreset.CURRENT_MONTH_MTD,
+            financial_year=str(row["fy"]) if row.get("fy") else None,
+            as_of_date=as_of_date,
+            is_empty=s_date is None,
+        )
+
+    def _resolve_last_completed_fy(self, as_of_date: date) -> PeriodContext:
+        """Resolve the most recent completed Financial Year prior to `as_of_date`'s FY."""
+        curr_row = self.query_port.fetch_one(
+            'SELECT "Financial_Year" AS fy FROM silver.dim_calendar WHERE "Date" = ? LIMIT 1;',
+            (as_of_date,),
+        )
+        curr_fy = str(curr_row["fy"]) if curr_row and curr_row.get("fy") else None
+        if curr_fy is None:
+            return self._empty_context(PeriodPreset.LAST_COMPLETED_FY, as_of_date)
+        prev_row = self.query_port.fetch_one(
+            """
+            SELECT "Financial_Year" AS fy, MIN("Date") AS s_date, MAX("Date") AS e_date
+            FROM silver.dim_calendar
+            WHERE "Date" < ? AND "Financial_Year" <> ? AND "Financial_Year" IS NOT NULL
+            GROUP BY "Financial_Year"
+            ORDER BY e_date DESC
+            LIMIT 1;
+            """,
+            (as_of_date, curr_fy),
+        )
+        if prev_row is None or prev_row.get("s_date") is None:
+            return self._empty_context(PeriodPreset.LAST_COMPLETED_FY, as_of_date)
+        s_date = _coerce_date(prev_row["s_date"])
+        e_date = _coerce_date(prev_row["e_date"])
+        fy = str(prev_row["fy"])
+        return PeriodContext(
+            start_date=s_date,
+            end_date=e_date,
+            label=f"FY {fy}",
+            preset=PeriodPreset.LAST_COMPLETED_FY,
+            financial_year=fy,
+            as_of_date=as_of_date,
+            is_empty=s_date is None or e_date is None,
+        )
 
     def _resolve_latest_complete_month(self, as_of_date: date) -> PeriodContext:
         """Resolve latest complete month using Gold monthly coverage and calendar bounds."""
@@ -735,7 +959,7 @@ class PeriodResolver:
         return PeriodContext(
             start_date=req.custom_start,
             end_date=req.custom_end,
-            label=f"Custom ({req.custom_start.isoformat()} – {req.custom_end.isoformat()})",
+            label="Custom Range",
             preset=PeriodPreset.CUSTOM,
             financial_year=fy,
             as_of_date=as_of_date,
@@ -790,6 +1014,74 @@ class PeriodResolver:
                 end_date=comp_end,
                 label="Same Period Previous Year",
                 financial_year=str(fy_row["fy"]) if fy_row.get("fy") else None,
+            )
+
+        if mode == ComparisonMode.FY_START_MONTH:
+            target_fy = primary.financial_year
+            row = (
+                self.query_port.fetch_one(
+                    """
+                    SELECT
+                        MIN("Start_of_Month") AS s_date,
+                        MIN("End_of_Month") AS e_date
+                    FROM silver.dim_calendar
+                    WHERE "Financial_Year" = ?;
+                    """,
+                    (target_fy,),
+                )
+                if target_fy
+                else None
+            )
+            s_date = _coerce_date(row.get("s_date")) if row else None
+            e_date = _coerce_date(row.get("e_date")) if row else None
+            if s_date is None or e_date is None:
+                return ComparisonPeriod(
+                    mode=mode,
+                    start_date=None,
+                    end_date=None,
+                    label="FY Start Month Unavailable",
+                    is_empty=True,
+                )
+            return ComparisonPeriod(
+                mode=mode,
+                start_date=s_date,
+                end_date=e_date,
+                label=f"FY {target_fy} Opening Month",
+                financial_year=target_fy,
+            )
+
+        if mode == ComparisonMode.PRIOR_COMPLETED_FY:
+            target_fy = primary.financial_year
+            prev_fy_row = (
+                self.query_port.fetch_one(
+                    """
+                    SELECT "Financial_Year" AS fy, MIN("Date") AS s_date, MAX("Date") AS e_date
+                    FROM silver.dim_calendar
+                    WHERE "Date" < ? AND "Financial_Year" <> ? AND "Financial_Year" IS NOT NULL
+                    GROUP BY "Financial_Year"
+                    ORDER BY e_date DESC
+                    LIMIT 1;
+                    """,
+                    (primary.end_date, target_fy),
+                )
+                if target_fy
+                else None
+            )
+            if prev_fy_row is None or prev_fy_row.get("s_date") is None:
+                return ComparisonPeriod(
+                    mode=mode,
+                    start_date=None,
+                    end_date=None,
+                    label="Prior FY Unavailable",
+                    is_empty=True,
+                )
+            fy_lbl = str(prev_fy_row["fy"])
+            return ComparisonPeriod(
+                mode=mode,
+                start_date=_coerce_date(prev_fy_row["s_date"]),
+                end_date=_coerce_date(prev_fy_row["e_date"]),
+                label=f"Prior FY {fy_lbl}",
+                financial_year=fy_lbl,
             )
 
         # PREVIOUS_PERIOD: align to prior whole months if primary aligns on calendar month bounds

@@ -19,7 +19,8 @@ from pfetl_analytics_studio.app import (
     open_and_persist_profile,
     pick_native_toml_file,
 )
-from pfetl_analytics_studio.cli import main as cli_main, validate_loopback_host
+from pfetl_analytics_studio.cli import main as cli_main
+from pfetl_analytics_studio.cli import validate_loopback_host
 from pfetl_analytics_studio.context import RunSelectionMode
 from pfetl_analytics_studio.data import QueryCache, build_cache_key
 from pfetl_analytics_studio.profile import PFETLProfile, ProfileLoadErrorCode

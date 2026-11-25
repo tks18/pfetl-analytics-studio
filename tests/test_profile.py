@@ -50,7 +50,7 @@ def test_profile_model_frozen_immutability(
     profile = result.profile
 
     with pytest.raises(ValidationError):
-        setattr(profile, "label", "Attempted Mutation")
+        profile.label = "Attempted Mutation"
 
 
 def test_deterministic_profile_id(valid_settings_path: Path, valid_rules_path: Path) -> None:
