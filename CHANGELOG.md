@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.14](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.13...0.1.14) (2026-11-25)
+
+
+### Bug Fixes 🛠
+
+* **wealth,household:** wire global currency filter and savings chart ([55a8ae6](https://github.com/tks18/pfetl-analytics-studio/commit/55a8ae600d0915fb70e9601c91f14829fe04e026))
+
+
+### Features 🔥
+
+* **investments,ui:** add Overview & Allocation page, charts, and tests ([0941a5b](https://github.com/tks18/pfetl-analytics-studio/commit/0941a5bedebd0e76383453b7876603dbe7c7ac78))
+* **investments:** add 9-mart semantic registry and analytics service ([a1abc1b](https://github.com/tks18/pfetl-analytics-studio/commit/a1abc1b2562408b0bb6630c1c4e069c71b230306))
+
 ### [0.1.13](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.12...0.1.13) (2026-11-25)
 
 
