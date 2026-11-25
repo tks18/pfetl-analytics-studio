@@ -334,6 +334,22 @@ def test_dataset_and_metric_registry_guards() -> None:
         )
     with pytest.raises(ValueError, match="does not permit dimension"):
         DEFAULT_METRICS.validate_query("total_income", ("ISIN",))
+    # Income additive vs non-additive metric guards
+    assert DEFAULT_METRICS.validate_query(
+        "income_active_total", ("YEAR_MONTH",), requested_aggregation=MetricAggregation.SUM
+    ).additive
+    with pytest.raises(ValueError, match="non-additive"):
+        DEFAULT_METRICS.validate_query(
+            "income_trailing_3m_avg",
+            ("YEAR_MONTH",),
+            requested_aggregation=MetricAggregation.SUM,
+        )
+    with pytest.raises(ValueError, match="non-additive"):
+        DEFAULT_METRICS.validate_query(
+            "income_cumulative_ytd",
+            ("YEAR_MONTH",),
+            requested_aggregation=MetricAggregation.SUM,
+        )
 
     # Unknown dataset reference rejected
     local_ds_reg = DatasetRegistry(

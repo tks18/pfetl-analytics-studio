@@ -33,7 +33,13 @@ from pfetl_analytics_studio.ui import (
     build_category_breakup_figure,
     build_deployment_flow_figure,
     build_fire_trajectory_figure,
+    build_income_account_mix_figure,
+    build_income_category_bars_figure,
+    build_income_composition_figure,
+    build_income_trend_figure,
+    build_income_ytd_figure,
     build_net_worth_attribution_figure,
+    build_passive_income_engine_figure,
     build_portfolio_return_figure,
     build_wealth_asset_split_figure,
     chart_panel,
@@ -238,6 +244,36 @@ def test_formatting_and_chart_figure_builders() -> None:
     assert cat_fig is not None and len(cat_fig["data"]) == 1
     assert cls_fig is not None and len(cls_fig["data"]) == 1
     assert wab_fig is not None and len(wab_fig["data"]) == 2
+
+    class _IncPt:
+        month_end = date(2026, 10, 31)
+        total_income = 150000.0
+        cash_income = 144000.0
+        non_cash_income = 6000.0
+        active_income = 138000.0
+        passive_income = 6000.0
+        dividend_income = 1000.0
+        interest_income = 5000.0
+        trailing_3m_avg = 145000.0
+        budget_income = 142000.0
+        cumulative_ytd = 1200000.0
+        active_dependency_pct = 0.92
+        passive_core_coverage = 0.17
+        category_name = "Basic"
+        category_group = "Income from Salary"
+        amount = 80000.0
+        share_pct = 0.55
+        taxability = "taxable"
+        account_name = "HDFC Bank"
+        tx_count = 5
+
+    inc_pt = _IncPt()
+    assert build_income_trend_figure([inc_pt]) is not None
+    assert build_income_composition_figure([inc_pt]) is not None
+    assert build_income_category_bars_figure([inc_pt]) is not None
+    assert build_income_ytd_figure([inc_pt]) is not None
+    assert build_passive_income_engine_figure([inc_pt]) is not None
+    assert build_income_account_mix_figure([inc_pt]) is not None
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:

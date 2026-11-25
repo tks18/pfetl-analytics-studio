@@ -1,6 +1,6 @@
 [project]
 name = "pfetl-analytics-studio"
-version = "0.1.7"
+version = "0.1.8"
 description = "Local-first, read-only analytical companion to Personal Finance ETL for visual exploration, reporting, and intelligence."
 readme = "README.md"
 license = "GPL-3.0-or-later"

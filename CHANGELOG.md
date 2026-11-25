@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.8](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.7...0.1.8) (2026-11-25)
+
+
+### Features 🔥
+
+* **analytics:** implement HouseholdAnalytics income service ([e652bea](https://github.com/tks18/pfetl-analytics-studio/commit/e652beab2a4bd9a0a5ca6322109ebd10a5374750))
+* **household:** add Income charts and Silver transaction drill ([3d9119c](https://github.com/tks18/pfetl-analytics-studio/commit/3d9119c67b560adef09d48e83d65a4992d649e04))
+* **semantic:** register income drill dataset and income metrics ([13a06f1](https://github.com/tks18/pfetl-analytics-studio/commit/13a06f1a33026726d1cfa09042c820689f7aa525))
+
+
+### Tests 🧪
+
+* **household:** add Household Income service and chart tests ([16ff8c6](https://github.com/tks18/pfetl-analytics-studio/commit/16ff8c6a157e618620b09bac18e4f9adc28df0e9))
+
 ### [0.1.7](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.6...0.1.7) (2026-11-25)
 
 

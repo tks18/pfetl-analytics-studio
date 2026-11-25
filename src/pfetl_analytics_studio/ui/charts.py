@@ -258,6 +258,17 @@ def _currency_ticks(
     return tick_vals, tick_text
 
 
+def currency_ticks(
+    values: Sequence[float],
+    currency_id: str,
+    *,
+    include_zero: bool = False,
+    steps: int = 5,
+) -> tuple[list[float], list[str]] | None:
+    """Public helper computing evenly spaced currency axis ticks."""
+    return _currency_ticks(values, currency_id, include_zero=include_zero, steps=steps)
+
+
 def _numeric_ticks(
     values: Sequence[float | None],
     *,
@@ -279,6 +290,16 @@ def _numeric_ticks(
     vals = [round(low_p + (high_p - low_p) * i / (steps - 1), 2) for i in range(steps)]
     labels = [f"{v:.1f}{suffix}" for v in vals]
     return vals, labels
+
+
+def numeric_ticks(
+    values: Sequence[float | None],
+    *,
+    suffix: str = "%",
+    steps: int = 5,
+) -> tuple[list[float], list[str]] | None:
+    """Public helper computing evenly spaced numeric axis ticks."""
+    return _numeric_ticks(values, suffix=suffix, steps=steps)
 
 
 def studio_plotly_layout(

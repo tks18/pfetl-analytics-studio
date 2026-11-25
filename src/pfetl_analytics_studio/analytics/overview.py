@@ -229,6 +229,30 @@ class OverviewService:
         return snapshot
 
     @staticmethod
+    def resolve_currency_id(
+        profile: PFETLProfile,
+        provenance: RunProvenance | None,
+    ) -> str:
+        """Resolve display currency strictly preferring run snapshot rules over disk TOML."""
+        return OverviewService._resolve_currency_id(profile, provenance)
+
+    @staticmethod
+    def load_run_health(
+        profile: PFETLProfile,
+        *,
+        run_id: str | None,
+        provenance: RunProvenance | None,
+        compatibility: CompatibilityReport | None,
+    ) -> tuple[OverviewRunHealth, bool]:
+        """Inspect Control Plane `cp_runs` safely without opening DuckDB."""
+        return OverviewService._load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=compatibility,
+        )
+
+    @staticmethod
     def _resolve_currency_id(
         profile: PFETLProfile,
         provenance: RunProvenance | None,
