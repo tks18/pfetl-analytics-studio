@@ -542,3 +542,382 @@ def seed_calendar_and_gold_months(
         )
     finally:
         dcon.close()
+
+
+def seed_overview_gold_tables(
+    duckdb_path: Path,
+    *,
+    as_of_date: date = date(2026, 11, 24),
+    include_fire: bool = True,
+    include_tax_fy_2026: bool = True,
+    tax_incomplete: bool = True,
+) -> None:
+    """Populate typed Gold tables & calendar across 14 months for Overview tests."""
+    seed_calendar_and_gold_months(
+        duckdb_path,
+        start=date(2025, 4, 1),
+        end=date(2026, 12, 31),
+        as_of_date=as_of_date,
+        gold_cutoff_month=date(2026, 10, 1),
+    )
+
+    months: list[tuple[date, date]] = []
+    curr = date(2025, 4, 1)
+    while curr <= date(2026, 10, 1):
+        last_day = calendar.monthrange(curr.year, curr.month)[1]
+        months.append((curr, date(curr.year, curr.month, last_day)))
+        next_m = curr.month + 1
+        curr = date(curr.year + (1 if next_m > 12 else 0), 1 if next_m > 12 else next_m, 1)
+
+    dcon = duckdb.connect(database=str(duckdb_path))
+    try:
+        dcon.execute("DROP TABLE IF EXISTS gold.core_monthly_fact;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.core_monthly_fact (
+                "MONTH_START_DATE" DATE,
+                "MONTH_END_DATE" DATE,
+                "Total_Income" DOUBLE,
+                "Total_Expense" DOUBLE,
+                "Total_Core_Expense" DOUBLE,
+                "Net_Cashflow_Month" DOUBLE,
+                "Total_Assets_Market" DOUBLE,
+                "Total_Liabilities" DOUBLE,
+                "Liquid_Assets_Market" DOUBLE,
+                "Total_Net_Worth" DOUBLE,
+                "Total_Net_Worth_Market" DOUBLE,
+                "Net_Savings_Flow" DOUBLE,
+                "Market_Return_Flow" DOUBLE,
+                "Attribution_Residual" DOUBLE,
+                "Inflation_Adjusted_Core_Expense" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.cashflow_efficiency_analytics;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.cashflow_efficiency_analytics (
+                "MONTH_START_DATE" DATE,
+                "MONTH_END_DATE" DATE,
+                "YEAR_MONTH" VARCHAR,
+                "Active_Income" DOUBLE,
+                "Passive_Income" DOUBLE,
+                "Interest_Income" DOUBLE,
+                "Dividend_Income" DOUBLE,
+                "Core_Expense" DOUBLE,
+                "NonCore_Expense" DOUBLE,
+                "Total_Investment_Deployed" DOUBLE,
+                "Total_Investment_Redeemed" DOUBLE,
+                "Redemption_Gain_Loss_Value" DOUBLE,
+                "Net_Investment_Flow" DOUBLE,
+                "Net_Surplus_After_Invest" DOUBLE,
+                "Savings_Rate_Pct" DOUBLE,
+                "Investment_Rate_Pct" DOUBLE,
+                "Passive_Income_Core_Expense_Coverage_Ratio" DOUBLE,
+                "Active_Income_Dependency_Pct" DOUBLE,
+                "Liquidity_Ratio_Months" DOUBLE,
+                "Debt_to_Asset_Ratio_Pct" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.cashflow_income_breakdown;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.cashflow_income_breakdown (
+                "MONTH_START_DATE" DATE,
+                "MONTH_END_DATE" DATE,
+                "YEAR_MONTH" VARCHAR,
+                "CATEGORY_NAME" VARCHAR,
+                "CATEGORY_GROUPS" VARCHAR,
+                "Is_Active_Income" BOOLEAN,
+                "Is_Passive_Income" BOOLEAN,
+                "Is_Non_Cash_Income" BOOLEAN,
+                "Total_Monthly_Income" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.cashflow_expense_breakdown;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.cashflow_expense_breakdown (
+                "MONTH_START_DATE" DATE,
+                "MONTH_END_DATE" DATE,
+                "YEAR_MONTH" VARCHAR,
+                "CATEGORY_NAME" VARCHAR,
+                "CATEGORY_GROUPS" VARCHAR,
+                "Spend_Type" VARCHAR,
+                "Is_Core_Expense" BOOLEAN,
+                "Total_Monthly_Spend" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.investment_by_class;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.investment_by_class (
+                "Closing_Date" DATE,
+                "INSTRUMENT_CLASS" VARCHAR,
+                "Total_Invested_Value" DOUBLE,
+                "Total_Current_Value" DOUBLE,
+                "Unrealized_PL" DOUBLE,
+                "Weight" DOUBLE,
+                "XIRR" DOUBLE,
+                "BM_XIRR" DOUBLE,
+                "Active_Return" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.investment_by_portfolio;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.investment_by_portfolio (
+                "Closing_Date" DATE,
+                "Total_Invested_Value" DOUBLE,
+                "Total_Current_Value" DOUBLE,
+                "Unrealized_PL" DOUBLE,
+                "XIRR" DOUBLE,
+                "BM_XIRR" DOUBLE,
+                "Active_Return" DOUBLE,
+                "HHI_Score" DOUBLE,
+                "Effective_Holdings_Count" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.wealth_fire_analytics;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.wealth_fire_analytics (
+                "MONTH_START_DATE" DATE,
+                "MONTH_END_DATE" DATE,
+                "YEAR_MONTH" VARCHAR,
+                "Projected_FI_Date_P50" DATE,
+                "Target_FI_Today" DOUBLE,
+                "FI_Gap" DOUBLE,
+                "Current_FI_Coverage_Pct" DOUBLE,
+                "Probability_Of_Success_Pct" DOUBLE,
+                "Years_To_FI_P50" DOUBLE
+            );
+            """
+        )
+
+        dcon.execute("DROP TABLE IF EXISTS gold.tax_financial_year_summary;")
+        dcon.execute(
+            """
+            CREATE TABLE gold.tax_financial_year_summary (
+                "FY" VARCHAR,
+                "Indicative_Net_Tax_Exposure" DOUBLE,
+                "Indicative_Unrealized_Tax_Liability" DOUBLE,
+                "Indicative_Harvestable_Tax_Savings" DOUBLE,
+                "Investment_Tax_Estimate_Complete" BOOLEAN,
+                "Investment_Tax_Estimate_Missing_Count" BIGINT,
+                "Ledger_Tax_Estimate_Complete" BOOLEAN,
+                "Ledger_Tax_Estimate_Missing_Count" BIGINT,
+                "Total_Event_Count" BIGINT
+            );
+            """
+        )
+
+        for idx, (m_start, m_end) in enumerate(months):
+            inc = 200000.0 + idx * 5000.0
+            exp = 80000.0 + idx * 1000.0
+            core_exp = 55000.0
+            net_cf = inc - exp
+            nw_mkt = 10000000.0 + idx * 250000.0
+            ym = f"{m_start.year:04d}-{m_start.month:02d}"
+
+            dcon.execute(
+                "INSERT INTO gold.core_monthly_fact VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    m_start,
+                    m_end,
+                    inc,
+                    exp,
+                    core_exp,
+                    net_cf,
+                    nw_mkt + 100000.0,
+                    100000.0,
+                    3000000.0 + idx * 50000.0,
+                    nw_mkt - 400000.0,
+                    nw_mkt,
+                    net_cf,
+                    150000.0,
+                    5000.0,
+                    core_exp,
+                ),
+            )
+            dcon.execute(
+                "INSERT INTO gold.cashflow_efficiency_analytics VALUES "
+                "(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    m_start,
+                    m_end,
+                    ym,
+                    inc * 0.90,
+                    inc * 0.06,
+                    inc * 0.05,
+                    inc * 0.01,
+                    core_exp,
+                    exp - core_exp,
+                    90000.0 + idx * 1000.0,
+                    15000.0,
+                    1200.0,
+                    75000.0 + idx * 1000.0,
+                    net_cf - (75000.0 + idx * 1000.0),
+                    net_cf / inc,
+                    0.45,
+                    0.18 + idx * 0.005,
+                    0.92,
+                    54.5 + idx * 0.5,
+                    0.01,
+                ),
+            )
+            dcon.execute(
+                "INSERT INTO gold.cashflow_income_breakdown VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    m_start,
+                    m_end,
+                    ym,
+                    "Salary",
+                    "Income from Salary",
+                    True,
+                    False,
+                    False,
+                    inc * 0.90,
+                ),
+            )
+            dcon.execute(
+                "INSERT INTO gold.cashflow_income_breakdown VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    m_start,
+                    m_end,
+                    ym,
+                    "Dividends",
+                    "Income from Other Sources",
+                    False,
+                    True,
+                    False,
+                    inc * 0.06,
+                ),
+            )
+            dcon.execute(
+                "INSERT INTO gold.cashflow_expense_breakdown VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                (m_start, m_end, ym, "Rents", "Rents", "Fixed", True, core_exp),
+            )
+            dcon.execute(
+                "INSERT INTO gold.cashflow_expense_breakdown VALUES (?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    m_start,
+                    m_end,
+                    ym,
+                    "Entertainment",
+                    "Entertainment",
+                    "Variable",
+                    False,
+                    exp - core_exp,
+                ),
+            )
+            inv_cost = 6000000.0 + idx * 120000.0
+            inv_cur = 7200000.0 + idx * 180000.0
+            dcon.execute(
+                "INSERT INTO gold.investment_by_portfolio VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    m_end,
+                    inv_cost,
+                    inv_cur,
+                    inv_cur - inv_cost,
+                    0.125 + idx * 0.001,
+                    0.095,
+                    0.030 + idx * 0.001,
+                    0.145,
+                    6.9,
+                ),
+            )
+            if m_end == date(2026, 10, 31):
+                dcon.execute(
+                    "INSERT INTO gold.investment_by_class VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (
+                        m_end,
+                        "Mutual Funds",
+                        inv_cost * 0.75,
+                        inv_cur * 0.78,
+                        (inv_cur * 0.78) - (inv_cost * 0.75),
+                        0.78,
+                        0.16,
+                        0.11,
+                        0.05,
+                    ),
+                )
+                dcon.execute(
+                    "INSERT INTO gold.investment_by_class VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (
+                        m_end,
+                        "US Stocks",
+                        inv_cost * 0.25,
+                        inv_cur * 0.22,
+                        (inv_cur * 0.22) - (inv_cost * 0.25),
+                        0.22,
+                        0.08,
+                        0.10,
+                        -0.02,
+                    ),
+                )
+            if include_fire:
+                dcon.execute(
+                    "INSERT INTO gold.wealth_fire_analytics VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                    (
+                        m_start,
+                        m_end,
+                        ym,
+                        date(2033, 9, 1),
+                        30000000.0,
+                        30000000.0 - nw_mkt,
+                        nw_mkt / 30000000.0,
+                        0.91 + idx * 0.002,
+                        6.8,
+                    ),
+                )
+
+        # Fresher mid-month close beyond 2026-10-31 verifying dual period-vs-latest reporting
+        dcon.execute(
+            "INSERT INTO gold.investment_by_portfolio VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            (
+                date(2026, 11, 15),
+                8200000.0,
+                10800000.0,
+                2600000.0,
+                0.185,
+                0.115,
+                0.070,
+                0.140,
+                7.1,
+            ),
+        )
+
+        if include_tax_fy_2026:
+            dcon.execute(
+                "INSERT INTO gold.tax_financial_year_summary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+                (
+                    "2026-27",
+                    185000.0,
+                    210000.0,
+                    25000.0,
+                    not tax_incomplete,
+                    2 if tax_incomplete else 0,
+                    True,
+                    0,
+                    142,
+                ),
+            )
+        dcon.execute(
+            "INSERT INTO gold.tax_financial_year_summary VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);",
+            ("2025-26", 142000.0, 150000.0, 8000.0, True, 0, True, 0, 210),
+        )
+    finally:
+        dcon.close()

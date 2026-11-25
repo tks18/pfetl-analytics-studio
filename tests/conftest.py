@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from pathlib import Path
-from typing import Generator
 
 import pytest
 
@@ -34,7 +34,7 @@ def valid_rules_path(fixtures_dir: Path) -> Path:
 
 
 @pytest.fixture
-def temp_state_store(tmp_path: Path) -> Generator[StudioStateStore, None, None]:
+def temp_state_store(tmp_path: Path) -> Generator[StudioStateStore]:
     """Provide an isolated StudioStateStore instance backed by temporary sqlite db."""
     db_path = tmp_path / "test_studio.sqlite"
     store = StudioStateStore(db_path=db_path)
