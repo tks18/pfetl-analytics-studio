@@ -34,7 +34,10 @@ from pfetl_analytics_studio.data import (
 )
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import (
+    FilterCatalogOptions,
+    FilterCatalogResolver,
     FilterSet,
+    PeriodCatalogOptions,
     PeriodContext,
     PeriodRequest,
     PeriodResolver,
@@ -155,7 +158,9 @@ class AppContext(BaseModel):
     drift: DriftCheckResult | None = None
     period_request: PeriodRequest = PeriodRequest()
     period_context: PeriodContext | None = None
+    period_options: PeriodCatalogOptions | None = None
     filters: FilterSet = FilterSet()
+    filter_options: FilterCatalogOptions | None = None
     refresh_token: int = 0
 
     @property
@@ -244,7 +249,9 @@ class AppSessionManager:
             drift=None,
             period_request=PeriodRequest(),
             period_context=None,
+            period_options=None,
             filters=FilterSet(),
+            filter_options=None,
             refresh_token=self._context.refresh_token + 1,
         )
         self._hydrated = False
@@ -308,7 +315,11 @@ class AppSessionManager:
             self.cache.invalidate_run(prof_id, run_id)
 
         self._context = self._context.model_copy(
-            update={"refresh_token": self._context.refresh_token + 1}
+            update={
+                "period_options": None,
+                "filter_options": None,
+                "refresh_token": self._context.refresh_token + 1,
+            }
         )
         self._hydrated = False
         if hydrate and self._context.profile is not None:
@@ -362,8 +373,25 @@ class AppSessionManager:
         if duck_reader.get_state() != WarehouseState.AVAILABLE:
             return
         try:
-            period_ctx = PeriodResolver(duck_reader).resolve(self._context.period_request)
-            self._context = self._context.model_copy(update={"period_context": period_ctx})
+            resolver = PeriodResolver(duck_reader)
+            period_ctx = resolver.resolve(self._context.period_request)
+            options = (
+                self._context.period_options
+                if self._context.period_options is not None
+                else resolver.list_available_options()
+            )
+            f_options = (
+                self._context.filter_options
+                if self._context.filter_options is not None
+                else FilterCatalogResolver(duck_reader).list_available_options()
+            )
+            self._context = self._context.model_copy(
+                update={
+                    "period_context": period_ctx,
+                    "period_options": options,
+                    "filter_options": f_options,
+                }
+            )
         except PFETLDataAccessError:
             pass
 

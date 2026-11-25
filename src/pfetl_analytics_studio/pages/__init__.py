@@ -11,14 +11,11 @@ from collections.abc import Sequence
 from nicegui import ui
 
 from pfetl_analytics_studio.context import AppContext, NavRoute
-from pfetl_analytics_studio.semantic import format_period_label
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     StudioColor,
     empty_state_panel,
     error_state_panel,
-    filter_chips_bar,
-    kpi_card,
     status_badge,
 )
 
@@ -45,19 +42,22 @@ def render_domain_workspace(
     with ui.column().classes("w-full gap-4"):
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
             with ui.row().classes("items-center gap-3"):
-                ui.icon(route.icon, size="md").style(f"color: {StudioColor.ACCENT}")
+                with (
+                    ui.element("div")
+                    .classes("w-9 h-9 rounded-lg flex items-center justify-center shrink-0")
+                    .style(
+                        "background-color: rgba(59, 130, 246, 0.14); "
+                        "border: 1px solid rgba(59, 130, 246, 0.25);"
+                    )
+                ):
+                    ui.icon(route.icon, size="20px").style(f"color: {StudioColor.ACCENT}")
                 with ui.column().classes("gap-0"):
-                    ui.label(route.label).classes("text-2xl font-bold").style(
+                    ui.label(route.label).classes("text-2xl font-bold tracking-tight").style(
                         f"color: {StudioColor.TEXT}"
                     )
                     ui.label(route.description).classes("text-sm").style(
                         f"color: {StudioColor.MUTED}"
                     )
-
-            if context.period_context is not None:
-                status_badge(format_period_label(context.period_context), tone=BadgeTone.INFO)
-
-        filter_chips_bar(context.filters)
 
         if context.profile is None:
             empty_state_panel(
@@ -99,54 +99,20 @@ def render_domain_workspace(
             )
             return
 
-        with ui.grid(columns=3).classes("w-full gap-4"):
-            kpi_card(
-                title="Active Profile",
-                value=context.profile.label,
-                subtitle=f"ID: {context.profile.profile_id}",
-                tooltip="Resolved from active Settings TOML + FinancialRules TOML pair.",
-                icon="folder",
-            )
-            run_display = (
-                context.effective_run_id[:8] if context.effective_run_id else "No committed run"
-            )
-            core_ver = (
-                context.provenance.application_version
-                if context.provenance and context.provenance.application_version
-                else "Pending discovery"
-            )
-            kpi_card(
-                title="Pinned Run Context",
-                value=run_display,
-                subtitle=f"Mode: {context.run_mode.value} | Core {core_ver}",
-                tooltip="Execution provenance anchored to Control Plane `cp_runs` snapshots.",
-                drill_route="/operations",
-                icon="history",
-            )
-            period_val = (
-                context.period_context.label
-                if context.period_context is not None
-                else context.period_request.preset.value
-            )
-            kpi_card(
-                title="Period Horizon",
-                value=period_val,
-                subtitle=(
-                    f"FY {context.period_context.financial_year}"
-                    if context.period_context and context.period_context.financial_year
-                    else "Awaiting dim_calendar resolution"
-                ),
-                tooltip="Resolved via authoritative `silver.dim_calendar` boundaries.",
-                icon="calendar_today",
-            )
-
         empty_state_panel(
             title=f"{route.label} Workspace Connected",
             message=(
-                f"Connected to profile '{context.profile.label}' with active run context and "
-                f"validated period boundaries. Analytics modules are not yet populated for this "
-                f"domain view."
+                f"Connected to profile '{context.profile.label}' with active run provenance "
+                f"and validated period boundaries."
             ),
             icon=route.icon,
-            hint=(f"Views: {', '.join(workspace_views)} | Sources: {', '.join(upstream_sources)}"),
+            hint=f"Views: {', '.join(workspace_views)}",
         )
+
+        with ui.card().classes("studio-card w-full p-4 rounded-xl gap-2"):
+            ui.label("Authoritative Upstream Surfaces").classes(
+                "text-xs font-semibold uppercase tracking-wider"
+            ).style(f"color: {StudioColor.MUTED}")
+            with ui.row().classes("w-full items-center gap-2 flex-wrap"):
+                for src in upstream_sources:
+                    status_badge(src, tone=BadgeTone.NEUTRAL, outline=True)
