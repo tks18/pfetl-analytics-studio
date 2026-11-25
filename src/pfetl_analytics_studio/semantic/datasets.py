@@ -274,6 +274,34 @@ FOUNDATIONAL_DATASETS: tuple[DatasetSpec, ...] = (
         allowed_filters=(FilterField.FY,),
         description="Annual tax cockpit combining ledger income, investment gains, and exposure.",
     ),
+    DatasetSpec(
+        id="silver_fact_income_transactions",
+        physical_table="silver.fact_income_transactions",
+        label="Income Transaction Ledger (Silver Drill)",
+        domain="Household",
+        grain="Transaction",
+        date_field="DATE",
+        default_dimensions=("DATE", "CATEGORY_ID", "ASSET_ID"),
+        allowed_dimensions=(
+            "DATE",
+            "CATEGORY_ID",
+            "ASSET_ID",
+            "CURRENCY_ID",
+            "Is_Active_Income",
+            "Is_Dividend_Income",
+            "Is_Interest_Income",
+            "Is_Non_Cash_Income",
+        ),
+        allowed_filters=(
+            FilterField.INCOME_GROUP,
+            FilterField.INCOME_CATEGORY,
+            FilterField.INCOME_SUBCATEGORY,
+            FilterField.IS_ACTIVE_INCOME,
+            FilterField.IS_PASSIVE_INCOME,
+            FilterField.ASSET_ID,
+        ),
+        description="Canonical Silver income transactions used strictly for category/group drill.",
+    ),
 )
 
 DEFAULT_DATASETS = DatasetRegistry(FOUNDATIONAL_DATASETS)
