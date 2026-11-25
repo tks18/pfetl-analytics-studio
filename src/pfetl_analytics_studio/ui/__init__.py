@@ -34,6 +34,14 @@ from pfetl_analytics_studio.ui.charts import (
     chart_panel,
     studio_plotly_layout,
 )
+from pfetl_analytics_studio.ui.charts_budget_cashflow import (
+    build_budget_allocation_trend_figure,
+    build_budget_health_heatmap_figure,
+    build_budget_target_vs_actual_figure,
+    build_cashflow_activity_trend_figure,
+    build_cashflow_waterfall_figure,
+    build_emergency_runway_figure,
+)
 from pfetl_analytics_studio.ui.charts_expense import (
     build_expense_account_mix_figure,
     build_expense_cash_vs_noncash_figure,
@@ -82,9 +90,15 @@ __all__ = [
     "apply_studio_theme",
     "bounded_data_table",
     "build_asset_class_mix_figure",
+    "build_budget_allocation_trend_figure",
+    "build_budget_health_heatmap_figure",
+    "build_budget_target_vs_actual_figure",
+    "build_cashflow_activity_trend_figure",
     "build_cashflow_efficiency_figure",
+    "build_cashflow_waterfall_figure",
     "build_category_breakup_figure",
     "build_deployment_flow_figure",
+    "build_emergency_runway_figure",
     "build_expense_account_mix_figure",
     "build_expense_cash_vs_noncash_figure",
     "build_expense_category_bars_figure",
