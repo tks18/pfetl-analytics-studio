@@ -52,9 +52,22 @@ from pfetl_analytics_studio.analytics.overview import (
     OverviewSnapshot,
     PortfolioPoint,
 )
+from pfetl_analytics_studio.analytics.wealth import WealthAnalytics
+from pfetl_analytics_studio.analytics.wealth_models import (
+    AssetBreakdownSnapshot,
+    AssetGroupMixRow,
+    CurrencyExposureRow,
+    NetWorthAttributionSnapshot,
+    WealthAssetRow,
+    WealthMonthlyPoint,
+    WealthSummarySnapshot,
+)
 
 __all__ = [
+    "AssetBreakdownSnapshot",
     "AssetClassPoint",
+    "AssetGroupMixRow",
+    "CurrencyExposureRow",
     "BudgetHealthFlags",
     "BudgetMonthlyPoint",
     "CashflowActivityPoint",
@@ -85,6 +98,7 @@ __all__ = [
     "IncomeTaxabilitySummary",
     "IncomeTransactionPage",
     "IncomeTransactionRow",
+    "NetWorthAttributionSnapshot",
     "NetWorthPoint",
     "OverviewBreakupItem",
     "OverviewKPI",
@@ -96,4 +110,8 @@ __all__ = [
     "TransferTransactionRow",
     "TxAccountPoint",
     "TxDailyPoint",
+    "WealthAnalytics",
+    "WealthAssetRow",
+    "WealthMonthlyPoint",
+    "WealthSummarySnapshot",
 ]
