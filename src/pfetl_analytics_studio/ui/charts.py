@@ -15,13 +15,67 @@ Does not own
 from __future__ import annotations
 
 from collections.abc import Callable, Sequence
+from dataclasses import dataclass
 from datetime import date
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol, cast
 
 from nicegui import ui
 
 from pfetl_analytics_studio.ui.formatting import currency_symbol, format_currency, format_percent
-from pfetl_analytics_studio.ui.theme import CHART_SERIES_COLORS, StudioColor
+from pfetl_analytics_studio.ui.theme import (
+    CHART_ROLE_COLORS,
+    CHART_SERIES_COLORS,
+    ChartColorRole,
+    StudioColor,
+)
+
+ChartInteractionMode = Literal["cockpit", "analytical"]
+
+_DISALLOWED_MODEBAR_BUTTONS: list[str] = [
+    "select2d",
+    "lasso2d",
+    "zoomIn2d",
+    "zoomOut2d",
+    "autoScale2d",
+    "hoverClosestCartesian",
+    "hoverCompareCartesian",
+    "toggleSpikelines",
+    "toImage",
+]
+
+
+def chart_config(interaction_mode: ChartInteractionMode = "cockpit") -> dict[str, Any]:
+    """Return Plotly config for `cockpit` (modebar off) or `analytical` (zoom/pan/reset)."""
+    if interaction_mode == "analytical":
+        return {
+            "displayModeBar": True,
+            "displaylogo": False,
+            "modeBarButtonsToRemove": _DISALLOWED_MODEBAR_BUTTONS,
+            "responsive": True,
+        }
+    return {"displayModeBar": False, "responsive": True}
+
+
+@dataclass(frozen=True)
+class WaterfallStep:
+    """Single step in a financial attribution or cashflow waterfall."""
+
+    label: str
+    value: float
+    measure: Literal["relative", "total", "absolute"] = "relative"
+    key: str | None = None
+
+
+@dataclass(frozen=True)
+class TreemapNode:
+    """Single hierarchical node for a point-in-time composition treemap."""
+
+    node_id: str
+    label: str
+    parent_id: str
+    value: float
+    share_pct: float | None = None
+    key: str | None = None
 
 
 class NetWorthPointProto(Protocol):
@@ -314,8 +368,10 @@ def studio_plotly_layout(
     date_tick_format: str = "%b '%y",
     horizontal_bars: bool = False,
     x_currency_ticks: tuple[list[float], list[str]] | None = None,
+    x_axis_type: Literal["date", "category", "linear"] | None = None,
+    interaction_mode: ChartInteractionMode = "cockpit",
 ) -> dict[str, Any]:
-    """Return modern dark Plotly layout with matched ranges and non-overlapping axes."""
+    """Return modern dark Plotly layout with matched ranges and generalized axis semantics."""
     yaxis: dict[str, Any] = {
         "showgrid": not horizontal_bars,
         "gridcolor": "rgba(255, 255, 255, 0.08)",
@@ -343,21 +399,25 @@ def studio_plotly_layout(
         "linecolor": "rgba(255, 255, 255, 0.16)",
         "tickfont": {"color": StudioColor.TEXT.value, "size": 11.5},
     }
+    resolved_x = x_axis_type or ("linear" if horizontal_bars else "date")
     if horizontal_bars:
         if x_currency_ticks is not None:
             xaxis["tickmode"] = "array"
             xaxis["tickvals"] = x_currency_ticks[0]
             xaxis["ticktext"] = x_currency_ticks[1]
             xaxis["range"] = [x_currency_ticks[0][0], x_currency_ticks[0][-1]]
-    else:
+    elif resolved_x == "date":
         xaxis["type"] = "date"
         xaxis["nticks"] = 6
         xaxis["tickformat"] = date_tick_format
+    else:
+        xaxis["type"] = resolved_x
 
     has_y2 = bool(y2_suffix or y2_ticks is not None)
+    margin_top = 48 if interaction_mode == "analytical" else 44
     layout: dict[str, Any] = {
         "height": height,
-        "margin": {"l": 20, "r": 24 if not has_y2 else 68, "t": 44, "b": 40},
+        "margin": {"l": 20, "r": 24 if not has_y2 else 68, "t": margin_top, "b": 40},
         "paper_bgcolor": "rgba(0,0,0,0)",
         "plot_bgcolor": "rgba(0,0,0,0)",
         "font": {"color": StudioColor.TEXT.value, "size": 12},
@@ -410,6 +470,8 @@ def chart_panel(
     source_caption: str,
     drill_route: str | None = None,
     empty_message: str = "No observations available inside this horizon.",
+    interaction_mode: ChartInteractionMode = "cockpit",
+    on_point_click: Callable[[dict[str, Any]], None] | None = None,
 ) -> ui.card:
     """Render a spacious dark card wrapping a high-contrast Plotly chart cleanly."""
     card = ui.card().classes("studio-card w-full p-5 rounded-2xl gap-3")
@@ -433,7 +495,31 @@ def chart_panel(
                     ).classes("px-2 text-xs font-semibold")
 
         if figure and figure.get("data"):
-            ui.plotly(figure).classes("w-full")
+            fig_payload = {
+                **figure,
+                "config": chart_config(interaction_mode),
+            }
+            plot = ui.plotly(fig_payload).classes("w-full")
+            if on_point_click is not None:
+
+                def _handle_click(evt: Any) -> None:
+                    args = getattr(evt, "args", None)
+                    if not isinstance(args, dict):
+                        return
+                    args_dict = cast("dict[str, Any]", args)
+                    pts = args_dict.get("points")
+                    if isinstance(pts, list) and pts and isinstance(pts[0], dict):
+                        first = cast("dict[str, Any]", pts[0])
+                        on_point_click(
+                            {
+                                "x": first.get("x"),
+                                "y": first.get("y"),
+                                "label": first.get("label"),
+                                "customdata": first.get("customdata"),
+                            }
+                        )
+
+                plot.on("plotly_click", _handle_click)
         else:
             with (
                 ui.column()
@@ -843,12 +929,43 @@ def build_fire_trajectory_figure(points: Sequence[FirePointProto]) -> dict[str, 
             "marker": {"size": 5},
         },
     ]
+    all_cov = [*cov_vals, *prob_vals, 100.0]
+    layout = studio_plotly_layout(
+        y_ticks=_numeric_ticks(all_cov, suffix="%"),
+    )
+    layout["shapes"] = [
+        {
+            "type": "line",
+            "xref": "paper",
+            "x0": 0,
+            "x1": 1,
+            "yref": "y",
+            "y0": 100.0,
+            "y1": 100.0,
+            "line": {
+                "color": CHART_ROLE_COLORS[ChartColorRole.TARGET],
+                "width": 1.6,
+                "dash": "dash",
+            },
+        }
+    ]
+    layout["annotations"] = [
+        {
+            "xref": "paper",
+            "x": 0.99,
+            "xanchor": "right",
+            "yref": "y",
+            "y": 100.0,
+            "yanchor": "bottom",
+            "text": "100% FI Target",
+            "showarrow": False,
+            "font": {"color": CHART_ROLE_COLORS[ChartColorRole.TARGET], "size": 10.5},
+        }
+    ]
     return {
         "data": traces,
-        "layout": studio_plotly_layout(
-            y_ticks=_numeric_ticks([*cov_vals, *prob_vals], suffix="%"),
-        ),
-        "config": {"displayModeBar": False, "responsive": True},
+        "layout": layout,
+        "config": chart_config("cockpit"),
     }
 
 
@@ -909,4 +1026,186 @@ def build_wealth_asset_split_figure(
         "data": traces,
         "layout": layout,
         "config": {"displayModeBar": False, "responsive": True},
+    }
+
+
+def build_waterfall_figure(
+    steps: Sequence[WaterfallStep],
+    *,
+    currency_id: str = "INR_INR",
+    height: int = 320,
+    interaction_mode: ChartInteractionMode = "cockpit",
+) -> dict[str, Any] | None:
+    """Build a financial attribution or cashflow waterfall reconciling to the final total."""
+    if not steps:
+        return None
+    labels = [s.label for s in steps]
+    measures = [s.measure for s in steps]
+    values = [round(s.value, 2) for s in steps]
+
+    running = 0.0
+    cum_points: list[float] = []
+    customdata: list[dict[str, Any]] = []
+    for s in steps:
+        if s.measure == "total":
+            display_val = running if abs(s.value) < 1e-9 else s.value
+            cum_points.append(display_val)
+        elif s.measure == "absolute":
+            running = s.value
+            display_val = s.value
+            cum_points.append(running)
+        else:
+            running += s.value
+            display_val = s.value
+            cum_points.append(running)
+        customdata.append(
+            {
+                "key": s.key or s.label,
+                "label": s.label,
+                "display": format_currency(
+                    display_val, currency_id, compact=True, signed=s.measure == "relative"
+                ),
+            }
+        )
+
+    traces: list[dict[str, Any]] = [
+        {
+            "type": "waterfall",
+            "orientation": "v",
+            "measure": measures,
+            "x": labels,
+            "y": values,
+            "customdata": customdata,
+            "hovertemplate": "<b>%{x}</b>: %{customdata.display}<extra></extra>",
+            "connector": {"line": {"color": "rgba(148, 163, 184, 0.35)", "width": 1.2}},
+            "increasing": {"marker": {"color": CHART_ROLE_COLORS[ChartColorRole.POSITIVE]}},
+            "decreasing": {"marker": {"color": CHART_ROLE_COLORS[ChartColorRole.NEGATIVE]}},
+            "totals": {"marker": {"color": CHART_ROLE_COLORS[ChartColorRole.ACTUAL]}},
+        }
+    ]
+    layout = studio_plotly_layout(
+        height=height,
+        y_ticks=_currency_ticks(cum_points, currency_id, include_zero=True),
+        x_axis_type="category",
+        interaction_mode=interaction_mode,
+    )
+    layout["hovermode"] = "closest"
+    return {
+        "data": traces,
+        "layout": layout,
+        "config": chart_config(interaction_mode),
+    }
+
+
+def build_treemap_figure(
+    nodes: Sequence[TreemapNode],
+    *,
+    currency_id: str = "INR_INR",
+    height: int = 340,
+    interaction_mode: ChartInteractionMode = "cockpit",
+) -> dict[str, Any] | None:
+    """Build a hierarchical point-in-time composition treemap with stable drill keys."""
+    if not nodes:
+        return None
+    ids = [n.node_id for n in nodes]
+    labels = [n.label for n in nodes]
+    parents = [n.parent_id for n in nodes]
+    values = [round(max(n.value, 0.0), 2) for n in nodes]
+    customdata = [
+        {
+            "key": n.key or n.node_id,
+            "label": n.label,
+            "display": (
+                f"{format_currency(n.value, currency_id, compact=True)}"
+                + (
+                    f" ({format_percent(n.share_pct, decimals=1)})"
+                    if n.share_pct is not None
+                    else ""
+                )
+            ),
+        }
+        for n in nodes
+    ]
+    traces: list[dict[str, Any]] = [
+        {
+            "type": "treemap",
+            "ids": ids,
+            "labels": labels,
+            "parents": parents,
+            "values": values,
+            "branchvalues": "total",
+            "customdata": customdata,
+            "hovertemplate": "<b>%{label}</b>: %{customdata.display}<extra></extra>",
+            "textinfo": "label+percent parent",
+            "marker": {"line": {"width": 1.5, "color": StudioColor.BG.value}},
+        }
+    ]
+    return {
+        "data": traces,
+        "layout": {
+            "height": height,
+            "margin": {"l": 8, "r": 8, "t": 16, "b": 8},
+            "paper_bgcolor": "rgba(0,0,0,0)",
+            "plot_bgcolor": "rgba(0,0,0,0)",
+            "font": {"color": StudioColor.TEXT.value, "size": 12},
+            "colorway": list(CHART_SERIES_COLORS),
+        },
+        "config": chart_config(interaction_mode),
+    }
+
+
+def build_heatmap_figure(
+    x_labels: Sequence[str],
+    y_labels: Sequence[str],
+    z_matrix: Sequence[Sequence[float | None]],
+    *,
+    currency_id: str = "INR_INR",
+    is_currency: bool = True,
+    height: int = 340,
+    interaction_mode: ChartInteractionMode = "analytical",
+) -> dict[str, Any] | None:
+    """Build a categorical pattern-density heatmap with missing-value handling."""
+    if not x_labels or not y_labels or not z_matrix:
+        return None
+    custom_rows: list[list[str]] = []
+    for row in z_matrix:
+        custom_rows.append(
+            [
+                (format_currency(val, currency_id, compact=True) if is_currency else f"{val:.2f}")
+                if val is not None
+                else "—"
+                for val in row
+            ]
+        )
+    traces: list[dict[str, Any]] = [
+        {
+            "type": "heatmap",
+            "x": list(x_labels),
+            "y": list(y_labels),
+            "z": [list(r) for r in z_matrix],
+            "customdata": custom_rows,
+            "hovertemplate": "<b>%{y} · %{x}</b>: %{customdata}<extra></extra>",
+            "colorscale": [
+                [0.0, "#0F172A"],
+                [0.5, "#1D4ED8"],
+                [1.0, "#38BDF8"],
+            ],
+            "hoverongaps": False,
+            "showscale": True,
+            "colorbar": {"tickfont": {"color": StudioColor.MUTED.value, "size": 11}},
+        }
+    ]
+    layout = studio_plotly_layout(
+        height=height,
+        x_axis_type="category",
+        interaction_mode=interaction_mode,
+    )
+    layout["hovermode"] = "closest"
+    layout["yaxis"]["type"] = "category"
+    layout["yaxis"]["showgrid"] = False
+    layout["xaxis"]["showgrid"] = False
+    return {
+        "data": traces,
+        "layout": layout,
+        "config": chart_config(interaction_mode),
     }

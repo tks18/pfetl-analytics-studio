@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     HouseholdAnalytics,
@@ -33,6 +34,7 @@ from pfetl_analytics_studio.ui import (
     format_metric_value,
     format_percent,
     kpi_card,
+    loading_state_card,
     status_badge,
 )
 
@@ -219,12 +221,12 @@ def _render_income_drill_section(
 
         drill_body = ui.column().classes("w-full gap-3")
 
-        def _refresh_drill() -> None:
-            drill_body.clear()
+        def _fetch_drill_sync() -> Any:
             assert context.profile is not None
-            tx_page = HouseholdAnalytics.income_transactions(
+            return HouseholdAnalytics.income_transactions(
                 context.profile,
                 context.period_context,
+                catalog_snapshot=context.catalog_snapshot,
                 filters=context.filters,
                 drill_group=state["group"],
                 drill_category=state["category"],
@@ -232,6 +234,9 @@ def _render_income_drill_section(
                 page=state["page"],
                 page_size=25,
             )
+
+        def _render_drill_body(tx_page: Any) -> None:
+            drill_body.clear()
             with drill_body:
                 with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
                     with ui.row().classes("items-center gap-2 flex-wrap"):
@@ -343,25 +348,27 @@ def _render_income_drill_section(
                 ]
                 bounded_data_table(tx_cols, tx_rows, row_key="uid", max_rows=25)
 
+        def _refresh_drill() -> None:
+            try:
+                asyncio.get_running_loop()
+                has_loop = True
+            except RuntimeError:
+                has_loop = False
+            if not has_loop:
+                _render_drill_body(_fetch_drill_sync())
+                return
+
+            async def _load_drill_async() -> None:
+                tx_page = await run.io_bound(_fetch_drill_sync)
+                _render_drill_body(tx_page)
+
+            ui.timer(0.01, _load_drill_async, once=True)
+
         _refresh_drill()
 
 
-def _render_income_tab(
-    context: AppContext,
-    *,
-    cache: QueryCache | None = None,
-) -> None:
-    """Render the complete Household Income Analytics tab."""
-    assert context.profile is not None
-    snapshot = HouseholdAnalytics.income_summary(
-        context.profile,
-        context.period_context,
-        run_id=context.selected_run_id,
-        provenance=context.provenance,
-        compatibility=context.compatibility,
-        filters=context.filters,
-        cache=cache,
-    )
+def _render_income_body(context: AppContext, snapshot: HouseholdIncomeSnapshot) -> None:
+    """Render ready/empty Income analytics cockpit from an immutable snapshot."""
     if snapshot.state != "ready":
         empty_state_panel(
             title=(
@@ -438,6 +445,59 @@ def _render_income_tab(
     _render_income_drill_section(context, snapshot)
 
 
+def _render_income_tab(
+    context: AppContext,
+    *,
+    cache: QueryCache | None = None,
+) -> None:
+    """Render the complete Household Income Analytics tab without blocking the event loop."""
+
+    def _fetch_sync() -> HouseholdIncomeSnapshot:
+        assert context.profile is not None
+        return HouseholdAnalytics.income_summary(
+            context.profile,
+            context.period_context,
+            run_id=context.analytical_run_id,
+            provenance=context.analytical_provenance or context.provenance,
+            compatibility=context.compatibility,
+            catalog_snapshot=context.catalog_snapshot,
+            filters=context.filters,
+            cache=cache,
+        )
+
+    try:
+        asyncio.get_running_loop()
+        has_loop = True
+    except RuntimeError:
+        has_loop = False
+
+    if not has_loop:
+        _render_income_body(context, _fetch_sync())
+        return
+
+    body_slot = ui.column().classes("w-full gap-4")
+    with body_slot:
+        loading_state_card("Loading Household Income analytics...")
+
+    async def _load_async() -> None:
+        try:
+            snap = await run.io_bound(_fetch_sync)
+        except Exception as exc:  # noqa: BLE001
+            body_slot.clear()
+            with body_slot:
+                error_state_panel(
+                    title="Failed to Load Income Analytics",
+                    message="An error occurred while querying the read-only warehouse.",
+                    details=[str(exc)],
+                )
+            return
+        body_slot.clear()
+        with body_slot:
+            _render_income_body(context, snap)
+
+    ui.timer(0.01, _load_async, once=True)
+
+
 def render_household_page(context: AppContext, *, cache: QueryCache | None = None) -> None:
     """Render the Household workspace with Income Analytics & domain sub-tabs."""
     route = ROUTES_BY_ID["household"]
@@ -485,6 +545,8 @@ def render_household_page(context: AppContext, *, cache: QueryCache | None = Non
             )
             return
 
+        rendered_tabs: set[str] = set()
+
         with ui.tabs().classes("w-full").props("dense align=left no-caps") as tabs:
             tab_income = ui.tab("income", label="Income", icon="payments")
             tab_expense = ui.tab("expense", label="Expense", icon="receipt")
@@ -493,22 +555,42 @@ def render_household_page(context: AppContext, *, cache: QueryCache | None = Non
 
         with ui.tab_panels(tabs, value=tab_income).classes("w-full bg-transparent"):
             with ui.tab_panel(tab_income).classes("p-0 pt-2 gap-4"):
-                _render_income_tab(context, cache=cache)
+                income_slot = ui.column().classes("w-full gap-4")
             with ui.tab_panel(tab_expense).classes("p-0 pt-2"):
-                empty_state_panel(
-                    title="Expense & Lifestyle Analytics",
-                    message="Core vs Non-Core spending, Fixed vs Variable, and expense creep telemetry.",
-                    icon="receipt",
-                )
+                expense_slot = ui.column().classes("w-full")
             with ui.tab_panel(tab_budget).classes("p-0 pt-2"):
-                empty_state_panel(
-                    title="Budget Variance & Cashflow Activity",
-                    message="FinancialRules income allocation targets, overspend alerts, and operating cashflow.",
-                    icon="track_changes",
-                )
+                budget_slot = ui.column().classes("w-full")
             with ui.tab_panel(tab_tx).classes("p-0 pt-2"):
-                empty_state_panel(
-                    title="Unified Household Transaction Explorer",
-                    message="Income transaction evidence is available directly inside the Income tab above.",
-                    icon="list_alt",
-                )
+                tx_slot = ui.column().classes("w-full")
+
+        def _ensure_tab_rendered(tab_key: str) -> None:
+            if tab_key in rendered_tabs:
+                return
+            rendered_tabs.add(tab_key)
+            if tab_key == "income":
+                with income_slot:
+                    _render_income_tab(context, cache=cache)
+            elif tab_key == "expense":
+                with expense_slot:
+                    empty_state_panel(
+                        title="Expense & Lifestyle Analytics",
+                        message="Core vs Non-Core spending, Fixed vs Variable, and expense creep telemetry.",
+                        icon="receipt",
+                    )
+            elif tab_key == "budget":
+                with budget_slot:
+                    empty_state_panel(
+                        title="Budget Variance & Cashflow Activity",
+                        message="FinancialRules income allocation targets, overspend alerts, and operating cashflow.",
+                        icon="track_changes",
+                    )
+            elif tab_key == "transactions":
+                with tx_slot:
+                    empty_state_panel(
+                        title="Unified Household Transaction Explorer",
+                        message="Income transaction evidence is available directly inside the Income tab above.",
+                        icon="list_alt",
+                    )
+
+        _ensure_tab_rendered("income")
+        tabs.on_value_change(lambda evt: _ensure_tab_rendered(str(evt.value or "income")))

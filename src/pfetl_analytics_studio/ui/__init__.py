@@ -16,14 +16,21 @@ from pfetl_analytics_studio.ui.cards import (
     status_badge,
 )
 from pfetl_analytics_studio.ui.charts import (
+    ChartInteractionMode,
+    TreemapNode,
+    WaterfallStep,
     build_asset_class_mix_figure,
     build_cashflow_efficiency_figure,
     build_category_breakup_figure,
     build_deployment_flow_figure,
     build_fire_trajectory_figure,
+    build_heatmap_figure,
     build_net_worth_attribution_figure,
     build_portfolio_return_figure,
+    build_treemap_figure,
+    build_waterfall_figure,
     build_wealth_asset_split_figure,
+    chart_config,
     chart_panel,
     studio_plotly_layout,
 )
@@ -45,13 +52,24 @@ from pfetl_analytics_studio.ui.formatting import (
     format_ratio,
 )
 from pfetl_analytics_studio.ui.tables import TableColumn, bounded_data_table
-from pfetl_analytics_studio.ui.theme import CHART_SERIES_COLORS, StudioColor, apply_studio_theme
+from pfetl_analytics_studio.ui.theme import (
+    CHART_ROLE_COLORS,
+    CHART_SERIES_COLORS,
+    ChartColorRole,
+    StudioColor,
+    apply_studio_theme,
+)
 
 __all__ = [
+    "CHART_ROLE_COLORS",
     "CHART_SERIES_COLORS",
     "BadgeTone",
+    "ChartColorRole",
+    "ChartInteractionMode",
     "StudioColor",
     "TableColumn",
+    "TreemapNode",
+    "WaterfallStep",
     "apply_studio_theme",
     "bounded_data_table",
     "build_asset_class_mix_figure",
@@ -59,6 +77,7 @@ __all__ = [
     "build_category_breakup_figure",
     "build_deployment_flow_figure",
     "build_fire_trajectory_figure",
+    "build_heatmap_figure",
     "build_income_account_mix_figure",
     "build_income_category_bars_figure",
     "build_income_composition_figure",
@@ -67,7 +86,10 @@ __all__ = [
     "build_net_worth_attribution_figure",
     "build_passive_income_engine_figure",
     "build_portfolio_return_figure",
+    "build_treemap_figure",
+    "build_waterfall_figure",
     "build_wealth_asset_split_figure",
+    "chart_config",
     "chart_panel",
     "currency_symbol",
     "empty_state_panel",
