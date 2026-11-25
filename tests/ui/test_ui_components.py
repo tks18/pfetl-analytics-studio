@@ -24,8 +24,12 @@ from pfetl_analytics_studio.semantic import (
     PeriodRequest,
 )
 from pfetl_analytics_studio.ui import (
+    CHART_ROLE_COLORS,
     BadgeTone,
+    ChartColorRole,
     TableColumn,
+    TreemapNode,
+    WaterfallStep,
     apply_studio_theme,
     bounded_data_table,
     build_asset_class_mix_figure,
@@ -33,6 +37,7 @@ from pfetl_analytics_studio.ui import (
     build_category_breakup_figure,
     build_deployment_flow_figure,
     build_fire_trajectory_figure,
+    build_heatmap_figure,
     build_income_account_mix_figure,
     build_income_category_bars_figure,
     build_income_composition_figure,
@@ -41,7 +46,10 @@ from pfetl_analytics_studio.ui import (
     build_net_worth_attribution_figure,
     build_passive_income_engine_figure,
     build_portfolio_return_figure,
+    build_treemap_figure,
+    build_waterfall_figure,
     build_wealth_asset_split_figure,
+    chart_config,
     chart_panel,
     empty_state_panel,
     error_state_panel,
@@ -55,6 +63,7 @@ from pfetl_analytics_studio.ui import (
     locked_warehouse_banner,
     period_selector,
     status_badge,
+    studio_plotly_layout,
 )
 
 
@@ -269,11 +278,61 @@ def test_formatting_and_chart_figure_builders() -> None:
 
     inc_pt = _IncPt()
     assert build_income_trend_figure([inc_pt]) is not None
-    assert build_income_composition_figure([inc_pt]) is not None
+    comp_fig = build_income_composition_figure([inc_pt])
+    assert comp_fig is not None
+    # Active (138k) + Passive (6k) + Non-Cash (6k) = 150k -> no residual stack needed
+    bar_traces = [t for t in comp_fig["data"] if t["type"] == "bar"]
+    assert sum(t["y"][0] for t in bar_traces) == 150000.0
+
+    # Residual unclassified positive income adds "Other / Unclassified" so stacks reconcile
+    inc_pt.total_income = 155000.0
+    comp_res_fig = build_income_composition_figure([inc_pt])
+    assert comp_res_fig is not None
+    res_bars = [t for t in comp_res_fig["data"] if t["type"] == "bar"]
+    assert any(t["name"] == "Other / Unclassified" for t in res_bars)
+    assert sum(t["y"][0] for t in res_bars) == 155000.0
+
     assert build_income_category_bars_figure([inc_pt]) is not None
     assert build_income_ytd_figure([inc_pt]) is not None
     assert build_passive_income_engine_figure([inc_pt]) is not None
     assert build_income_account_mix_figure([inc_pt]) is not None
+
+    # FI trajectory includes 100% FI Target reference line
+    assert f_fig["layout"]["shapes"][0]["y0"] == 100.0
+
+    # Generalized axis semantics + semantic color roles
+    assert studio_plotly_layout(x_axis_type="date")["xaxis"]["type"] == "date"
+    assert studio_plotly_layout(x_axis_type="category")["xaxis"]["type"] == "category"
+    assert studio_plotly_layout(x_axis_type="linear")["xaxis"]["type"] == "linear"
+    assert ChartColorRole.TARGET in CHART_ROLE_COLORS
+    assert chart_config("cockpit")["displayModeBar"] is False
+    assert chart_config("analytical")["displayModeBar"] is True
+
+    # Reusable waterfall, treemap, and heatmap primitives
+    wf_fig = build_waterfall_figure(
+        [
+            WaterfallStep("Opening", 100000.0, measure="absolute"),
+            WaterfallStep("Savings", 25000.0, measure="relative"),
+            WaterfallStep("Market", -5000.0, measure="relative"),
+            WaterfallStep("Closing", 120000.0, measure="total"),
+        ]
+    )
+    assert wf_fig is not None and wf_fig["data"][0]["type"] == "waterfall"
+    assert wf_fig["layout"]["xaxis"]["type"] == "category"
+
+    tm_fig = build_treemap_figure(
+        [
+            TreemapNode("root", "All", "", 1000.0, key="all"),
+            TreemapNode("eq", "Equity", "root", 700.0, share_pct=0.7, key="EQ"),
+            TreemapNode("dt", "Debt", "root", 300.0, share_pct=0.3, key="DT"),
+        ]
+    )
+    assert tm_fig is not None and tm_fig["data"][0]["type"] == "treemap"
+
+    hm_fig = build_heatmap_figure(
+        ["2026-09", "2026-10"], ["Food", "Travel"], [[100.0, None], [50.0, 75.0]]
+    )
+    assert hm_fig is not None and hm_fig["data"][0]["type"] == "heatmap"
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:

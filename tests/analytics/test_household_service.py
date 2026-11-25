@@ -277,6 +277,50 @@ def test_household_income_totals_ratios_and_silver_drill(tmp_path: Path) -> None
     assert ded_page.total_base_amount == pytest.approx(-15000.0)
 
 
+def test_household_denominators_and_unclassified_taxability(tmp_path: Path) -> None:
+    """Verify full-denominator >10 account shares, gross-positive group share, and unclassified taxability."""
+    prof = _build_household_profile(tmp_path)
+    con = duckdb.connect(str(prof.duckdb_path))
+    try:
+        # Add 11 extra receiving accounts + unclassified taxability subcategory
+        con.execute(
+            "INSERT INTO silver.dim_income_subcategory VALUES ('c_unk', NULL, 'UnknownMisc', NULL, FALSE, FALSE, NULL);"
+        )
+        for idx in range(12):
+            acc_id = f"acc_extra_{idx}"
+            con.execute(
+                "INSERT INTO silver.dim_asset_subcategory VALUES (?, ?);",
+                (acc_id, f"Extra Bank {idx}"),
+            )
+            con.execute(
+                """
+                INSERT INTO silver.fact_income_transactions VALUES
+                (?, '2026-10-12', ?, 'c_unk', 'INR_INR', 'Misc Unclassified', FALSE, FALSE, FALSE, FALSE, 100.0, 100.0, 100.0, 1.0);
+                """,
+                (f"tx_extra_{idx}", acc_id),
+            )
+    finally:
+        con.close()
+
+    period = PeriodResolver(DuckDBReader(prof)).resolve(
+        PeriodRequest(preset=PeriodPreset.SELECTED_MONTH, selected_month="2026-10")
+    )
+    snap = HouseholdAnalytics.income_summary(prof, period)
+
+    # Top-10 account shares must sum to < 1.0 when >10 receiving accounts exist
+    assert len(snap.account_mix) == 10
+    assert sum(pt.share_pct or 0.0 for pt in snap.account_mix) < 1.0
+
+    # Group concentration uses gross positive income (88,000), not net after -15,000 TDS (73,000)
+    sal_grp = next(g for g in snap.group_rows if g.category_group == "Income from Salary")
+    assert sal_grp.share_pct == pytest.approx(65000.0 / 88000.0)
+
+    # Unclassified taxability is surfaced alongside Taxable and Non-Taxable
+    assert snap.taxability.unclassified_amount == pytest.approx(1200.0)
+    tax_kpi = next(k for k in snap.primary_kpis if k.kpi_id == "income_taxability")
+    assert any(b.label == "Unclassified" for b in tax_kpi.breakups)
+
+
 def test_household_module_never_touches_bronze_or_ui() -> None:
     """Enforce Gold/Silver boundary and headless purity on household analytics modules."""
     for name in ("household.py", "household_queries.py"):
