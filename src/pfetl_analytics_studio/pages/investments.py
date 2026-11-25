@@ -245,6 +245,11 @@ def _render_overview_tab(
                 f"Holdings: {len(snapshot.holdings)}",
                 tone=BadgeTone.INFO,
             )
+            if snapshot.as_of_date is not None:
+                status_badge(
+                    f"As of: {snapshot.as_of_date.isoformat()}",
+                    tone=BadgeTone.INFO,
+                )
             if snapshot.period_label:
                 status_badge(
                     f"Period: {snapshot.period_label}",

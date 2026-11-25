@@ -447,7 +447,6 @@ def build_investment_kpis(
             as_of_date=as_of,
             drill_route="/investments",
             available=cur_val is not None,
-            breakups=(OverviewBreakupItem(label="Invested", value=inv_val),),
         ),
         OverviewKPI(
             kpi_id="inv_unrealized_pl",
@@ -462,10 +461,7 @@ def build_investment_kpis(
             as_of_date=as_of,
             drill_route="/investments",
             available=unr_pl is not None,
-            breakups=(
-                OverviewBreakupItem(label="Asset P&L", value=asset_pnl),
-                OverviewBreakupItem(label="Forex P&L", value=forex_pnl),
-            ),
+            breakups=(OverviewBreakupItem(label="Asset P&L", value=asset_pnl),),
         ),
         OverviewKPI(
             kpi_id="inv_xirr",
@@ -474,7 +470,7 @@ def build_investment_kpis(
             format=MetricFormat.PERCENT,
             delta_value=act_ret,
             delta_format=MetricFormat.PERCENT,
-            delta_label="vs Benchmark",
+            delta_label="Benchmark Alpha",
             subtitle="Annualized money-weighted return",
             source_table="gold.investment_by_portfolio",
             as_of_date=as_of,
@@ -532,7 +528,6 @@ def build_investment_kpis(
             as_of_date=as_of,
             drill_route="/investments",
             available=forex_pnl is not None,
-            breakups=(OverviewBreakupItem(label="Asset P&L", value=asset_pnl),),
         ),
         OverviewKPI(
             kpi_id="inv_concentration_rebalance",
