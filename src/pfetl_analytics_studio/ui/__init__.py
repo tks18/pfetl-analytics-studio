@@ -27,6 +27,14 @@ from pfetl_analytics_studio.ui.charts import (
     chart_panel,
     studio_plotly_layout,
 )
+from pfetl_analytics_studio.ui.charts_income import (
+    build_income_account_mix_figure,
+    build_income_category_bars_figure,
+    build_income_composition_figure,
+    build_income_trend_figure,
+    build_income_ytd_figure,
+    build_passive_income_engine_figure,
+)
 from pfetl_analytics_studio.ui.filters import filter_chips_bar, period_selector
 from pfetl_analytics_studio.ui.formatting import (
     currency_symbol,
@@ -51,7 +59,13 @@ __all__ = [
     "build_category_breakup_figure",
     "build_deployment_flow_figure",
     "build_fire_trajectory_figure",
+    "build_income_account_mix_figure",
+    "build_income_category_bars_figure",
+    "build_income_composition_figure",
+    "build_income_trend_figure",
+    "build_income_ytd_figure",
     "build_net_worth_attribution_figure",
+    "build_passive_income_engine_figure",
     "build_portfolio_return_figure",
     "build_wealth_asset_split_figure",
     "chart_panel",
