@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.13](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.12...0.1.13) (2026-11-25)
+
+
+### Features 🔥
+
+* **analytics:** add Household and WealthAnalytics read-only services ([5b3acb6](https://github.com/tks18/pfetl-analytics-studio/commit/5b3acb6bfd056fdd15d1695c41458df893ffab7f))
+* **semantic:** register Wealth, budget, cashflow, and Silver datasets ([3c47dd0](https://github.com/tks18/pfetl-analytics-studio/commit/3c47dd0f0a30a49f25b534c9af5c503130b1d772))
+* **ui:** add Household tabs, Wealth page, charts, and sticky shell UX ([c1c90c7](https://github.com/tks18/pfetl-analytics-studio/commit/c1c90c7b731bc94d6c90cd0d037a42eb6930afc8))
+
+
+### Tests 🧪
+
+* **domain:** add Household, Wealth, semantic, and UX regression tests ([6b80641](https://github.com/tks18/pfetl-analytics-studio/commit/6b80641dd49350fa92057032082f7497e62c538d))
+
 ### [0.1.12](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.11...0.1.12) (2026-11-25)
 
 
