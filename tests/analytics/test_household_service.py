@@ -516,7 +516,12 @@ def test_household_expense_totals_real_growth_and_silver_drill(tmp_path: Path) -
 
 def test_household_module_never_touches_bronze_or_ui() -> None:
     """Enforce Gold/Silver boundary and headless purity on household analytics modules."""
-    for name in ("household.py", "household_queries.py", "household_expense_queries.py"):
+    for name in (
+        "household.py",
+        "household_queries.py",
+        "household_expense_queries.py",
+        "household_budget_cashflow_queries.py",
+    ):
         src_path = (
             Path(__file__).resolve().parents[2]
             / "src"
@@ -535,3 +540,158 @@ def test_household_module_never_touches_bronze_or_ui() -> None:
                 assert not node.module.startswith(
                     ("nicegui", "pfetl_analytics_studio.ui", "personal_finance_etl")
                 )
+
+
+def test_household_budget_cashflow_and_transfer_drill(tmp_path: Path) -> None:
+    """Verify Budget Variance passthrough, Cashflow reconciliation, and Silver transfer drill."""
+    prof = _build_household_profile(tmp_path)
+    con = duckdb.connect(str(prof.duckdb_path))
+    try:
+        con.execute("DROP TABLE IF EXISTS gold.forecast_budget_variance;")
+        con.execute(
+            """
+            CREATE TABLE gold.forecast_budget_variance (
+                MONTH_START_DATE DATE,
+                MONTH_END_DATE DATE,
+                YEAR_MONTH VARCHAR,
+                Actual_Income DOUBLE,
+                Budget_Income DOUBLE,
+                Income_Variance DOUBLE,
+                Actual_Core_Expense DOUBLE,
+                Budget_Core_Expense DOUBLE,
+                Core_Variance DOUBLE,
+                Actual_Non_Core_Expense DOUBLE,
+                Budget_Non_Core_Expense DOUBLE,
+                Non_Core_Variance DOUBLE,
+                Actual_Investment DOUBLE,
+                Budget_Investment DOUBLE,
+                Investment_Variance DOUBLE,
+                Rule_Core_Pct DOUBLE,
+                Rule_Non_Core_Pct DOUBLE,
+                Rule_Investment_Pct DOUBLE,
+                Emergency_Fund_Target DOUBLE,
+                Emergency_Fund_Actual DOUBLE,
+                Emergency_Fund_Gap DOUBLE,
+                Emergency_Fund_Runway_Months DOUBLE,
+                Emergency_Target_Months DOUBLE,
+                Is_Core_Overspent BOOLEAN,
+                Is_Non_Core_Overspent BOOLEAN,
+                Is_Investment_Underfunded BOOLEAN,
+                Is_Income_Volatile BOOLEAN,
+                Is_Budget_Healthy BOOLEAN
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO gold.forecast_budget_variance VALUES
+            ('2026-09-01','2026-09-30','2026-09',67000.0,65000.0,2000.0,
+             26000.0,27000.0,-1000.0,12000.0,13000.0,-1000.0,25000.0,25000.0,0.0,
+             40.0,20.0,40.0,180000.0,150000.0,-30000.0,5.5,6.0,
+             FALSE,FALSE,FALSE,FALSE,TRUE),
+            ('2026-10-01','2026-10-31','2026-10',0.0,68000.0,-68000.0,
+             33000.0,27200.0,5800.0,14000.0,13600.0,400.0,10000.0,27200.0,-17200.0,
+             40.0,20.0,40.0,180000.0,140000.0,-40000.0,4.2,6.0,
+             TRUE,TRUE,TRUE,TRUE,FALSE);
+            """
+        )
+
+        con.execute("DROP TABLE IF EXISTS gold.cashflow_activity_summary;")
+        con.execute(
+            """
+            CREATE TABLE gold.cashflow_activity_summary (
+                MONTH_START_DATE DATE,
+                MONTH_END_DATE DATE,
+                YEAR_MONTH VARCHAR,
+                Opening_Cash_Balance DOUBLE,
+                Closing_Cash_Balance DOUBLE,
+                Operating_Inflows DOUBLE,
+                Operating_Outflows DOUBLE,
+                Net_Operating_Cashflow DOUBLE,
+                Investing_Inflows DOUBLE,
+                Investing_Outflows DOUBLE,
+                Net_Investing_Cashflow DOUBLE,
+                Financing_Inflows DOUBLE,
+                Financing_Outflows DOUBLE,
+                Net_Financing_Cashflow DOUBLE,
+                Internal_Transfer_Inflows DOUBLE,
+                Internal_Transfer_Outflows DOUBLE,
+                Net_Internal_Transfers DOUBLE,
+                Calculated_Net_Cashflow DOUBLE,
+                Actual_Cash_Change DOUBLE,
+                Unreconciled_Difference DOUBLE,
+                Is_Reconciled BOOLEAN
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO gold.cashflow_activity_summary VALUES
+            ('2026-09-01','2026-09-30','2026-09',100000.0,129000.0,
+             67000.0,-38000.0,29000.0,0.0,0.0,0.0,0.0,0.0,0.0,5000.0,-5000.0,0.0,
+             29000.0,29000.0,0.0,TRUE),
+            ('2026-10-01','2026-10-31','2026-10',129000.0,104500.0,
+             50000.0,-47000.0,3000.0,0.0,-25000.0,-25000.0,0.0,-3000.0,-3000.0,
+             10000.0,-10000.0,0.0,-25000.0,-24500.0,500.0,FALSE);
+            """
+        )
+
+        con.execute("DROP TABLE IF EXISTS silver.fact_transfer_transactions;")
+        con.execute(
+            """
+            CREATE TABLE silver.fact_transfer_transactions (
+                UID VARCHAR,
+                DATE DATE,
+                ADJUSTED_DATE_FOR_ANALYSIS DATE,
+                ASSET_ID VARCHAR,
+                TO_ASSET_ID VARCHAR,
+                CURRENCY_ID VARCHAR,
+                TRANSFER_TYPE VARCHAR,
+                TRANSACTION_TYPE VARCHAR,
+                BASE_AMOUNT DOUBLE,
+                PAID VARCHAR,
+                DESCRIPTION VARCHAR
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO silver.fact_transfer_transactions VALUES
+            ('tr_1','2026-10-05','2026-10-05','a_hdfc','a_cash','INR_INR',
+             'Investing Transfer','Transfer',25000.0,'Yes','Monthly SIP'),
+            ('tr_2','2026-10-12','2026-10-12','a_hdfc','a_cash','INR_INR',
+             'Internal Transfer','Transfer',10000.0,'Yes','Sweep');
+            """
+        )
+    finally:
+        con.close()
+
+    period = PeriodResolver(DuckDBReader(prof)).resolve(
+        PeriodRequest(preset=PeriodPreset.SELECTED_MONTH, selected_month="2026-10")
+    )
+    b_snap = HouseholdAnalytics.budget_summary(prof, period)
+    assert b_snap.state == "ready"
+    assert b_snap.total_actual_income == pytest.approx(0.0)
+    assert b_snap.total_actual_core == pytest.approx(33000.0)
+    assert b_snap.latest_flags.is_core_overspent is True
+    assert b_snap.latest_flags.is_investment_underfunded is True
+    assert b_snap.latest_flags.is_budget_healthy is False
+
+    c_snap = HouseholdAnalytics.cashflow_statement(prof, period)
+    assert c_snap.state == "ready"
+    assert c_snap.opening_cash == pytest.approx(129000.0)
+    assert c_snap.closing_cash == pytest.approx(104500.0)
+    assert c_snap.net_operating == pytest.approx(3000.0)
+    assert c_snap.net_investing == pytest.approx(-25000.0)
+    assert c_snap.net_financing == pytest.approx(-3000.0)
+    assert c_snap.calculated_net_cashflow == pytest.approx(-25000.0)
+    assert c_snap.unreconciled_difference == pytest.approx(500.0)
+    assert c_snap.is_reconciled is False
+
+    inv_drill = HouseholdAnalytics.transfer_transactions(prof, period, activity_filter="Investing")
+    assert inv_drill.total_count == 1
+    assert inv_drill.total_base_amount == pytest.approx(25000.0)
+    assert inv_drill.rows[0].paid == "Yes"
+
+    fin_drill = HouseholdAnalytics.transfer_transactions(prof, period, activity_filter="Financing")
+    assert fin_drill.total_count == 0

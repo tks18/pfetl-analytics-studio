@@ -33,9 +33,15 @@ from pfetl_analytics_studio.ui import (
     apply_studio_theme,
     bounded_data_table,
     build_asset_class_mix_figure,
+    build_budget_allocation_trend_figure,
+    build_budget_health_heatmap_figure,
+    build_budget_target_vs_actual_figure,
+    build_cashflow_activity_trend_figure,
     build_cashflow_efficiency_figure,
+    build_cashflow_waterfall_figure,
     build_category_breakup_figure,
     build_deployment_flow_figure,
+    build_emergency_runway_figure,
     build_expense_account_mix_figure,
     build_expense_cash_vs_noncash_figure,
     build_expense_category_bars_figure,
@@ -379,6 +385,72 @@ def test_formatting_and_chart_figure_builders() -> None:
     txt_col = TableColumn(name="cat", label="Category", field="cat", align="left").to_quasar_dict()
     assert ":sort" in num_col
     assert ":sort" not in txt_col
+
+    class _BudPt:
+        month_end = date(2026, 10, 31)
+        year_month = "2026-10"
+        actual_income = 67000.0
+        budget_income = 65000.0
+        actual_core = 26000.0
+        budget_core = 27000.0
+        actual_non_core = 12000.0
+        budget_non_core = 13000.0
+        actual_investment = 25000.0
+        budget_investment = 25000.0
+        emergency_actual = 150000.0
+        emergency_target = 180000.0
+        runway_months = 5.5
+
+        class flags:  # noqa: N801
+            is_budget_healthy = True
+            is_core_overspent = False
+            is_non_core_overspent = False
+            is_investment_underfunded = False
+            is_income_volatile = False
+
+    class _BudSnap:
+        state = "ready"
+        currency_id = "INR_INR"
+        total_budget_income = 65000.0
+        total_actual_income = 67000.0
+        total_budget_core = 27000.0
+        total_actual_core = 26000.0
+        total_budget_non_core = 13000.0
+        total_actual_non_core = 12000.0
+        total_budget_investment = 25000.0
+        total_actual_investment = 25000.0
+        monthly_series = (_BudPt(),)
+
+    class _CfPt:
+        month_end = date(2026, 10, 31)
+        year_month = "2026-10"
+        opening_cash = 100000.0
+        closing_cash = 129500.0
+        net_operating = 29000.0
+        net_investing = -20000.0
+        net_financing = 0.0
+        net_transfers = 20000.0
+        unreconciled_difference = 500.0
+        is_reconciled = False
+
+    class _CfSnap:
+        state = "ready"
+        currency_id = "INR_INR"
+        opening_cash = 100000.0
+        closing_cash = 129500.0
+        net_operating = 29000.0
+        net_investing = -20000.0
+        net_financing = 0.0
+        net_transfers = 20000.0
+        unreconciled_difference = 500.0
+        monthly_series = (_CfPt(),)
+
+    assert build_budget_target_vs_actual_figure(_BudSnap()) is not None
+    assert build_budget_allocation_trend_figure([_BudPt()], "INR_INR") is not None
+    assert build_emergency_runway_figure([_BudPt()], "INR_INR") is not None
+    assert build_cashflow_waterfall_figure(_CfSnap()) is not None
+    assert build_cashflow_activity_trend_figure([_CfPt()], "INR_INR") is not None
+    assert build_budget_health_heatmap_figure([_BudPt()], [_CfPt()]) is not None
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:
