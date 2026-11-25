@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.11](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.10...0.1.11) (2026-11-25)
+
+
+### Features 🔥
+
+* **analytics:** add HouseholdAnalytics budget, cashflow, and transfers ([15e9cb3](https://github.com/tks18/pfetl-analytics-studio/commit/15e9cb39d825326dfa4eb4eafdb827f680822d1b))
+* **household:** add Budget & Cashflow charts, tables, and sticky rail ([24d48ae](https://github.com/tks18/pfetl-analytics-studio/commit/24d48ae14322e11880e2d96ac98dd4be450bbfb3))
+* **semantic:** register budget, cashflow, and transfer drill datasets ([007c70b](https://github.com/tks18/pfetl-analytics-studio/commit/007c70b854b8c62a348bc9b958f1252bbe95c686))
+
+
+### Tests 🧪
+
+* **household:** add budget, cashflow, transfer, and UX regression tests ([ee2f177](https://github.com/tks18/pfetl-analytics-studio/commit/ee2f1774bb45da946aef1dfbfd7ca3f563e774c0))
+
 ### [0.1.10](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.9...0.1.10) (2026-11-25)
 
 
