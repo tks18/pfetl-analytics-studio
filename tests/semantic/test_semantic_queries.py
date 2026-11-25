@@ -535,3 +535,9 @@ def test_extended_period_presets_comparison_modes_and_filter_catalog(
     assert DEFAULT_METRICS.get("net_operating_cashflow").additive is True
     assert DEFAULT_METRICS.get("unreconciled_difference").additive is True
     assert DEFAULT_METRICS.get("closing_cash_balance").additive is False
+
+    # Phase 12 Wealth datasets and stock vs flow metrics
+    assert DEFAULT_DATASETS.has("silver_fact_opening_balances")
+    assert DEFAULT_METRICS.get("total_assets_book").additive is False
+    assert DEFAULT_METRICS.get("attribution_residual").additive is True
+    assert DEFAULT_METRICS.get("asset_market_delta").additive is True

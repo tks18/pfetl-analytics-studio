@@ -65,6 +65,13 @@ from pfetl_analytics_studio.ui import (
     build_tx_kind_volume_figure,
     build_waterfall_figure,
     build_wealth_asset_split_figure,
+    build_wealth_attribution_waterfall_figure,
+    build_wealth_drawdown_figure,
+    build_wealth_group_treemap_figure,
+    build_wealth_growth_drawdown_bubble_figure,
+    build_wealth_liquidity_debt_figure,
+    build_wealth_nw_comparison_figure,
+    build_wealth_pnl_fx_figure,
     chart_config,
     chart_panel,
     empty_state_panel,
@@ -480,6 +487,45 @@ def test_formatting_and_chart_figure_builders() -> None:
     assert build_tx_kind_volume_figure(_TxSummary(), "INR_INR") is not None
     assert build_tx_daily_activity_figure(_TxSummary(), "INR_INR") is not None
     assert build_tx_account_breakdown_figure(_TxSummary(), "INR_INR") is not None
+
+    class _WealthPt:
+        month_end = date(2026, 10, 31)
+        book_net_worth = 1050000.0
+        market_net_worth = 1130000.0
+        closing_unrealized_pl = 80000.0
+        closing_asset_pnl = 74000.0
+        closing_forex_pnl = 6000.0
+        liquidity_ratio_months = 18.0
+        debt_to_asset_pct = 0.01
+        yoy_nw_growth_real_pct = 0.30
+
+    class _WealthAttr:
+        state = "ready"
+        currency_id = "INR_INR"
+        opening_market_assets = 1070000.0
+        net_savings_flow = 50000.0
+        market_return_flow = 30000.0
+        attribution_residual = -5000.0
+        closing_market_assets = 1145000.0
+
+    class _WealthAsset:
+        asset_id = "a_eq"
+        asset_name = "Direct Equity"
+        asset_group = "Equity"
+        closing_balance = 535000.0
+        closing_balance_market = 615000.0
+        drawdown_from_peak = -0.05
+        yoy_growth_pct = 0.20
+        mom_growth_pct = 0.03
+        is_liquid = True
+
+    assert build_wealth_nw_comparison_figure([_WealthPt()], "INR_INR") is not None
+    assert build_wealth_attribution_waterfall_figure(_WealthAttr()) is not None
+    assert build_wealth_group_treemap_figure([_WealthAsset()], "INR_INR") is not None
+    assert build_wealth_pnl_fx_figure([_WealthPt()], "INR_INR") is not None
+    assert build_wealth_liquidity_debt_figure([_WealthPt()]) is not None
+    assert build_wealth_drawdown_figure([_WealthAsset()], "INR_INR") is not None
+    assert build_wealth_growth_drawdown_bubble_figure([_WealthAsset()], "INR_INR") is not None
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:
