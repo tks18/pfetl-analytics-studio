@@ -398,20 +398,21 @@ def build_inv_tax_harvest_figure(
         h
         for h in holdings
         if getattr(h, "harvestable_loss", None) is not None
-        and float(getattr(h, "harvestable_loss", 0.0) or 0.0) > 0
+        and float(getattr(h, "harvestable_loss", 0.0) or 0.0) != 0
     ]
     if not candidates:
         return None
     candidates.sort(
         key=lambda h: float(
-            getattr(h, "harvest_priority_score", None) or getattr(h, "harvestable_loss", 0.0) or 0.0
+            getattr(h, "harvest_priority_score", None)
+            or abs(float(getattr(h, "harvestable_loss", 0.0) or 0.0))
         ),
         reverse=True,
     )
     top = candidates[:limit]
     top.reverse()
     labels = [str(getattr(h, "instrument_name", "") or getattr(h, "isin", ""))[:28] for h in top]
-    losses = [float(getattr(h, "harvestable_loss", 0.0) or 0.0) for h in top]
+    losses = [abs(float(getattr(h, "harvestable_loss", 0.0) or 0.0)) for h in top]
     x_ticks = currency_ticks(losses, currency_id, include_zero=True)
     layout = studio_plotly_layout(
         height=340,
@@ -511,6 +512,48 @@ def build_inv_gainers_losers_figure(
                 "marker": {"color": colors},
                 "hovertemplate": "%{y}<br>Unrealized P&L: %{customdata}<extra></extra>",
                 "customdata": [format_currency(v, currency_id) for v in vals],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_active_alpha_figure(
+    holdings: Sequence[Any],
+    *,
+    limit: int = 5,
+) -> dict[str, Any] | None:
+    """Build a diverging horizontal bar chart of top/bottom ISINs by Active Return."""
+    pts = [h for h in holdings if getattr(h, "active_return", None) is not None]
+    if not pts:
+        return None
+    pts.sort(key=lambda h: float(getattr(h, "active_return", 0.0) or 0.0))
+    losers = [h for h in pts[:limit] if float(getattr(h, "active_return", 0.0) or 0.0) < 0]
+    winners = [h for h in pts[-limit:] if float(getattr(h, "active_return", 0.0) or 0.0) > 0]
+    combined = losers + winners
+    if not combined:
+        combined = pts[-limit:]
+    labels = [
+        str(getattr(h, "instrument_name", "") or getattr(h, "isin", ""))[:28] for h in combined
+    ]
+    vals = [float(getattr(h, "active_return", 0.0) or 0.0) for h in combined]
+    colors = ["#34D399" if v >= 0 else "#F87171" for v in vals]
+    x_ticks = numeric_ticks(vals, suffix="%")
+    layout = studio_plotly_layout(
+        height=340,
+        horizontal_bars=True,
+        x_currency_ticks=x_ticks,
+    )
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": vals,
+                "orientation": "h",
+                "marker": {"color": colors},
+                "hovertemplate": "%{y}<br>Active Alpha: %{x:.2f}%<extra></extra>",
             }
         ],
         "layout": layout,

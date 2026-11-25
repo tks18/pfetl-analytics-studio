@@ -22,6 +22,7 @@ from pfetl_analytics_studio.ui import (
     BadgeTone,
     TableColumn,
     bounded_data_table,
+    build_inv_active_alpha_figure,
     build_inv_allocation_bars_figure,
     build_inv_allocation_treemap_figure,
     build_inv_class_drift_figure,
@@ -31,6 +32,7 @@ from pfetl_analytics_studio.ui import (
     build_inv_isin_history_figure,
     build_inv_pnl_decomposition_figure,
     build_inv_risk_return_scatter_figure,
+    build_inv_tax_harvest_figure,
     chart_panel,
     empty_state_panel,
     error_state_panel,
@@ -422,6 +424,14 @@ def _render_overview_tab(
                     "Top Unrealized Gainers vs Losers",
                     build_inv_gainers_losers_figure(snapshot.holdings, currency_id),
                 )
+                _render_chart_card(
+                    "Tax-Loss Harvesting Candidates",
+                    build_inv_tax_harvest_figure(snapshot.holdings, currency_id),
+                )
+                _render_chart_card(
+                    "Active Alpha by Holding (vs Benchmark)",
+                    build_inv_active_alpha_figure(snapshot.holdings),
+                )
 
             _render_allocation_table(alloc_rows, currency_id, effective_label)
             _render_holdings_table(snapshot, currency_id, _open_isin_drawer)
@@ -559,12 +569,42 @@ def _render_holdings_table(
         for h in snapshot.holdings
     ]
     with ui.column().classes("w-full gap-2"):
-        bounded_data_table(
-            title=f"Holdings by ISIN ({len(snapshot.holdings)})",
-            columns=columns,
-            rows=table_rows,
-            pagination=15,
-        )
+        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+            search_input = (
+                ui.input(
+                    placeholder="Search ISIN, instrument, class, subtype, sector...",
+                )
+                .props("dense outlined dark clearable")
+                .classes("w-96")
+            )
+        table_box = ui.column().classes("w-full")
+
+        def _render_filtered_holdings(query: str = "") -> None:
+            q = query.strip().lower()
+            if q:
+                filtered = [
+                    r
+                    for r, h in zip(table_rows, snapshot.holdings, strict=True)
+                    if q in h.isin.lower()
+                    or q in (h.instrument_name or "").lower()
+                    or q in (h.instrument_class or "").lower()
+                    or q in (h.instrument_type or "").lower()
+                    or q in (h.instrument_subtype or "").lower()
+                    or q in (h.sector or "").lower()
+                ]
+            else:
+                filtered = table_rows
+            table_box.clear()
+            with table_box:
+                bounded_data_table(
+                    title=f"Holdings by ISIN ({len(filtered)})",
+                    columns=columns,
+                    rows=filtered,
+                    pagination=15,
+                )
+
+        search_input.on_value_change(lambda e: _render_filtered_holdings(str(e.value or "")))
+        _render_filtered_holdings("")
         if snapshot.holdings:
             with ui.row().classes("w-full items-center gap-2 flex-wrap"):
                 isin_options: dict[str, str] = {

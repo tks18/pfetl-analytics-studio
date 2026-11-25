@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.16](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.15...0.1.16) (2026-11-25)
+
+
+### Features 🔥
+
+* **investments:** add tax-loss harvest, alpha chart, and table search ([a7ac107](https://github.com/tks18/pfetl-analytics-studio/commit/a7ac107f9498c99aa6b082dc1d8b88485938709d))
+
 ### [0.1.15](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.14...0.1.15) (2026-11-25)
 
 
