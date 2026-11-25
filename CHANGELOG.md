@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.7](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.6...0.1.7) (2026-11-25)
+
+
+### Features 🔥
+
+* **analytics:** implement OverviewService with Gold/Meta queries ([41008cc](https://github.com/tks18/pfetl-analytics-studio/commit/41008cc5b7ae30db6170efb1cdcde15cb9139562))
+* **overview:** wire Overview cockpit page, attribution bridge ([a33e24a](https://github.com/tks18/pfetl-analytics-studio/commit/a33e24a852a1a71ca59b51c0d472fb9413447e32))
+* **semantic:** add period catalog options and comparison modes ([6336cd1](https://github.com/tks18/pfetl-analytics-studio/commit/6336cd1bd172a7baa7b77cb785e2b90060e085b2))
+* **ui:** modernize dark cockpit cards, Plotly charts ([d6d5678](https://github.com/tks18/pfetl-analytics-studio/commit/d6d5678f6641a9c3f543c850e0f1424a254feb6a))
+
+
+### Tests 🧪
+
+* **overview:** add Overview service integration tests ([350eb9f](https://github.com/tks18/pfetl-analytics-studio/commit/350eb9fc5d897f83cab53291bbd7f9f352488fdb))
+
 ### [0.1.6](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.5...0.1.6) (2026-11-24)
 
 
