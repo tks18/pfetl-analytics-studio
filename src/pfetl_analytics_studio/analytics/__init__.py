@@ -6,6 +6,17 @@ Forbidden: Does not import NiceGUI widgets or mutate warehouse/state data.
 
 from __future__ import annotations
 
+from pfetl_analytics_studio.analytics.household import HouseholdAnalytics
+from pfetl_analytics_studio.analytics.household_models import (
+    HouseholdIncomeSnapshot,
+    IncomeAccountMixPoint,
+    IncomeCategoryRow,
+    IncomeGroupRow,
+    IncomeMonthlyPoint,
+    IncomeTaxabilitySummary,
+    IncomeTransactionPage,
+    IncomeTransactionRow,
+)
 from pfetl_analytics_studio.analytics.overview import (
     AssetClassPoint,
     CashflowPoint,
@@ -25,6 +36,15 @@ __all__ = [
     "CashflowPoint",
     "CategoryBreakupPoint",
     "FirePoint",
+    "HouseholdAnalytics",
+    "HouseholdIncomeSnapshot",
+    "IncomeAccountMixPoint",
+    "IncomeCategoryRow",
+    "IncomeGroupRow",
+    "IncomeMonthlyPoint",
+    "IncomeTaxabilitySummary",
+    "IncomeTransactionPage",
+    "IncomeTransactionRow",
     "NetWorthPoint",
     "OverviewBreakupItem",
     "OverviewKPI",
