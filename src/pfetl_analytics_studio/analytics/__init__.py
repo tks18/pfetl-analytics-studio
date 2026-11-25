@@ -39,6 +39,15 @@ from pfetl_analytics_studio.analytics.household_models import (
     TxAccountPoint,
     TxDailyPoint,
 )
+from pfetl_analytics_studio.analytics.investments import InvestmentAnalytics
+from pfetl_analytics_studio.analytics.investments_models import (
+    AllocationDimension,
+    AllocationRow,
+    AllocationSnapshot,
+    InstrumentDetailSnapshot,
+    InvestmentHoldingRow,
+    InvestmentPortfolioSnapshot,
+)
 from pfetl_analytics_studio.analytics.overview import (
     AssetClassPoint,
     CashflowPoint,
@@ -64,6 +73,9 @@ from pfetl_analytics_studio.analytics.wealth_models import (
 )
 
 __all__ = [
+    "AllocationDimension",
+    "AllocationRow",
+    "AllocationSnapshot",
     "AssetBreakdownSnapshot",
     "AssetClassPoint",
     "AssetGroupMixRow",
@@ -98,6 +110,10 @@ __all__ = [
     "IncomeTaxabilitySummary",
     "IncomeTransactionPage",
     "IncomeTransactionRow",
+    "InstrumentDetailSnapshot",
+    "InvestmentAnalytics",
+    "InvestmentHoldingRow",
+    "InvestmentPortfolioSnapshot",
     "NetWorthAttributionSnapshot",
     "NetWorthPoint",
     "OverviewBreakupItem",

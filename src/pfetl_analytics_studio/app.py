@@ -924,6 +924,13 @@ def create_app(profile: PFETLProfile | None = None) -> None:
                 )
             elif route.route_id == "wealth":
                 render_wealth_page(ctx, cache=session.cache)
+            elif route.route_id == "investments":
+                render_investments_page(
+                    ctx,
+                    cache=session.cache,
+                    initial_tab=ctx.active_tabs.get("investments", "overview"),
+                    on_tab_change=lambda tab_id: session.set_active_tab("investments", tab_id),
+                )
             else:
                 renderer = _PAGE_RENDERERS[route.route_id]
                 renderer(ctx)

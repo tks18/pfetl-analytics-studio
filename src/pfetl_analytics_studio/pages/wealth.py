@@ -27,12 +27,12 @@ from pfetl_analytics_studio.ui import (
     build_wealth_drawdown_figure,
     build_wealth_foreign_exposure_trend_figure,
     build_wealth_group_treemap_figure,
-    build_wealth_growth_drawdown_bubble_figure,
     build_wealth_investment_book_vs_market_figure,
     build_wealth_liquid_vs_illiquid_figure,
     build_wealth_liquidity_debt_figure,
     build_wealth_nw_comparison_figure,
     build_wealth_pnl_fx_figure,
+    build_wealth_savings_vs_market_figure,
     chart_panel,
     empty_state_panel,
     error_state_panel,
@@ -340,9 +340,9 @@ def _render_wealth_body(context: AppContext, snapshot: WealthSummarySnapshot) ->
             source_caption="Source: gold.core_monthly_fact",
         )
         chart_panel(
-            title="Asset Growth vs Drawdown (Click Bubble to Drill)",
-            subtitle=f"YoY growth % vs drawdown from peak; bubble = market balance ({snapshot.period_label})",
-            figure=build_wealth_growth_drawdown_bubble_figure(assets, cid),
+            title="Cumulative Net Savings vs Market Balance (Click to Drill)",
+            subtitle=f"Contributed savings vs current market value for top assets ({snapshot.period_label})",
+            figure=build_wealth_savings_vs_market_figure(assets, cid),
             source_caption="Source: gold.wealth_asset_breakdown",
             on_point_click=_on_asset_click,
         )

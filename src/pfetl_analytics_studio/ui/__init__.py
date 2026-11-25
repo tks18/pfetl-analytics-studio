@@ -59,6 +59,18 @@ from pfetl_analytics_studio.ui.charts_income import (
     build_income_ytd_figure,
     build_passive_income_engine_figure,
 )
+from pfetl_analytics_studio.ui.charts_investments import (
+    build_inv_allocation_bars_figure,
+    build_inv_allocation_treemap_figure,
+    build_inv_class_drift_figure,
+    build_inv_class_target_drift_figure,
+    build_inv_gainers_losers_figure,
+    build_inv_holdings_top_figure,
+    build_inv_isin_history_figure,
+    build_inv_pnl_decomposition_figure,
+    build_inv_risk_return_scatter_figure,
+    build_inv_tax_harvest_figure,
+)
 from pfetl_analytics_studio.ui.charts_transactions import (
     build_tx_account_breakdown_figure,
     build_tx_daily_activity_figure,
@@ -71,12 +83,12 @@ from pfetl_analytics_studio.ui.charts_wealth import (
     build_wealth_drawdown_figure,
     build_wealth_foreign_exposure_trend_figure,
     build_wealth_group_treemap_figure,
-    build_wealth_growth_drawdown_bubble_figure,
     build_wealth_investment_book_vs_market_figure,
     build_wealth_liquid_vs_illiquid_figure,
     build_wealth_liquidity_debt_figure,
     build_wealth_nw_comparison_figure,
     build_wealth_pnl_fx_figure,
+    build_wealth_savings_vs_market_figure,
 )
 from pfetl_analytics_studio.ui.filters import filter_chips_bar, period_selector
 from pfetl_analytics_studio.ui.formatting import (
@@ -132,6 +144,16 @@ __all__ = [
     "build_income_composition_figure",
     "build_income_trend_figure",
     "build_income_ytd_figure",
+    "build_inv_allocation_bars_figure",
+    "build_inv_allocation_treemap_figure",
+    "build_inv_class_drift_figure",
+    "build_inv_class_target_drift_figure",
+    "build_inv_gainers_losers_figure",
+    "build_inv_holdings_top_figure",
+    "build_inv_isin_history_figure",
+    "build_inv_pnl_decomposition_figure",
+    "build_inv_risk_return_scatter_figure",
+    "build_inv_tax_harvest_figure",
     "build_net_worth_attribution_figure",
     "build_passive_income_engine_figure",
     "build_portfolio_return_figure",
@@ -147,7 +169,7 @@ __all__ = [
     "build_wealth_drawdown_figure",
     "build_wealth_foreign_exposure_trend_figure",
     "build_wealth_group_treemap_figure",
-    "build_wealth_growth_drawdown_bubble_figure",
+    "build_wealth_savings_vs_market_figure",
     "build_wealth_investment_book_vs_market_figure",
     "build_wealth_liquid_vs_illiquid_figure",
     "build_wealth_liquidity_debt_figure",

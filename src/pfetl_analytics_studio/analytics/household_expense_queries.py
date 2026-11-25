@@ -42,6 +42,7 @@ _EXPENSE_SILVER_FILTER_MAP: dict[FilterField, str] = {
     FilterField.EXPENSE_CATEGORY: "CATEGORY_NAME",
     FilterField.IS_CORE_EXPENSE: "Is_Core_Expense",
     FilterField.ASSET_ID: "ASSET_ID",
+    FilterField.CURRENCY_ID: "CURRENCY_ID",
 }
 
 

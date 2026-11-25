@@ -1362,7 +1362,7 @@ def render_household_page(
 
         rendered_tabs: set[str] = set()
 
-        with ui.tabs().classes("w-full").props("dense align=left no-caps") as tabs:
+        with ui.tabs().classes("w-full studio-subtabs") as tabs:
             tab_income = ui.tab("income", label="Income", icon="payments")
             tab_expense = ui.tab("expense", label="Expense", icon="receipt")
             tab_budget = ui.tab("budget", label="Budget & Cashflow", icon="track_changes")

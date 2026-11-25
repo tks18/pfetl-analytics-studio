@@ -746,3 +746,78 @@ def build_wealth_growth_drawdown_bubble_figure(
         ),
         "config": chart_config("cockpit"),
     }
+
+
+def build_wealth_savings_vs_market_figure(
+    assets: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build Cumulative Net Savings vs Market Balance grouped bars for top 10 assets."""
+    ranked = sorted(
+        [
+            a
+            for a in assets
+            if (a.cumulative_net_savings is not None or a.closing_balance_market is not None)
+            and abs(
+                float(
+                    a.closing_balance_market
+                    if a.closing_balance_market is not None
+                    else a.closing_balance
+                )
+            )
+            > 0.01
+        ],
+        key=lambda a: float(
+            a.closing_balance_market if a.closing_balance_market is not None else a.closing_balance
+        ),
+        reverse=True,
+    )[:10]
+    if not ranked:
+        return None
+    names = [a.asset_name for a in ranked]
+    sav_vals = [round(float(a.cumulative_net_savings or 0.0), 2) for a in ranked]
+    mkt_vals = [
+        round(
+            float(
+                a.closing_balance_market
+                if a.closing_balance_market is not None
+                else a.closing_balance
+            ),
+            2,
+        )
+        for a in ranked
+    ]
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "name": "Cumulative Net Savings",
+                "x": names,
+                "y": sav_vals,
+                "customdata": [
+                    {"key": a.asset_id, "val": format_currency(v, currency_id, compact=True)}
+                    for a, v in zip(ranked, sav_vals, strict=True)
+                ],
+                "hovertemplate": "%{x}<br>Cum. Savings: <b>%{customdata.val}</b><extra></extra>",
+                "marker": {"color": "#64748B"},
+            },
+            {
+                "type": "bar",
+                "name": "Market Balance",
+                "x": names,
+                "y": mkt_vals,
+                "customdata": [
+                    {"key": a.asset_id, "val": format_currency(v, currency_id, compact=True)}
+                    for a, v in zip(ranked, mkt_vals, strict=True)
+                ],
+                "hovertemplate": "%{x}<br>Market Bal: <b>%{customdata.val}</b><extra></extra>",
+                "marker": {"color": "#38BDF8"},
+            },
+        ],
+        "layout": studio_plotly_layout(
+            y_ticks=currency_ticks([*sav_vals, *mkt_vals], currency_id, include_zero=True),
+            x_axis_type="category",
+            barmode="group",
+        ),
+        "config": chart_config("cockpit"),
+    }
