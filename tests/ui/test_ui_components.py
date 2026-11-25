@@ -60,6 +60,9 @@ from pfetl_analytics_studio.ui import (
     build_passive_income_engine_figure,
     build_portfolio_return_figure,
     build_treemap_figure,
+    build_tx_account_breakdown_figure,
+    build_tx_daily_activity_figure,
+    build_tx_kind_volume_figure,
     build_waterfall_figure,
     build_wealth_asset_split_figure,
     chart_config,
@@ -451,6 +454,32 @@ def test_formatting_and_chart_figure_builders() -> None:
     assert build_cashflow_waterfall_figure(_CfSnap()) is not None
     assert build_cashflow_activity_trend_figure([_CfPt()], "INR_INR") is not None
     assert build_budget_health_heatmap_figure([_BudPt()], [_CfPt()]) is not None
+
+    class _TxDaily:
+        tx_date = date(2026, 10, 15)
+        income_amount = 50000.0
+        expense_amount = 15000.0
+        transfer_volume = 20000.0
+
+    class _TxAcc:
+        account_name = "HDFC Bank"
+        volume = 85000.0
+        tx_count = 4
+
+    class _TxSummary:
+        total_count = 4
+        income_total = 50000.0
+        expense_total = 15000.0
+        transfer_volume = 20000.0
+        income_count = 1
+        expense_count = 2
+        transfer_count = 1
+        daily_series = (_TxDaily(),)
+        account_breakdown = (_TxAcc(),)
+
+    assert build_tx_kind_volume_figure(_TxSummary(), "INR_INR") is not None
+    assert build_tx_daily_activity_figure(_TxSummary(), "INR_INR") is not None
+    assert build_tx_account_breakdown_figure(_TxSummary(), "INR_INR") is not None
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:
