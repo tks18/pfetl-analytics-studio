@@ -26,8 +26,8 @@ from pfetl_analytics_studio.analytics.household_models import (
     IncomeTransactionRow,
 )
 from pfetl_analytics_studio.analytics.overview_models import as_date, as_float, slice_filters
-from pfetl_analytics_studio.analytics.overview_queries import table_has_column
-from pfetl_analytics_studio.data import DuckDBReader
+from pfetl_analytics_studio.analytics.overview_queries import table_exists, table_has_column
+from pfetl_analytics_studio.data import DuckDBQueryPort
 from pfetl_analytics_studio.semantic import FilterField, FilterSet, compile_filter_clause
 
 _INCOME_GOLD_FILTER_MAP: dict[FilterField, str] = {
@@ -52,12 +52,12 @@ def _coalesce_group(value: Any) -> str:
 
 
 def query_income_efficiency(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Return summed income flows and latest non-additive ratios from `cashflow_efficiency_analytics`."""
-    if not duck_reader.table_exists("gold", "cashflow_efficiency_analytics"):
+    if not table_exists(duck_reader, "gold", "cashflow_efficiency_analytics"):
         return None, None
     has_rich = table_has_column(
         duck_reader, "gold", "cashflow_efficiency_analytics", "Active_Income"
@@ -114,12 +114,12 @@ def query_income_efficiency(
 
 
 def query_income_budget(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> dict[str, Any] | None:
     """Return budget income target, actual income, and volatility flag cleanly."""
-    if not duck_reader.table_exists("gold", "forecast_budget_variance"):
+    if not table_exists(duck_reader, "gold", "forecast_budget_variance"):
         return None
     if not table_has_column(duck_reader, "gold", "forecast_budget_variance", "Budget_Income"):
         return None
@@ -142,13 +142,13 @@ def query_income_budget(
 
 
 def query_income_monthly_series(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     *,
     chart_start: date,
     end_date: date,
 ) -> tuple[IncomeMonthlyPoint, ...]:
     """Fetch chronological income composition, 3M smoothing, budget, and YTD series."""
-    if not duck_reader.table_exists("gold", "cashflow_efficiency_analytics"):
+    if not table_exists(duck_reader, "gold", "cashflow_efficiency_analytics"):
         return ()
     has_rich = table_has_column(
         duck_reader, "gold", "cashflow_efficiency_analytics", "Active_Income"
@@ -156,7 +156,7 @@ def query_income_monthly_series(
     if not has_rich:
         return ()
 
-    has_budget = duck_reader.table_exists("gold", "forecast_budget_variance") and table_has_column(
+    has_budget = table_exists(duck_reader, "gold", "forecast_budget_variance") and table_has_column(
         duck_reader, "gold", "forecast_budget_variance", "Budget_Income"
     )
     has_cash = table_has_column(
@@ -183,7 +183,7 @@ def query_income_monthly_series(
     bud_expr = 'b."Budget_Income"' if has_budget else "NULL"
 
     ytd_map: dict[date, float] = {}
-    if duck_reader.table_exists("gold", "cashflow_income_breakdown") and table_has_column(
+    if table_exists(duck_reader, "gold", "cashflow_income_breakdown") and table_has_column(
         duck_reader, "gold", "cashflow_income_breakdown", "Cumulative_YTD_Income"
     ):
         ytd_rows = duck_reader.fetch_all(
@@ -252,22 +252,22 @@ def query_income_monthly_series(
 
 
 def query_income_category_breakdown(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
     *,
     filters: FilterSet,
 ) -> tuple[tuple[IncomeCategoryRow, ...], tuple[IncomeGroupRow, ...], float, float]:
     """Return Gold category & group rollups plus gross positive and deduction totals."""
-    if not duck_reader.table_exists("gold", "cashflow_income_breakdown"):
+    if not table_exists(duck_reader, "gold", "cashflow_income_breakdown"):
         return (), (), 0.0, 0.0
 
     sub_filter = slice_filters(filters, _INCOME_GOLD_FILTER_MAP)
     where_extra, f_params = compile_filter_clause(sub_filter, _INCOME_GOLD_FILTER_MAP)
 
-    has_sub_dim = duck_reader.table_exists("silver", "dim_income_subcategory") and table_has_column(
-        duck_reader, "silver", "dim_income_subcategory", "Taxability"
-    )
+    has_sub_dim = table_exists(
+        duck_reader, "silver", "dim_income_subcategory"
+    ) and table_has_column(duck_reader, "silver", "dim_income_subcategory", "Taxability")
     tax_join = (
         'LEFT JOIN silver.dim_income_subcategory sc ON g."CATEGORY_ID" = sc."UID"'
         if has_sub_dim
@@ -343,12 +343,11 @@ def query_income_category_breakdown(
         prev_amt, prev_cnt = grp_totals.get(grp, (0.0, 0))
         grp_totals[grp] = (prev_amt + amt, prev_cnt + 1)
 
-    net_total = gross_pos + deductions
     group_rows = tuple(
         IncomeGroupRow(
             category_group=grp,
             amount=tot,
-            share_pct=(tot / net_total) if net_total > 0 and tot > 0 else None,
+            share_pct=(tot / gross_pos) if gross_pos > 0 and tot > 0 else None,
             category_count=cnt,
         )
         for grp, (tot, cnt) in sorted(grp_totals.items(), key=lambda kv: kv[1][0], reverse=True)
@@ -357,20 +356,20 @@ def query_income_category_breakdown(
 
 
 def query_income_account_mix_and_taxability(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
     *,
     filters: FilterSet | None = None,
 ) -> tuple[tuple[IncomeAccountMixPoint, ...], IncomeTaxabilitySummary]:
     """Summarize receiving accounts and taxability from Silver income transactions."""
-    if not duck_reader.table_exists("silver", "fact_income_transactions"):
+    if not table_exists(duck_reader, "silver", "fact_income_transactions"):
         return (), IncomeTaxabilitySummary()
     if not table_has_column(duck_reader, "silver", "fact_income_transactions", "BASE_AMOUNT"):
         return (), IncomeTaxabilitySummary()
 
-    has_acc = duck_reader.table_exists("silver", "dim_asset_subcategory")
-    has_sub = duck_reader.table_exists("silver", "dim_income_subcategory")
+    has_acc = table_exists(duck_reader, "silver", "dim_asset_subcategory")
+    has_sub = table_exists(duck_reader, "silver", "dim_income_subcategory")
 
     acc_join = (
         'LEFT JOIN silver.dim_asset_subcategory a ON t."ASSET_ID" = a."UID"' if has_acc else ""
@@ -438,7 +437,8 @@ def query_income_account_mix_and_taxability(
         SELECT
             acc_name,
             SUM(base_amount) AS amt,
-            COUNT(*) AS tx_cnt
+            COUNT(*) AS tx_cnt,
+            SUM(SUM(base_amount)) OVER () AS total_acc_amt
         FROM joined
         WHERE ({where_extra})
         GROUP BY 1
@@ -448,7 +448,9 @@ def query_income_account_mix_and_taxability(
         """,
         [start_date, end_date, *f_params],
     )
-    total_acc = sum(as_float(r.get("amt")) or 0.0 for r in acc_rows)
+    total_acc = (as_float(acc_rows[0].get("total_acc_amt")) if acc_rows else None) or sum(
+        as_float(r.get("amt")) or 0.0 for r in acc_rows
+    )
     acc_mix = tuple(
         IncomeAccountMixPoint(
             account_name=str(r["acc_name"]),
@@ -498,7 +500,7 @@ def query_income_account_mix_and_taxability(
 
 
 def query_income_transactions(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
     *,
@@ -510,14 +512,14 @@ def query_income_transactions(
     page_size: int = 50,
 ) -> IncomeTransactionPage:
     """Fetch bounded, paginated Silver income transactions with joined dimension labels."""
-    if not duck_reader.table_exists("silver", "fact_income_transactions"):
+    if not table_exists(duck_reader, "silver", "fact_income_transactions"):
         return IncomeTransactionPage(page=page, page_size=page_size)
     if not table_has_column(duck_reader, "silver", "fact_income_transactions", "BASE_AMOUNT"):
         return IncomeTransactionPage(page=page, page_size=page_size)
 
-    has_sub = duck_reader.table_exists("silver", "dim_income_subcategory")
-    has_cat = duck_reader.table_exists("silver", "dim_income_category")
-    has_acc = duck_reader.table_exists("silver", "dim_asset_subcategory")
+    has_sub = table_exists(duck_reader, "silver", "dim_income_subcategory")
+    has_cat = table_exists(duck_reader, "silver", "dim_income_category")
+    has_acc = table_exists(duck_reader, "silver", "dim_asset_subcategory")
 
     joins: list[str] = []
     if has_sub:

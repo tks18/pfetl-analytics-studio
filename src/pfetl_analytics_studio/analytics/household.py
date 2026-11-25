@@ -40,8 +40,13 @@ from pfetl_analytics_studio.analytics.overview_models import (
     as_float,
     chart_window_start,
 )
-from pfetl_analytics_studio.analytics.overview_queries import enrich_meta_counts
+from pfetl_analytics_studio.analytics.overview_queries import (
+    enrich_meta_counts,
+    reset_catalog_snapshot,
+    use_catalog_snapshot,
+)
 from pfetl_analytics_studio.data import (
+    CatalogSnapshot,
     CompatibilityReport,
     DuckDBReader,
     QueryCache,
@@ -86,6 +91,7 @@ class HouseholdAnalytics:
         run_id: str | None = None,
         provenance: RunProvenance | None = None,
         compatibility: CompatibilityReport | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
         filters: FilterSet | None = None,
         cache: QueryCache | None = None,
     ) -> HouseholdIncomeSnapshot:
@@ -150,6 +156,7 @@ class HouseholdAnalytics:
             active_filters=active_filters,
             currency_id=currency_id,
             run_health=run_health,
+            catalog_snapshot=catalog_snapshot,
         )
         if cache is not None and snapshot.state == "ready":
             cache.set(cache_key, snapshot)
@@ -160,6 +167,7 @@ class HouseholdAnalytics:
         profile: PFETLProfile,
         period_context: PeriodContext | None,
         *,
+        catalog_snapshot: CatalogSnapshot | None = None,
         filters: FilterSet | None = None,
         drill_group: str | None = None,
         drill_category: str | None = None,
@@ -174,17 +182,22 @@ class HouseholdAnalytics:
         duck_reader = DuckDBReader(profile)
         if duck_reader.get_state() != WarehouseState.AVAILABLE:
             return IncomeTransactionPage(page=page, page_size=page_size)
-        return query_income_transactions(
-            duck_reader,
-            period_context.start_date,
-            period_context.end_date,
-            filters=filters if filters is not None else FilterSet(),
-            drill_group=drill_group,
-            drill_category=drill_category,
-            flag_filter=flag_filter,
-            page=page,
-            page_size=page_size,
-        )
+        token = use_catalog_snapshot(catalog_snapshot)
+        try:
+            with duck_reader.session() as db:
+                return query_income_transactions(
+                    db,
+                    period_context.start_date,
+                    period_context.end_date,
+                    filters=filters if filters is not None else FilterSet(),
+                    drill_group=drill_group,
+                    drill_category=drill_category,
+                    flag_filter=flag_filter,
+                    page=page,
+                    page_size=page_size,
+                )
+        finally:
+            reset_catalog_snapshot(token)
 
     @classmethod
     def _query_income_snapshot(
@@ -195,6 +208,7 @@ class HouseholdAnalytics:
         active_filters: FilterSet,
         currency_id: str,
         run_health: OverviewRunHealth,
+        catalog_snapshot: CatalogSnapshot | None = None,
     ) -> HouseholdIncomeSnapshot:
         """Execute Gold & Silver queries and assemble the Income cockpit snapshot."""
         assert period_context.start_date is not None and period_context.end_date is not None
@@ -202,44 +216,51 @@ class HouseholdAnalytics:
         end_date = period_context.end_date
         chart_start, chart_label = chart_window_start(start_date, end_date)
 
-        enriched_health = enrich_meta_counts(duck_reader, run_health)
-        eff_flow, eff_latest = query_income_efficiency(duck_reader, start_date, end_date)
-        budget = query_income_budget(duck_reader, start_date, end_date)
-        cat_rows, group_rows, gross_pos, deductions = query_income_category_breakdown(
-            duck_reader, start_date, end_date, filters=active_filters
-        )
-        acc_mix, taxability = query_income_account_mix_and_taxability(
-            duck_reader, start_date, end_date, filters=active_filters
-        )
-        monthly_series = query_income_monthly_series(
-            duck_reader, chart_start=chart_start, end_date=end_date
-        )
+        token = use_catalog_snapshot(catalog_snapshot)
+        try:
+            with duck_reader.session() as db:
+                enriched_health = enrich_meta_counts(db, run_health)
+                eff_flow, eff_latest = query_income_efficiency(db, start_date, end_date)
+                budget = query_income_budget(db, start_date, end_date)
+                cat_rows, group_rows, gross_pos, deductions = query_income_category_breakdown(
+                    db, start_date, end_date, filters=active_filters
+                )
+                acc_mix, taxability = query_income_account_mix_and_taxability(
+                    db, start_date, end_date, filters=active_filters
+                )
+                monthly_series = query_income_monthly_series(
+                    db, chart_start=chart_start, end_date=end_date
+                )
 
-        comp_inc: float | None = None
-        comp_gross: float | None = None
-        comp_active: float | None = None
-        comp_passive: float | None = None
-        comp_cash: float | None = None
-        comp_label: str | None = None
-        comp = period_context.comparison
-        if comp is not None and not comp.is_empty and comp.start_date and comp.end_date:
-            c_flow, _ = query_income_efficiency(duck_reader, comp.start_date, comp.end_date)
-            _, _, c_gross, _ = query_income_category_breakdown(
-                duck_reader, comp.start_date, comp.end_date, filters=active_filters
-            )
-            comp_gross = c_gross if c_gross > 0 else None
-            if c_flow is not None:
-                comp_inc = as_float(c_flow.get("total_inc"))
-                comp_active = as_float(c_flow.get("act_inc"))
-                comp_passive = as_float(c_flow.get("pass_inc"))
-                comp_cash = as_float(c_flow.get("cash_inc"))
-                comp_label = "vs Prior Period"
-        elif eff_latest is not None and as_float(eff_latest.get("inc_mom_delta")) is not None:
-            tot = as_float(eff_flow.get("total_inc")) if eff_flow else None
-            mom_d = as_float(eff_latest.get("inc_mom_delta"))
-            if tot is not None and mom_d is not None:
-                comp_inc = tot - mom_d
-                comp_label = "MoM"
+                comp_inc: float | None = None
+                comp_gross: float | None = None
+                comp_active: float | None = None
+                comp_passive: float | None = None
+                comp_cash: float | None = None
+                comp_label: str | None = None
+                comp = period_context.comparison
+                if comp is not None and not comp.is_empty and comp.start_date and comp.end_date:
+                    c_flow, _ = query_income_efficiency(db, comp.start_date, comp.end_date)
+                    _, _, c_gross, _ = query_income_category_breakdown(
+                        db, comp.start_date, comp.end_date, filters=active_filters
+                    )
+                    comp_gross = c_gross if c_gross > 0 else None
+                    if c_flow is not None:
+                        comp_inc = as_float(c_flow.get("total_inc"))
+                        comp_active = as_float(c_flow.get("act_inc"))
+                        comp_passive = as_float(c_flow.get("pass_inc"))
+                        comp_cash = as_float(c_flow.get("cash_inc"))
+                        comp_label = "vs Prior Period"
+                elif (
+                    eff_latest is not None and as_float(eff_latest.get("inc_mom_delta")) is not None
+                ):
+                    tot = as_float(eff_flow.get("total_inc")) if eff_flow else None
+                    mom_d = as_float(eff_latest.get("inc_mom_delta"))
+                    if tot is not None and mom_d is not None:
+                        comp_inc = tot - mom_d
+                        comp_label = "MoM"
+        finally:
+            reset_catalog_snapshot(token)
 
         bundle = _IncomeBundle(
             end_date=end_date,
@@ -464,6 +485,17 @@ class HouseholdAnalytics:
         ytd_sum = sum(
             (c.cumulative_ytd or 0.0) for c in bundle.cat_rows if c.cumulative_ytd is not None
         )
+        tax_breakups: list[OverviewBreakupItem] = [
+            OverviewBreakupItem(label="Taxable", value=tax_sum.taxable_amount),
+            OverviewBreakupItem(label="Non-Taxable", value=tax_sum.non_taxable_amount),
+        ]
+        if abs(tax_sum.unclassified_amount) >= 0.01:
+            tax_breakups.append(
+                OverviewBreakupItem(label="Unclassified", value=tax_sum.unclassified_amount)
+            )
+        tax_breakups.append(
+            OverviewBreakupItem(label="YTD Net", value=ytd_sum if ytd_sum != 0.0 else None)
+        )
         tax_card = OverviewKPI(
             kpi_id="income_taxability",
             label="Income Taxability Mix",
@@ -475,11 +507,7 @@ class HouseholdAnalytics:
             drill_route="/tax",
             available=tax_sum.taxable_share_pct is not None,
             tooltip="Share of classified income tagged taxable vs non-taxable in PFETL dimensions.",
-            breakups=(
-                OverviewBreakupItem(label="Taxable", value=tax_sum.taxable_amount),
-                OverviewBreakupItem(label="Non-Taxable", value=tax_sum.non_taxable_amount),
-                OverviewBreakupItem(label="YTD Net", value=ytd_sum if ytd_sum != 0.0 else None),
-            ),
+            breakups=tuple(tax_breakups),
         )
 
         act_dep = as_float(el.get("Active_Income_Dependency_Pct"))

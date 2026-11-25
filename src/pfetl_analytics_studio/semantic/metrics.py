@@ -43,6 +43,13 @@ class MetricFormat(StrEnum):
     DATE = "date"
 
 
+class MetricOrigin(StrEnum):
+    """Distinguishes canonical PFETL Core measures from Studio-derived presentation metrics."""
+
+    CORE = "core"
+    STUDIO_DERIVED = "studio_derived"
+
+
 class MetricSpec(BaseModel):
     """Semantic measure contract specifying safe aggregation and dimensional grain."""
 
@@ -58,6 +65,7 @@ class MetricSpec(BaseModel):
     allowed_dimensions: tuple[str, ...]
     additive: bool
     description: str
+    origin: MetricOrigin = MetricOrigin.CORE
 
     @model_validator(mode="after")
     def _validate_invariants(self) -> MetricSpec:

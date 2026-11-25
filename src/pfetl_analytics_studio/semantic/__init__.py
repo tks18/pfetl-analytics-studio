@@ -28,6 +28,7 @@ from pfetl_analytics_studio.semantic.metrics import (
     FOUNDATIONAL_METRICS,
     MetricAggregation,
     MetricFormat,
+    MetricOrigin,
     MetricRegistry,
     MetricSpec,
 )
@@ -67,6 +68,7 @@ __all__ = [
     "FilterSpec",
     "MetricAggregation",
     "MetricFormat",
+    "MetricOrigin",
     "MetricRegistry",
     "MetricSpec",
     "PeriodCatalogOptions",

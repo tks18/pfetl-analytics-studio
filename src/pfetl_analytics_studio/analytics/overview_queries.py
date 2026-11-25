@@ -12,6 +12,7 @@ Does not own
 
 from __future__ import annotations
 
+from contextvars import ContextVar
 from datetime import date
 from typing import Any
 
@@ -28,7 +29,7 @@ from pfetl_analytics_studio.analytics.overview_models import (
     as_float,
     slice_filters,
 )
-from pfetl_analytics_studio.data import DuckDBReader
+from pfetl_analytics_studio.data import CatalogSnapshot, DuckDBQueryPort
 from pfetl_analytics_studio.semantic import (
     FilterField,
     FilterOperator,
@@ -60,12 +61,39 @@ _WEALTH_SPLIT_FILTER_MAP: dict[FilterField, str] = {
 }
 
 
+_ACTIVE_CATALOG_SNAPSHOT: ContextVar[CatalogSnapshot | None] = ContextVar(
+    "_ACTIVE_CATALOG_SNAPSHOT", default=None
+)
+
+
+def use_catalog_snapshot(snapshot: CatalogSnapshot | None) -> Any:
+    """Bind an immutable `CatalogSnapshot` for zero-probe capability checks."""
+    return _ACTIVE_CATALOG_SNAPSHOT.set(snapshot)
+
+
+def reset_catalog_snapshot(token: Any) -> None:
+    """Restore previous `CatalogSnapshot` binding."""
+    _ACTIVE_CATALOG_SNAPSHOT.reset(token)
+
+
+def table_exists(
+    duck_reader: DuckDBQueryPort,
+    schema: str,
+    table: str,
+) -> bool:
+    """Check surface existence via `CatalogSnapshot` when active, else DuckDB."""
+    snap = _ACTIVE_CATALOG_SNAPSHOT.get()
+    if snap is not None:
+        return snap.has_surface(f"{schema}.{table}")
+    return duck_reader.table_exists(schema, table)
+
+
 def enrich_meta_counts(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     run_health: OverviewRunHealth,
 ) -> OverviewRunHealth:
     """Populate row-count aggregates from `meta.m_Table_Row_Counts` safely."""
-    if not duck_reader.table_exists("meta", "m_Table_Row_Counts"):
+    if not table_exists(duck_reader, "meta", "m_Table_Row_Counts"):
         return run_health
     row = duck_reader.fetch_one(
         """
@@ -92,8 +120,11 @@ def enrich_meta_counts(
     )
 
 
-def table_has_column(duck_reader: DuckDBReader, schema: str, table: str, column: str) -> bool:
-    """Check column existence safely so partial test fixtures never fail."""
+def table_has_column(duck_reader: DuckDBQueryPort, schema: str, table: str, column: str) -> bool:
+    """Check column existence via `CatalogSnapshot` when active, else `information_schema`."""
+    snap = _ACTIVE_CATALOG_SNAPSHOT.get()
+    if snap is not None:
+        return snap.has_column(f"{schema}.{table}", column)
     hit = duck_reader.fetch_one(
         """
         SELECT 1 AS ok
@@ -107,12 +138,12 @@ def table_has_column(duck_reader: DuckDBReader, schema: str, table: str, column:
 
 
 def query_core_monthly(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Fetch summed flows & latest stock balances from `gold.core_monthly_fact`."""
-    if not duck_reader.table_exists("gold", "core_monthly_fact"):
+    if not table_exists(duck_reader, "gold", "core_monthly_fact"):
         return None, None
 
     def _opt_flow(col: str, fn: str, alias: str) -> str:
@@ -193,12 +224,12 @@ def query_core_monthly(
 
 
 def query_efficiency(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Return summed efficiency flows plus latest ratio row inside the active period."""
-    if not duck_reader.table_exists("gold", "cashflow_efficiency_analytics"):
+    if not table_exists(duck_reader, "gold", "cashflow_efficiency_analytics"):
         return None, None
     has_rich = table_has_column(
         duck_reader, "gold", "cashflow_efficiency_analytics", "Active_Income"
@@ -266,12 +297,12 @@ def query_efficiency(
 
 
 def query_budget_variance(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> dict[str, Any] | None:
     """Query budget targets, overspend flags, and zero-income runway safely."""
-    if not duck_reader.table_exists("gold", "forecast_budget_variance"):
+    if not table_exists(duck_reader, "gold", "forecast_budget_variance"):
         return None
     if not table_has_column(
         duck_reader, "gold", "forecast_budget_variance", "Budget_Total_Expense_Target"
@@ -292,12 +323,12 @@ def query_budget_variance(
 
 
 def query_portfolio_dual(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     """Return both period-anchored portfolio valuation and absolute latest DB valuation."""
-    if not duck_reader.table_exists("gold", "investment_by_portfolio"):
+    if not table_exists(duck_reader, "gold", "investment_by_portfolio"):
         return None, None
 
     opt_cols = (
@@ -363,12 +394,12 @@ def query_portfolio_dual(
 
 
 def query_fire_latest(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
 ) -> dict[str, Any] | None:
     """Return latest FIRE trajectory row strictly inside the active period."""
-    if not duck_reader.table_exists("gold", "wealth_fire_analytics"):
+    if not table_exists(duck_reader, "gold", "wealth_fire_analytics"):
         return None
     opt = (
         '"Coast_FI_Today", "Savings_Rate_Required"'
@@ -396,13 +427,13 @@ def query_fire_latest(
 
 
 def query_tax_fy(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     *,
     default_fy: str | None,
     filters: FilterSet,
 ) -> dict[str, Any] | None:
     """Fetch FY tax exposure summary honoring active `FilterField.FY` predicates."""
-    if not duck_reader.table_exists("gold", "tax_financial_year_summary"):
+    if not table_exists(duck_reader, "gold", "tax_financial_year_summary"):
         return None
 
     target_fys: list[str] = []
@@ -463,14 +494,14 @@ def query_tax_fy(
 
 
 def query_income_breakup(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
     *,
     filters: FilterSet,
 ) -> tuple[CategoryBreakupPoint, ...]:
     """Aggregate top positive income categories from `gold.cashflow_income_breakdown`."""
-    if not duck_reader.table_exists("gold", "cashflow_income_breakdown"):
+    if not table_exists(duck_reader, "gold", "cashflow_income_breakdown"):
         return ()
     if not table_has_column(
         duck_reader, "gold", "cashflow_income_breakdown", "Total_Monthly_Income"
@@ -521,14 +552,14 @@ def query_income_breakup(
 
 
 def query_expense_breakup(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     start_date: date,
     end_date: date,
     *,
     filters: FilterSet,
 ) -> tuple[CategoryBreakupPoint, ...]:
     """Aggregate top expense groups & Core vs Non-Core split from `cashflow_expense_breakdown`."""
-    if not duck_reader.table_exists("gold", "cashflow_expense_breakdown"):
+    if not table_exists(duck_reader, "gold", "cashflow_expense_breakdown"):
         return ()
     if not table_has_column(
         duck_reader, "gold", "cashflow_expense_breakdown", "Total_Monthly_Spend"
@@ -571,13 +602,13 @@ def query_expense_breakup(
 
 
 def query_asset_class_mix(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     end_date: date,
     *,
     filters: FilterSet,
 ) -> tuple[AssetClassPoint, ...]:
     """Fetch latest instrument class allocation, XIRR, and benchmark alpha."""
-    if not duck_reader.table_exists("gold", "investment_by_class"):
+    if not table_exists(duck_reader, "gold", "investment_by_class"):
         return ()
     if not table_has_column(duck_reader, "gold", "investment_by_class", "INSTRUMENT_CLASS"):
         return ()
@@ -632,11 +663,11 @@ def query_asset_class_mix(
 
 
 def query_wealth_aggregates(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     end_date: date,
 ) -> dict[str, Any] | None:
     """Fetch aggregate ATH, cumulative organic savings, and drawdown from `gold.wealth_asset_breakdown`."""
-    if not duck_reader.table_exists("gold", "wealth_asset_breakdown"):
+    if not table_exists(duck_reader, "gold", "wealth_asset_breakdown"):
         return None
     if not table_has_column(
         duck_reader, "gold", "wealth_asset_breakdown", "Closing_Balance_Market"
@@ -668,13 +699,13 @@ def query_wealth_aggregates(
 
 
 def query_wealth_asset_split(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     end_date: date,
     *,
     filters: FilterSet,
 ) -> tuple[WealthAssetSplitPoint, ...]:
     """Fetch net worth split by asset group from `gold.wealth_asset_breakdown` + asset dims."""
-    if not duck_reader.table_exists("gold", "wealth_asset_breakdown"):
+    if not table_exists(duck_reader, "gold", "wealth_asset_breakdown"):
         return ()
     if not table_has_column(
         duck_reader, "gold", "wealth_asset_breakdown", "Closing_Balance_Market"
@@ -689,9 +720,9 @@ def query_wealth_asset_split(
     if target_dt is None:
         return ()
 
-    has_dims = duck_reader.table_exists(
-        "silver", "dim_asset_subcategory"
-    ) and duck_reader.table_exists("silver", "dim_asset_category")
+    has_dims = table_exists(duck_reader, "silver", "dim_asset_subcategory") and table_exists(
+        duck_reader, "silver", "dim_asset_category"
+    )
     if has_dims:
         sub_filter = slice_filters(filters, _WEALTH_SPLIT_FILTER_MAP)
         where_extra, f_params = compile_filter_clause(sub_filter, _WEALTH_SPLIT_FILTER_MAP)
@@ -753,7 +784,7 @@ def query_wealth_asset_split(
 
 
 def query_chart_series(
-    duck_reader: DuckDBReader,
+    duck_reader: DuckDBQueryPort,
     *,
     chart_start: date,
     end_date: date,
@@ -765,7 +796,7 @@ def query_chart_series(
 ]:
     """Fetch chronological series for the Overview cockpit charts."""
     nw_pts: list[NetWorthPoint] = []
-    if duck_reader.table_exists("gold", "core_monthly_fact"):
+    if table_exists(duck_reader, "gold", "core_monthly_fact"):
         rows = duck_reader.fetch_all(
             """
             SELECT
@@ -798,8 +829,8 @@ def query_chart_series(
             )
 
     cf_pts: list[CashflowPoint] = []
-    if duck_reader.table_exists("gold", "core_monthly_fact"):
-        has_eff = duck_reader.table_exists("gold", "cashflow_efficiency_analytics")
+    if table_exists(duck_reader, "gold", "core_monthly_fact"):
+        has_eff = table_exists(duck_reader, "gold", "cashflow_efficiency_analytics")
         has_dep = has_eff and table_has_column(
             duck_reader, "gold", "cashflow_efficiency_analytics", "Total_Investment_Deployed"
         )
@@ -881,7 +912,7 @@ def query_chart_series(
             )
 
     port_pts: list[PortfolioPoint] = []
-    if duck_reader.table_exists("gold", "investment_by_portfolio"):
+    if table_exists(duck_reader, "gold", "investment_by_portfolio"):
         p_rows = duck_reader.fetch_all(
             """
             SELECT
@@ -914,7 +945,7 @@ def query_chart_series(
             )
 
     fire_pts: list[FirePoint] = []
-    if duck_reader.table_exists("gold", "wealth_fire_analytics"):
+    if table_exists(duck_reader, "gold", "wealth_fire_analytics"):
         f_rows = duck_reader.fetch_all(
             """
             SELECT
