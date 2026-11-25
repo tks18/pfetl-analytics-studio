@@ -413,9 +413,9 @@ def build_investment_kpis(
 
     rebalance_count = sum(1 for row in holdings if row.rebalance_required)
     harvestable_total = sum(
-        row.harvestable_loss
+        abs(row.harvestable_loss)
         for row in holdings
-        if row.harvestable_loss is not None and row.harvestable_loss > 0
+        if row.harvestable_loss is not None and row.harvestable_loss != 0
     )
     top5_wt = as_float(h.get("Top5_Holdings_Weight"))
 

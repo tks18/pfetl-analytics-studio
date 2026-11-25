@@ -60,6 +60,7 @@ from pfetl_analytics_studio.ui.charts_income import (
     build_passive_income_engine_figure,
 )
 from pfetl_analytics_studio.ui.charts_investments import (
+    build_inv_active_alpha_figure,
     build_inv_allocation_bars_figure,
     build_inv_allocation_treemap_figure,
     build_inv_class_drift_figure,
@@ -144,6 +145,7 @@ __all__ = [
     "build_income_composition_figure",
     "build_income_trend_figure",
     "build_income_ytd_figure",
+    "build_inv_active_alpha_figure",
     "build_inv_allocation_bars_figure",
     "build_inv_allocation_treemap_figure",
     "build_inv_class_drift_figure",
