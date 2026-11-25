@@ -41,6 +41,7 @@ from pfetl_analytics_studio.semantic import (
 _WEALTH_ASSET_FILTER_MAP: dict[FilterField, str] = {
     FilterField.ASSET_ID: "w.ASSET_SUBCATEGORY_ID",
     FilterField.ASSET_GROUP: "ac.ASSET_GROUP",
+    FilterField.CURRENCY_ID: "sa.CURRENCY_ID",
     FilterField.IS_LIQUID: "sa.Is_Liquid",
     FilterField.IS_CASH_POOL: "sa.is_cash_pool",
 }

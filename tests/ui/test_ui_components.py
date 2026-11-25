@@ -68,10 +68,10 @@ from pfetl_analytics_studio.ui import (
     build_wealth_attribution_waterfall_figure,
     build_wealth_drawdown_figure,
     build_wealth_group_treemap_figure,
-    build_wealth_growth_drawdown_bubble_figure,
     build_wealth_liquidity_debt_figure,
     build_wealth_nw_comparison_figure,
     build_wealth_pnl_fx_figure,
+    build_wealth_savings_vs_market_figure,
     chart_config,
     chart_panel,
     empty_state_panel,
@@ -515,8 +515,7 @@ def test_formatting_and_chart_figure_builders() -> None:
         closing_balance = 535000.0
         closing_balance_market = 615000.0
         drawdown_from_peak = -0.05
-        yoy_growth_pct = 0.20
-        mom_growth_pct = 0.03
+        cumulative_net_savings = 400000.0
         is_liquid = True
 
     assert build_wealth_nw_comparison_figure([_WealthPt()], "INR_INR") is not None
@@ -525,7 +524,7 @@ def test_formatting_and_chart_figure_builders() -> None:
     assert build_wealth_pnl_fx_figure([_WealthPt()], "INR_INR") is not None
     assert build_wealth_liquidity_debt_figure([_WealthPt()]) is not None
     assert build_wealth_drawdown_figure([_WealthAsset()], "INR_INR") is not None
-    assert build_wealth_growth_drawdown_bubble_figure([_WealthAsset()], "INR_INR") is not None
+    assert build_wealth_savings_vs_market_figure([_WealthAsset()], "INR_INR") is not None
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:
