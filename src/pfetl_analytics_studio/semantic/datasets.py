@@ -206,7 +206,12 @@ FOUNDATIONAL_DATASETS: tuple[DatasetSpec, ...] = (
         date_field="MONTH_END_DATE",
         default_dimensions=("MONTH_END_DATE", "ASSET_SUBCATEGORY_ID"),
         allowed_dimensions=("MONTH_START_DATE", "MONTH_END_DATE", "ASSET_SUBCATEGORY_ID"),
-        allowed_filters=(FilterField.ASSET_ID, FilterField.IS_LIQUID, FilterField.IS_CASH_POOL),
+        allowed_filters=(
+            FilterField.ASSET_ID,
+            FilterField.ASSET_GROUP,
+            FilterField.IS_LIQUID,
+            FilterField.IS_CASH_POOL,
+        ),
         description="Asset-level monthly balances, liquidity, drawdown, flows, and runway.",
     ),
     DatasetSpec(
@@ -387,6 +392,18 @@ FOUNDATIONAL_DATASETS: tuple[DatasetSpec, ...] = (
         ),
         allowed_filters=(FilterField.ASSET_ID,),
         description="Canonical Silver transfer transactions used strictly for cashflow activity drill.",
+    ),
+    DatasetSpec(
+        id="silver_fact_opening_balances",
+        physical_table="silver.fact_opening_balances",
+        label="Opening Account Balances (Silver Context)",
+        domain="Wealth",
+        grain="Balance",
+        date_field="ZTXDATESTR",
+        default_dimensions=("ZASSETUID", "ZTXDATESTR"),
+        allowed_dimensions=("ZASSETUID", "ZTXDATESTR"),
+        allowed_filters=(),
+        description="Opening account balances feeding wealth state context.",
     ),
 )
 
