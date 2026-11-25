@@ -302,6 +302,30 @@ FOUNDATIONAL_DATASETS: tuple[DatasetSpec, ...] = (
         ),
         description="Canonical Silver income transactions used strictly for category/group drill.",
     ),
+    DatasetSpec(
+        id="silver_fact_expense_transactions",
+        physical_table="silver.fact_expense_transactions",
+        label="Expense Transaction Ledger (Silver Drill)",
+        domain="Household",
+        grain="Transaction",
+        date_field="DATE",
+        default_dimensions=("DATE", "CATEGORY_ID", "ASSET_ID"),
+        allowed_dimensions=(
+            "DATE",
+            "CATEGORY_ID",
+            "ASSET_ID",
+            "CURRENCY_ID",
+            "Is_Core_Expense",
+        ),
+        allowed_filters=(
+            FilterField.EXPENSE_GROUP,
+            FilterField.EXPENSE_CATEGORY,
+            FilterField.EXPENSE_SUBCATEGORY,
+            FilterField.IS_CORE_EXPENSE,
+            FilterField.ASSET_ID,
+        ),
+        description="Canonical Silver expense transactions used strictly for category/group drill.",
+    ),
 )
 
 DEFAULT_DATASETS = DatasetRegistry(FOUNDATIONAL_DATASETS)
