@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.10](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.9...0.1.10) (2026-11-25)
+
+
+### Features 🔥
+
+* **analytics:** add HouseholdAnalytics expense summary and Silver drill ([389fd7a](https://github.com/tks18/pfetl-analytics-studio/commit/389fd7ae21c894d735506747f5f6bd611546be87))
+* **household:** add Expense charts, numeric sort, and sticky shell UX ([f0030ab](https://github.com/tks18/pfetl-analytics-studio/commit/f0030ab56fb91af5875cb0787fcae52388b2e162))
+* **semantic:** register expense drill dataset and core/real metrics ([1034ccb](https://github.com/tks18/pfetl-analytics-studio/commit/1034ccb53ef395fb0913599c92d19bf023fdda1b))
+
+
+### Tests 🧪
+
+* **household:** add Expense service, semantic, and UX regression tests ([09f668c](https://github.com/tks18/pfetl-analytics-studio/commit/09f668c1ff7bb08d6bf948bb668ff40501507427))
+
 ### [0.1.9](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.8...0.1.9) (2026-11-25)
 
 
