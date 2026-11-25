@@ -153,3 +153,135 @@ class HouseholdIncomeSnapshot(BaseModel):
     net_income_total: float = 0.0
     run_health: OverviewRunHealth = OverviewRunHealth()
     diagnostics: tuple[str, ...] = ()
+
+
+class ExpenseMonthlyPoint(BaseModel):
+    """Monthly expense composition, cash/non-cash split, and real core trajectory."""
+
+    model_config = ConfigDict(frozen=True)
+
+    month_end: date
+    total_expense: float
+    core_expense: float | None = None
+    non_core_expense: float | None = None
+    cash_expense: float | None = None
+    non_cash_expense: float | None = None
+    inflation_adjusted_core: float | None = None
+    real_core_growth_pct: float | None = None
+    trailing_3m_avg: float | None = None
+    expense_to_nw_ratio: float | None = None
+
+
+class ExpenseCategoryRow(BaseModel):
+    """Category-level expense rollup with Spend_Type, Core/Discretionary/Inv flags & YTD."""
+
+    model_config = ConfigDict(frozen=True)
+
+    category_id: str
+    category_name: str
+    category_group: str
+    spend_type: str = "Variable"
+    is_core: bool = False
+    is_investment: bool = False
+    is_discretionary: bool = False
+    amount: float
+    cash_amount: float | None = None
+    non_cash_amount: float | None = None
+    trailing_3m_avg: float | None = None
+    cumulative_ytd: float | None = None
+    share_pct: float | None = None
+
+
+class ExpenseGroupRow(BaseModel):
+    """Group-level expense rollup (Rents, Food, Gadgets, Insurances, etc.)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    category_group: str
+    spend_type: str = "Variable"
+    is_core: bool = False
+    amount: float
+    cash_amount: float | None = None
+    non_cash_amount: float | None = None
+    share_pct: float | None = None
+    category_count: int = 0
+
+
+class ExpenseAccountMixPoint(BaseModel):
+    """Expense outflow breakdown by payment/funding account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    account_name: str
+    amount: float
+    share_pct: float | None = None
+    tx_count: int = 0
+
+
+class ExpenseHeatmapData(BaseModel):
+    """Month × Expense Group spend intensity matrix for pattern heatmap."""
+
+    model_config = ConfigDict(frozen=True)
+
+    months: tuple[str, ...] = ()
+    groups: tuple[str, ...] = ()
+    matrix: tuple[tuple[float | None, ...], ...] = ()
+
+
+class ExpenseTransactionRow(BaseModel):
+    """Single Silver expense transaction row joined with category, group, and account."""
+
+    model_config = ConfigDict(frozen=True)
+
+    uid: str
+    tx_date: date
+    category_name: str
+    category_group: str
+    parent_category: str
+    account_name: str
+    description: str
+    paid: str = ""
+    currency_id: str
+    base_amount: float
+    account_amount: float | None = None
+    local_amount: float | None = None
+    exch_rate: float | None = None
+    is_core: bool = False
+
+
+class ExpenseTransactionPage(BaseModel):
+    """Bounded, paginated Silver expense transaction drill result."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rows: tuple[ExpenseTransactionRow, ...] = ()
+    total_count: int = 0
+    total_base_amount: float = 0.0
+    page: int = 1
+    page_size: int = 50
+
+
+class HouseholdExpenseSnapshot(BaseModel):
+    """Complete immutable Expense cockpit snapshot consumed by the Household page."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    as_of_date: date | None = None
+    period_label: str = ""
+    chart_window_label: str = ""
+    primary_kpis: tuple[OverviewKPI, ...] = ()
+    secondary_kpis: tuple[OverviewKPI, ...] = ()
+    monthly_series: tuple[ExpenseMonthlyPoint, ...] = ()
+    category_rows: tuple[ExpenseCategoryRow, ...] = ()
+    group_rows: tuple[ExpenseGroupRow, ...] = ()
+    account_mix: tuple[ExpenseAccountMixPoint, ...] = ()
+    heatmap: ExpenseHeatmapData = ExpenseHeatmapData()
+    total_spend: float = 0.0
+    core_spend: float = 0.0
+    non_core_spend: float = 0.0
+    cash_spend: float = 0.0
+    non_cash_spend: float = 0.0
+    run_health: OverviewRunHealth = OverviewRunHealth()
+    diagnostics: tuple[str, ...] = ()
