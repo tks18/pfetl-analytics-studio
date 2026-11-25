@@ -326,6 +326,56 @@ FOUNDATIONAL_DATASETS: tuple[DatasetSpec, ...] = (
         ),
         description="Canonical Silver expense transactions used strictly for category/group drill.",
     ),
+    DatasetSpec(
+        id="forecast_budget_variance",
+        physical_table="gold.forecast_budget_variance",
+        label="Budget Variance & Runway",
+        domain="Household",
+        grain="Month",
+        date_field="MONTH_END_DATE",
+        default_dimensions=("MONTH_START_DATE", "MONTH_END_DATE"),
+        allowed_dimensions=("MONTH_START_DATE", "MONTH_END_DATE", "YEAR_MONTH"),
+        allowed_filters=(),
+        description=(
+            "Monthly budget targets vs actuals, overspend/underfunded flags, "
+            "rule allocation percentages, and emergency runway."
+        ),
+    ),
+    DatasetSpec(
+        id="cashflow_activity_summary",
+        physical_table="gold.cashflow_activity_summary",
+        label="Cashflow Activity Statement",
+        domain="Household",
+        grain="Month",
+        date_field="MONTH_END_DATE",
+        default_dimensions=("MONTH_START_DATE", "MONTH_END_DATE"),
+        allowed_dimensions=("MONTH_START_DATE", "MONTH_END_DATE", "YEAR_MONTH"),
+        allowed_filters=(),
+        description=(
+            "Monthly opening/closing cash balances, operating/investing/financing/internal "
+            "transfer flows, and unreconciled difference."
+        ),
+    ),
+    DatasetSpec(
+        id="silver_fact_transfer_transactions",
+        physical_table="silver.fact_transfer_transactions",
+        label="Transfer Transaction Ledger (Silver Drill)",
+        domain="Household",
+        grain="Transaction",
+        date_field="ADJUSTED_DATE_FOR_ANALYSIS",
+        default_dimensions=("ADJUSTED_DATE_FOR_ANALYSIS", "TRANSFER_TYPE", "ASSET_ID"),
+        allowed_dimensions=(
+            "DATE",
+            "ADJUSTED_DATE_FOR_ANALYSIS",
+            "ASSET_ID",
+            "TO_ASSET_ID",
+            "TRANSFER_TYPE",
+            "TRANSACTION_TYPE",
+            "CURRENCY_ID",
+        ),
+        allowed_filters=(FilterField.ASSET_ID,),
+        description="Canonical Silver transfer transactions used strictly for cashflow activity drill.",
+    ),
 )
 
 DEFAULT_DATASETS = DatasetRegistry(FOUNDATIONAL_DATASETS)
