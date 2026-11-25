@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from pfetl_analytics_studio.data import (
     CatalogSnapshot,
@@ -165,6 +165,8 @@ class AppContext(BaseModel):
     period_options: PeriodCatalogOptions | None = None
     filters: FilterSet = FilterSet()
     filter_options: FilterCatalogOptions | None = None
+    active_tabs: dict[str, str] = Field(default_factory=dict)
+    sidebar_collapsed: bool = False
     refresh_token: int = 0
 
     @property
@@ -268,6 +270,7 @@ class AppSessionManager:
             period_options=None,
             filters=FilterSet(),
             filter_options=None,
+            sidebar_collapsed=self._context.sidebar_collapsed,
             refresh_token=self._context.refresh_token + 1,
         )
         self._hydrated = False
@@ -322,6 +325,18 @@ class AppSessionManager:
                 "refresh_token": self._context.refresh_token + 1,
             }
         )
+        return self._context
+
+    def set_active_tab(self, route_id: str, tab_id: str) -> AppContext:
+        """Persist active sub-tab for `route_id` across period/filter reloads."""
+        updated_tabs = dict(self._context.active_tabs)
+        updated_tabs[route_id] = tab_id
+        self._context = self._context.model_copy(update={"active_tabs": updated_tabs})
+        return self._context
+
+    def set_sidebar_collapsed(self, collapsed: bool) -> AppContext:
+        """Persist collapsed icon-rail state across route, period, and filter reloads."""
+        self._context = self._context.model_copy(update={"sidebar_collapsed": collapsed})
         return self._context
 
     def refresh(self, hydrate: bool = True) -> AppContext:

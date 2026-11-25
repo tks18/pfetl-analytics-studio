@@ -105,6 +105,22 @@ _STUDIO_DARK_CSS = f"""
   .q-drawer {{
     background-color: {StudioColor.SIDEBAR} !important;
     border-right: 1px solid rgba(255, 255, 255, 0.08) !important;
+    transition: width 180ms ease !important;
+  }}
+  .q-drawer--mini .studio-drawer-hide {{
+    display: none !important;
+  }}
+  .q-drawer:not(.q-drawer--mini) .studio-drawer-mini-only {{
+    display: none !important;
+  }}
+  .q-drawer--mini .studio-drawer-inner {{
+    padding: 14px 8px !important;
+  }}
+  .q-drawer--mini .studio-nav-item {{
+    justify-content: center !important;
+    padding-left: 0 !important;
+    padding-right: 0 !important;
+    gap: 0 !important;
   }}
   .q-header {{
     background-color: rgba(8, 12, 20, 0.90) !important;

@@ -34,6 +34,15 @@ from pfetl_analytics_studio.ui.charts import (
     chart_panel,
     studio_plotly_layout,
 )
+from pfetl_analytics_studio.ui.charts_expense import (
+    build_expense_account_mix_figure,
+    build_expense_cash_vs_noncash_figure,
+    build_expense_category_bars_figure,
+    build_expense_core_trend_figure,
+    build_expense_heatmap_figure,
+    build_expense_real_vs_nominal_figure,
+    build_expense_treemap_figure,
+)
 from pfetl_analytics_studio.ui.charts_income import (
     build_income_account_mix_figure,
     build_income_category_bars_figure,
@@ -76,6 +85,13 @@ __all__ = [
     "build_cashflow_efficiency_figure",
     "build_category_breakup_figure",
     "build_deployment_flow_figure",
+    "build_expense_account_mix_figure",
+    "build_expense_cash_vs_noncash_figure",
+    "build_expense_category_bars_figure",
+    "build_expense_core_trend_figure",
+    "build_expense_heatmap_figure",
+    "build_expense_real_vs_nominal_figure",
+    "build_expense_treemap_figure",
     "build_fire_trajectory_figure",
     "build_heatmap_figure",
     "build_income_account_mix_figure",

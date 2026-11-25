@@ -20,6 +20,26 @@ from nicegui import ui
 from pfetl_analytics_studio.ui.cards import empty_state_panel
 from pfetl_analytics_studio.ui.theme import StudioColor
 
+_NUMERIC_SORT_JS = """(a, b) => {
+  const parse = (v) => {
+    if (v === null || v === undefined) return Number.NEGATIVE_INFINITY;
+    if (typeof v === 'number') return Number.isNaN(v) ? Number.NEGATIVE_INFINITY : v;
+    const s = String(v).trim();
+    if (!s || s === '—' || s === '-') return Number.NEGATIVE_INFINITY;
+    const m = s.match(/^([+-]?)\\s*[₹$€£]?\\s*([+-]?[\\d,]+(?:\\.\\d+)?)\\s*(Cr|L|K|M|B|%|mos|x)?$/i);
+    if (!m) {
+      const n = Number(s.replace(/[^0-9.+-]/g, ''));
+      return Number.isNaN(n) ? Number.NEGATIVE_INFINITY : n;
+    }
+    const sign = (m[1] === '-' || m[2].startsWith('-')) ? -1 : 1;
+    const num = Math.abs(parseFloat(m[2].replace(/,/g, '')));
+    const unit = (m[3] || '').toLowerCase();
+    const mult = unit === 'cr' ? 1e7 : unit === 'l' ? 1e5 : unit === 'k' ? 1e3 : unit === 'm' ? 1e6 : unit === 'b' ? 1e9 : 1;
+    return sign * num * mult;
+  };
+  return parse(a) - parse(b);
+}"""
+
 
 @dataclass(frozen=True)
 class TableColumn:
@@ -30,16 +50,21 @@ class TableColumn:
     field: str
     align: str = "left"
     sortable: bool = True
+    numeric: bool | None = None
 
     def to_quasar_dict(self) -> dict[str, Any]:
         """Serialize column descriptor into Quasar `ui.table` format."""
-        return {
+        col: dict[str, Any] = {
             "name": self.name,
             "label": self.label,
             "field": self.field,
             "align": self.align,
             "sortable": self.sortable,
         }
+        is_num = self.numeric if self.numeric is not None else (self.align == "right")
+        if self.sortable and is_num:
+            col[":sort"] = _NUMERIC_SORT_JS
+        return col
 
 
 def bounded_data_table(
