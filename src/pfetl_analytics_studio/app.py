@@ -513,21 +513,28 @@ def _compat_tone(status: CompatibilityStatus) -> BadgeTone:
     }[status]
 
 
-def _render_navigation_drawer(active_route_id: str, ctx: AppContext) -> ui.left_drawer:
-    """Render sleek left sidebar with categorized routes and subtle active accent bar."""
-    drawer = ui.left_drawer(value=True, bordered=True).classes("p-3.5 justify-between")
+def render_navigation_drawer(active_route_id: str, ctx: AppContext) -> ui.left_drawer:
+    """Render sleek left sidebar with collapsible icon rail and subtle active accent bar."""
+    drawer_props = ":width=240 :mini-width=64"
+    if ctx.sidebar_collapsed:
+        drawer_props += " mini"
+    drawer = (
+        ui.left_drawer(value=True, bordered=True)
+        .props(drawer_props)
+        .classes("studio-drawer-inner p-3.5 justify-between")
+    )
     with drawer:
         with ui.column().classes("w-full gap-1"):
-            ui.label("WORKSPACE").classes("text-xs font-semibold px-3 py-1.5 tracking-wider").style(
-                f"color: {StudioColor.DIM}"
-            )
+            ui.label("WORKSPACE").classes(
+                "studio-drawer-hide text-xs font-semibold px-3 py-1.5 tracking-wider"
+            ).style(f"color: {StudioColor.DIM}")
             for idx, route in enumerate(NAV_ROUTES):
                 if idx == 6:
                     ui.element("div").classes("w-full my-2").style(
                         "height: 1px; background-color: rgba(255, 255, 255, 0.08);"
                     )
                     ui.label("OPERATIONS & DATA").classes(
-                        "text-xs font-semibold px-3 py-1 tracking-wider"
+                        "studio-drawer-hide text-xs font-semibold px-3 py-1 tracking-wider"
                     ).style(f"color: {StudioColor.DIM}")
 
                 is_active = route.route_id == active_route_id
@@ -538,14 +545,22 @@ def _render_navigation_drawer(active_route_id: str, ctx: AppContext) -> ui.left_
                 )
                 with (
                     ui.row()
-                    .classes("w-full items-center gap-3 px-3 py-2.5 rounded-lg cursor-pointer")
+                    .classes(
+                        "studio-nav-item w-full items-center gap-3 px-3 py-2.5 "
+                        "rounded-lg cursor-pointer no-wrap"
+                    )
                     .style(f"background-color: {bg}; color: {fg}; border-left: {border_left};")
                     .on("click", lambda _, p=route.path: ui.navigate.to(p))
                 ):
                     icon_color = StudioColor.ACC_HOV if is_active else StudioColor.DIM
                     ui.icon(route.icon, size="18px").style(f"color: {icon_color}")
                     ui.label(route.label).classes(
-                        "text-sm font-semibold" if is_active else "text-sm font-medium"
+                        "studio-drawer-hide text-sm font-semibold whitespace-nowrap"
+                        if is_active
+                        else "studio-drawer-hide text-sm font-medium whitespace-nowrap"
+                    )
+                    ui.tooltip(route.label).props(
+                        "anchor='center right' self='center left' :delay=200"
                     )
 
         with (
@@ -553,15 +568,20 @@ def _render_navigation_drawer(active_route_id: str, ctx: AppContext) -> ui.left_
             .classes("w-full gap-2 pt-3 border-t")
             .style("border-color: rgba(255, 255, 255, 0.08)")
         ):
-            with ui.row().classes("items-center justify-between w-full px-1"):
+            with ui.row().classes("studio-drawer-hide items-center justify-between w-full px-1"):
                 status_badge("READ-ONLY", tone=BadgeTone.SUCCESS)
                 ui.label(f"v{__version__}").classes("text-xs font-mono").style(
                     f"color: {StudioColor.MUTED}"
                 )
             if ctx.profile is not None:
                 ui.label(f"ID: {ctx.profile.profile_id}").classes(
-                    "text-xs font-mono px-1 truncate"
+                    "studio-drawer-hide text-xs font-mono px-1 truncate"
                 ).style(f"color: {StudioColor.DIM}")
+            with ui.row().classes("studio-drawer-mini-only w-full justify-center py-1"):
+                ui.icon("verified_user", size="18px").style(f"color: {StudioColor.SUCCESS}")
+                ui.tooltip(f"READ-ONLY • v{__version__}").props(
+                    "anchor='center right' self='center left' :delay=200"
+                )
 
     return drawer
 
@@ -625,7 +645,21 @@ def _render_shell_header(
     """Render sleek single-row top bar with profile switcher, run selector, and health pills."""
     with ui.header().classes("items-center justify-between px-4 py-2 gap-3 no-wrap"):
         with ui.row().classes("items-center gap-2.5 min-w-0 no-wrap"):
-            ui.button(icon="menu", on_click=drawer.toggle).props("flat round dense color=white")
+            initial_icon = "menu" if ctx.sidebar_collapsed else "menu_open"
+            toggle_btn = ui.button(icon=initial_icon).props("flat round dense color=white")
+
+            def _toggle_sidebar() -> None:
+                collapsed = not session.context.sidebar_collapsed
+                session.set_sidebar_collapsed(collapsed)
+                if collapsed:
+                    drawer.props("mini")
+                else:
+                    drawer.props(remove="mini")
+                toggle_btn.props(f"icon={'menu' if collapsed else 'menu_open'}")
+
+            toggle_btn.on_click(_toggle_sidebar)
+            with toggle_btn:
+                ui.tooltip("Toggle sidebar rail")
             ui.icon("analytics", size="sm").style(f"color: {StudioColor.ACCENT}")
             ui.label("PFETL Analytics Studio").classes(
                 "text-sm font-bold tracking-tight whitespace-nowrap"
@@ -870,7 +904,7 @@ def create_app(profile: PFETLProfile | None = None) -> None:
         ctx = session.ensure_hydrated()
         if session.check_run_freshness():
             ctx = session.context
-        drawer = _render_navigation_drawer(route.route_id, ctx)
+        drawer = render_navigation_drawer(route.route_id, ctx)
         _render_shell_header(session, ctx, drawer, active_path)
 
         with ui.column().classes("w-full max-w-[1440px] mx-auto px-6 py-5 gap-4"):
@@ -882,7 +916,12 @@ def create_app(profile: PFETLProfile | None = None) -> None:
             if route.route_id == "overview":
                 render_overview_page(ctx, cache=session.cache)
             elif route.route_id == "household":
-                render_household_page(ctx, cache=session.cache)
+                render_household_page(
+                    ctx,
+                    cache=session.cache,
+                    initial_tab=ctx.active_tabs.get("household", "income"),
+                    on_tab_change=lambda tab_id: session.set_active_tab("household", tab_id),
+                )
             else:
                 renderer = _PAGE_RENDERERS[route.route_id]
                 renderer(ctx)

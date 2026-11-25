@@ -321,9 +321,202 @@ def test_household_denominators_and_unclassified_taxability(tmp_path: Path) -> N
     assert any(b.label == "Unclassified" for b in tax_kpi.breakups)
 
 
+def test_household_expense_totals_real_growth_and_silver_drill(tmp_path: Path) -> None:
+    """Verify Gold expense reconciliation, real core growth passthrough, >10 accounts, and drill."""
+    prof = _build_household_profile(tmp_path)
+    con = duckdb.connect(str(prof.duckdb_path))
+    try:
+        con.execute("DROP TABLE IF EXISTS gold.cashflow_expense_breakdown;")
+        con.execute(
+            """
+            CREATE TABLE gold.cashflow_expense_breakdown (
+                MONTH_START_DATE DATE,
+                MONTH_END_DATE DATE,
+                YEAR_MONTH VARCHAR,
+                CATEGORY_ID VARCHAR,
+                CATEGORY_NAME VARCHAR,
+                CATEGORY_GROUPS VARCHAR,
+                Spend_Type VARCHAR,
+                Is_Core_Expense BOOLEAN,
+                Is_Investment BOOLEAN,
+                Is_Discretionary BOOLEAN,
+                Total_Monthly_Spend DOUBLE,
+                Cash_Spend DOUBLE,
+                Non_Cash_Spend DOUBLE,
+                Trailing_3M_Avg_Spend DOUBLE,
+                Cumulative_YTD_Spend DOUBLE
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO gold.cashflow_expense_breakdown VALUES
+            ('2026-09-01','2026-09-30','2026-09','e_rent','House Rent','Rents','Fixed',TRUE,FALSE,FALSE,15000.0,15000.0,0.0,15000.0,90000.0),
+            ('2026-09-01','2026-09-30','2026-09','e_food','Swiggy','Food','Variable',FALSE,FALSE,TRUE,5000.0,5000.0,0.0,4500.0,30000.0),
+            ('2026-10-01','2026-10-31','2026-10','e_rent','House Rent','Rents','Fixed',TRUE,FALSE,FALSE,15000.0,15000.0,0.0,15000.0,105000.0),
+            ('2026-10-01','2026-10-31','2026-10','e_ins','Life Insurance','Insurances','Fixed',TRUE,FALSE,FALSE,2000.0,0.0,2000.0,2000.0,14000.0),
+            ('2026-10-01','2026-10-31','2026-10','e_food','Swiggy','Food','Variable',FALSE,FALSE,TRUE,5000.0,5000.0,0.0,4800.0,35000.0),
+            ('2026-10-01','2026-10-31','2026-10','e_misc','Misc Cash',NULL,'Variable',FALSE,FALSE,TRUE,600.0,600.0,0.0,400.0,1200.0),
+            ('2026-10-01','2026-10-31','2026-10','e_ref','Refund','Food','Variable',FALSE,FALSE,TRUE,-200.0,-200.0,0.0,0.0,-200.0);
+            """
+        )
+
+        con.execute("DROP TABLE IF EXISTS gold.cashflow_efficiency_analytics;")
+        con.execute(
+            """
+            CREATE TABLE gold.cashflow_efficiency_analytics (
+                MONTH_START_DATE DATE,
+                MONTH_END_DATE DATE,
+                YEAR_MONTH VARCHAR,
+                Total_Expense DOUBLE,
+                Core_Expense DOUBLE,
+                NonCore_Expense DOUBLE,
+                Total_Cash_Expense DOUBLE,
+                Total_Non_Cash_Expense DOUBLE,
+                Expense_MoM_Delta DOUBLE,
+                Expense_MoM_Pct DOUBLE,
+                Trailing_3M_Avg_Expense DOUBLE,
+                Core_Expense_Share_Pct DOUBLE,
+                NonCore_Expense_Share_Pct DOUBLE,
+                Expense_to_NW_Ratio DOUBLE
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO gold.cashflow_efficiency_analytics VALUES
+            ('2026-09-01','2026-09-30','2026-09',20000.0,15000.0,5000.0,20000.0,0.0,0.0,0.0,20000.0,0.75,0.25,0.01),
+            ('2026-10-01','2026-10-31','2026-10',22400.0,17000.0,5400.0,20400.0,2000.0,2400.0,0.12,21200.0,0.7589,0.2411,0.011);
+            """
+        )
+
+        con.execute("DROP TABLE IF EXISTS gold.core_monthly_fact;")
+        con.execute(
+            """
+            CREATE TABLE gold.core_monthly_fact (
+                MONTH_START_DATE DATE,
+                MONTH_END_DATE DATE,
+                Total_Expense DOUBLE,
+                Total_Core_Expense DOUBLE,
+                Inflation_Adjusted_Core_Expense DOUBLE,
+                Real_Core_Expense_Growth_Pct DOUBLE,
+                INFLATION_YOY_PCT DOUBLE
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO gold.core_monthly_fact VALUES
+            ('2026-09-01','2026-09-30',20000.0,15000.0,14100.0,0.05,0.06),
+            ('2026-10-01','2026-10-31',22400.0,17000.0,15900.0,0.1277,0.06);
+            """
+        )
+
+        con.execute("DROP TABLE IF EXISTS silver.dim_expense_category;")
+        con.execute(
+            "CREATE TABLE silver.dim_expense_category (UID VARCHAR, CATEGORY_NAME VARCHAR);"
+        )
+        con.execute(
+            """
+            INSERT INTO silver.dim_expense_category VALUES
+            ('g_rent','Rents'),('g_ins','Insurances'),('g_food','Food');
+            """
+        )
+        con.execute("DROP TABLE IF EXISTS silver.dim_expense_subcategory;")
+        con.execute(
+            """
+            CREATE TABLE silver.dim_expense_subcategory (
+                UID VARCHAR, CATEGORY_ID VARCHAR, CATEGORY_NAME VARCHAR, Is_Core_Expense BOOLEAN
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO silver.dim_expense_subcategory VALUES
+            ('e_rent','g_rent','House Rent',TRUE),
+            ('e_ins','g_ins','Life Insurance',TRUE),
+            ('e_food','g_food','Swiggy',FALSE),
+            ('e_misc',NULL,'Misc Cash',FALSE);
+            """
+        )
+        con.execute("DROP TABLE IF EXISTS silver.fact_expense_transactions;")
+        con.execute(
+            """
+            CREATE TABLE silver.fact_expense_transactions (
+                UID VARCHAR, DATE DATE, ASSET_ID VARCHAR, CATEGORY_ID VARCHAR,
+                CURRENCY_ID VARCHAR, DESCRIPTION VARCHAR, PAID VARCHAR,
+                Is_Core_Expense BOOLEAN, BASE_AMOUNT DOUBLE, AMOUNT_ACCOUNT DOUBLE,
+                LOCAL_AMOUNT DOUBLE, EXCH_RATE DOUBLE
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO silver.fact_expense_transactions VALUES
+            ('ex1','2026-10-02','acc_hdfc','e_rent','INR_INR','Oct Rent','Yes',TRUE,15000.0,15000.0,15000.0,1.0),
+            ('ex2','2026-10-05','acc_epf','e_ins','INR_INR','LIC Amort','Yes',TRUE,2000.0,2000.0,2000.0,1.0),
+            ('ex3','2026-10-10','acc_hdfc','e_food','INR_INR','Dinner','Yes',FALSE,5000.0,5000.0,5000.0,1.0),
+            ('ex4','2026-10-12','acc_hdfc','e_food','INR_INR','Swiggy Refund','Yes',FALSE,-200.0,-200.0,-200.0,1.0);
+            """
+        )
+        for idx in range(11):
+            acc_id = f"acc_pay_{idx}"
+            con.execute(
+                "INSERT INTO silver.dim_asset_subcategory VALUES (?, ?);", (acc_id, f"Card {idx}")
+            )
+            con.execute(
+                """
+                INSERT INTO silver.fact_expense_transactions VALUES
+                (?, '2026-10-14', ?, 'e_misc', 'INR_INR', 'Small spend', 'Yes', FALSE, 50.0, 50.0, 50.0, 1.0);
+                """,
+                (f"ex_p_{idx}", acc_id),
+            )
+    finally:
+        con.close()
+
+    period = PeriodResolver(DuckDBReader(prof)).resolve(
+        PeriodRequest(preset=PeriodPreset.SELECTED_MONTH, selected_month="2026-10")
+    )
+    snap = HouseholdAnalytics.expense_summary(prof, period)
+    assert snap.state == "ready"
+    assert snap.core_spend + snap.non_core_spend == pytest.approx(snap.total_spend)
+    assert snap.cash_spend + snap.non_cash_spend == pytest.approx(snap.total_spend)
+    assert sum(c.amount for c in snap.category_rows) == pytest.approx(snap.total_spend)
+
+    misc = next(c for c in snap.category_rows if c.category_name == "Misc Cash")
+    assert misc.category_group == "Unclassified"
+
+    assert len(snap.account_mix) == 10
+    assert sum(a.share_pct or 0.0 for a in snap.account_mix) < 1.0
+    assert len(snap.heatmap.months) >= 1
+
+    # Non-additive real core growth is preserved across 2 months
+    period_2m = PeriodResolver(DuckDBReader(prof)).resolve(
+        PeriodRequest(
+            preset=PeriodPreset.CUSTOM,
+            custom_start=date(2026, 9, 1),
+            custom_end=date(2026, 10, 31),
+        )
+    )
+    snap_2m = HouseholdAnalytics.expense_summary(prof, period_2m)
+    kmap = {k.kpi_id: k for k in (*snap_2m.primary_kpis, *snap_2m.secondary_kpis)}
+    assert kmap["expense_total"].value == pytest.approx(42400.0)
+    assert kmap["expense_real_growth"].value == pytest.approx(0.1277)
+
+    # Silver drill matches group & refunds filter and retains PAID audit field
+    rent_page = HouseholdAnalytics.expense_transactions(prof, period, drill_group="Rents")
+    assert rent_page.total_count == 1
+    assert rent_page.total_base_amount == pytest.approx(15000.0)
+    assert rent_page.rows[0].paid == "Yes"
+
+    ref_page = HouseholdAnalytics.expense_transactions(prof, period, flag_filter="refunds")
+    assert ref_page.total_count == 1
+    assert ref_page.total_base_amount == pytest.approx(-200.0)
+
+
 def test_household_module_never_touches_bronze_or_ui() -> None:
     """Enforce Gold/Silver boundary and headless purity on household analytics modules."""
-    for name in ("household.py", "household_queries.py"):
+    for name in ("household.py", "household_queries.py", "household_expense_queries.py"):
         src_path = (
             Path(__file__).resolve().parents[2]
             / "src"

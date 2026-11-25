@@ -350,6 +350,25 @@ def test_dataset_and_metric_registry_guards() -> None:
             ("YEAR_MONTH",),
             requested_aggregation=MetricAggregation.SUM,
         )
+    # Expense additive vs non-additive metric guards
+    assert DEFAULT_METRICS.validate_query(
+        "expense_core_total", ("YEAR_MONTH",), requested_aggregation=MetricAggregation.SUM
+    ).additive
+    assert DEFAULT_METRICS.validate_query(
+        "expense_cash_total", ("YEAR_MONTH",), requested_aggregation=MetricAggregation.SUM
+    ).additive
+    with pytest.raises(ValueError, match="non-additive"):
+        DEFAULT_METRICS.validate_query(
+            "expense_real_core_growth",
+            ("MONTH_END_DATE",),
+            requested_aggregation=MetricAggregation.SUM,
+        )
+    with pytest.raises(ValueError, match="non-additive"):
+        DEFAULT_METRICS.validate_query(
+            "expense_to_nw",
+            ("YEAR_MONTH",),
+            requested_aggregation=MetricAggregation.AVG,
+        )
 
     # Unknown dataset reference rejected
     local_ds_reg = DatasetRegistry(
