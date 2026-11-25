@@ -114,6 +114,37 @@ class CatalogEntry:
 
 
 @dataclass(frozen=True)
+class CatalogSnapshot:
+    """Lightweight immutable session capability read model built from `discover()`."""
+
+    surfaces: frozenset[str]
+    columns: Mapping[str, frozenset[str]]
+    row_counts: Mapping[str, int | None]
+
+    @classmethod
+    def from_entries(cls, entries: Mapping[str, CatalogEntry]) -> CatalogSnapshot:
+        """Construct an immutable `CatalogSnapshot` from discovered `CatalogEntry` rows."""
+        surfaces = frozenset(entries.keys())
+        columns = {
+            phys: frozenset(col.name for col in entry.columns) for phys, entry in entries.items()
+        }
+        row_counts = {phys: entry.row_count for phys, entry in entries.items()}
+        return cls(surfaces=surfaces, columns=columns, row_counts=row_counts)
+
+    def has_surface(self, physical_name: str) -> bool:
+        """Return True if `physical_name` (e.g. `gold.core_monthly_fact`) was discovered."""
+        return physical_name in self.surfaces
+
+    def has_column(self, physical_name: str, column_name: str) -> bool:
+        """Return True if `column_name` exists on `physical_name` in this snapshot."""
+        return column_name in self.columns.get(physical_name, frozenset())
+
+    def row_count(self, physical_name: str) -> int | None:
+        """Return cached row count for `physical_name` if available."""
+        return self.row_counts.get(physical_name)
+
+
+@dataclass(frozen=True)
 class CompatibilityReport:
     """Structured compatibility report distinguishing missing, unexpected, and degraded surfaces."""
 

@@ -9,9 +9,9 @@ from __future__ import annotations
 
 import contextlib
 import re
-from collections.abc import Sequence
+from collections.abc import Generator, Sequence
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, Protocol
 
 import duckdb
 import polars as pl
@@ -51,6 +51,136 @@ def validate_identifier(name: str) -> str:
     if not clean_name or not IDENTIFIER_PATTERN.match(clean_name):
         raise ValueError(f"Security violation: Invalid SQL identifier '{name}'.")
     return clean_name
+
+
+class DuckDBQueryPort(Protocol):
+    """Read-only DuckDB query protocol satisfied by `DuckDBReader` and `DuckDBSession`."""
+
+    def get_state(self) -> WarehouseState:
+        """Return warehouse availability state."""
+        ...
+
+    def fetch_df(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> pl.DataFrame:
+        """Execute read-only SQL returning a Polars DataFrame."""
+        ...
+
+    def fetch_all(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> list[dict[str, Any]]:
+        """Execute read-only SQL returning column-keyed dicts."""
+        ...
+
+    def fetch_one(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> dict[str, Any] | None:
+        """Execute read-only SQL returning the first row dict or None."""
+        ...
+
+    def fetch_scalar(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> Any:
+        """Execute read-only SQL returning a single scalar value."""
+        ...
+
+    def table_exists(self, schema: str, table: str) -> bool:
+        """Check whether `schema.table` exists in DuckDB."""
+        ...
+
+
+class DuckDBSession:
+    """Short-lived read-only DuckDB session reusing one connection for a single snapshot."""
+
+    def __init__(self, reader: DuckDBReader, conn: duckdb.DuckDBPyConnection) -> None:
+        self._reader = reader
+        self._conn = conn
+
+    def get_state(self) -> WarehouseState:
+        """Delegate warehouse availability state to the parent reader."""
+        return self._reader.get_state()
+
+    def fetch_df(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> pl.DataFrame:
+        """Execute a read-only query on the open session connection as a Polars DataFrame."""
+        try:
+            rel = self._conn.execute(sql, params)
+            cols = [desc[0] for desc in rel.description or []]
+            rows = rel.fetchall()
+            if not rows:
+                return pl.DataFrame(schema=cols)
+            return pl.DataFrame(rows, schema=cols, orient="row")
+        except duckdb.Error as exc:
+            self._reader.translate_query_error(exc)
+            raise
+
+    def fetch_all(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> list[dict[str, Any]]:
+        """Execute a read-only query on the open session connection as dicts."""
+        try:
+            rel = self._conn.execute(sql, params)
+            columns = [desc[0] for desc in rel.description or []]
+            rows = rel.fetchall()
+            return [dict(zip(columns, row, strict=True)) for row in rows]
+        except duckdb.Error as exc:
+            self._reader.translate_query_error(exc)
+            raise
+
+    def fetch_one(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> dict[str, Any] | None:
+        """Execute a read-only query on the open session connection returning one row."""
+        try:
+            rel = self._conn.execute(sql, params)
+            columns = [desc[0] for desc in rel.description or []]
+            row = rel.fetchone()
+            if row is None:
+                return None
+            return dict(zip(columns, row, strict=True))
+        except duckdb.Error as exc:
+            self._reader.translate_query_error(exc)
+            raise
+
+    def fetch_scalar(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> Any:
+        """Execute a read-only query on the open session connection returning a scalar."""
+        try:
+            rel = self._conn.execute(sql, params)
+            row = rel.fetchone()
+            return row[0] if row is not None else None
+        except duckdb.Error as exc:
+            self._reader.translate_query_error(exc)
+            raise
+
+    def table_exists(self, schema: str, table: str) -> bool:
+        """Verify whether `schema.table` exists using this session connection."""
+        valid_schema = validate_identifier(schema)
+        valid_table = validate_identifier(table)
+        query = """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = ? AND table_name = ?
+            LIMIT 1;
+        """
+        return self.fetch_scalar(query, (valid_schema, valid_table)) is not None
 
 
 class DuckDBReader:
@@ -163,120 +293,51 @@ class DuckDBReader:
                 profile_id=self.profile_id,
             ) from exc
 
+    @contextlib.contextmanager
+    def session(self) -> Generator[DuckDBSession]:
+        """Open a short-lived read-only DuckDB session for one analytical snapshot."""
+        with contextlib.closing(self._open_connection()) as conn:
+            yield DuckDBSession(self, conn)
+
+    def translate_query_error(self, exc: duckdb.Error) -> NoReturn:
+        """Translate DuckDB query errors into typed Studio domain exceptions."""
+        self._handle_query_error(exc)
+
     def fetch_df(
         self,
         sql: str,
         params: Sequence[Any] | dict[str, Any] = (),
     ) -> pl.DataFrame:
-        """Execute a read-only query and return results as a Polars DataFrame.
-
-        Parameters
-        ----------
-        sql : str
-            Parametrized SQL query string.
-        params : Sequence[Any] | dict[str, Any], optional
-            Positional or named query parameters, by default ().
-
-        Returns
-        -------
-        pl.DataFrame
-            Query results converted to Polars DataFrame.
-        """
-        with contextlib.closing(self._open_connection()) as conn:
-            try:
-                rel = conn.execute(sql, params)
-                cols = [desc[0] for desc in rel.description or []]
-                rows = rel.fetchall()
-                if not rows:
-                    return pl.DataFrame(schema=cols)
-                return pl.DataFrame(rows, schema=cols, orient="row")
-            except duckdb.Error as exc:
-                self._handle_query_error(exc)
+        """Execute a read-only query and return results as a Polars DataFrame."""
+        with self.session() as db:
+            return db.fetch_df(sql, params)
 
     def fetch_all(
         self,
         sql: str,
         params: Sequence[Any] | dict[str, Any] = (),
     ) -> list[dict[str, Any]]:
-        """Execute query and return all rows as a list of column-keyed dictionaries.
-
-        Parameters
-        ----------
-        sql : str
-            Parametrized SQL query string.
-        params : Sequence[Any] | dict[str, Any], optional
-            Positional or named query parameters, by default ().
-
-        Returns
-        -------
-        list[dict[str, Any]]
-            Rows converted to dictionaries.
-        """
-        with contextlib.closing(self._open_connection()) as conn:
-            try:
-                rel = conn.execute(sql, params)
-                columns = [desc[0] for desc in rel.description or []]
-                rows = rel.fetchall()
-                return [dict(zip(columns, row, strict=True)) for row in rows]
-            except duckdb.Error as exc:
-                self._handle_query_error(exc)
+        """Execute query and return all rows as a list of column-keyed dictionaries."""
+        with self.session() as db:
+            return db.fetch_all(sql, params)
 
     def fetch_one(
         self,
         sql: str,
         params: Sequence[Any] | dict[str, Any] = (),
     ) -> dict[str, Any] | None:
-        """Execute query and return the first row as a dictionary, or None.
-
-        Parameters
-        ----------
-        sql : str
-            Parametrized SQL query string.
-        params : Sequence[Any] | dict[str, Any], optional
-            Positional or named query parameters, by default ().
-
-        Returns
-        -------
-        dict[str, Any] | None
-            Single row dictionary, or None if no records match.
-        """
-        with contextlib.closing(self._open_connection()) as conn:
-            try:
-                rel = conn.execute(sql, params)
-                columns = [desc[0] for desc in rel.description or []]
-                row = rel.fetchone()
-                if row is None:
-                    return None
-                return dict(zip(columns, row, strict=True))
-            except duckdb.Error as exc:
-                self._handle_query_error(exc)
+        """Execute query and return the first row as a dictionary, or None."""
+        with self.session() as db:
+            return db.fetch_one(sql, params)
 
     def fetch_scalar(
         self,
         sql: str,
         params: Sequence[Any] | dict[str, Any] = (),
     ) -> Any:
-        """Execute query and return a single scalar value from the first row and column.
-
-        Parameters
-        ----------
-        sql : str
-            Parametrized SQL query string.
-        params : Sequence[Any] | dict[str, Any], optional
-            Positional or named query parameters, by default ().
-
-        Returns
-        -------
-        Any
-            First scalar value, or None if no records return.
-        """
-        with contextlib.closing(self._open_connection()) as conn:
-            try:
-                rel = conn.execute(sql, params)
-                row = rel.fetchone()
-                return row[0] if row is not None else None
-            except duckdb.Error as exc:
-                self._handle_query_error(exc)
+        """Execute query and return a single scalar value from the first row and column."""
+        with self.session() as db:
+            return db.fetch_scalar(sql, params)
 
     def table_exists(self, schema: str, table: str) -> bool:
         """Verify whether a table exists in the specified warehouse schema.
