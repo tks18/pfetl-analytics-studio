@@ -2,6 +2,30 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.9](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.8...0.1.9) (2026-11-25)
+
+
+### Docs 📃
+
+* add phase 8 patch fixes plan ([f6f110a](https://github.com/tks18/pfetl-analytics-studio/commit/f6f110ab8296df7a91326db238b32261b9f12216))
+
+
+### Bug Fixes 🛠
+
+* **analytics:** reuse sessions, CatalogSnapshot, and Income denominators ([b6f269e](https://github.com/tks18/pfetl-analytics-studio/commit/b6f269edac0566960bc3b75bb7f19d66772a9883))
+* **session:** separate analytical vs historical runs and check freshness ([5137356](https://github.com/tks18/pfetl-analytics-studio/commit/5137356e8b2b6334f48a76c1e527ebe4bd97da94))
+
+
+### Features 🔥
+
+* **data:** add DuckDBSession and immutable CatalogSnapshot ([e911bfb](https://github.com/tks18/pfetl-analytics-studio/commit/e911bfb2cfc7d26a1ea439a77ffac02707932808))
+* **ui:** add chart primitives, color roles, and non-blocking lazy pages ([f96ad74](https://github.com/tks18/pfetl-analytics-studio/commit/f96ad7499432558630c216126d7ca7ba37972612))
+
+
+### Tests 🧪
+
+* **foundation:** add session, catalog, denominator, and chart tests ([6e2b87b](https://github.com/tks18/pfetl-analytics-studio/commit/6e2b87b994a1fbd74c699c7a63ba1fd1b1ec89a1))
+
 ### [0.1.8](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.7...0.1.8) (2026-11-25)
 
 

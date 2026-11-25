@@ -19,6 +19,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict
 
 from pfetl_analytics_studio.data import (
+    CatalogSnapshot,
     CompatibilityReport,
     CompatibilityStatus,
     ControlPlaneReader,
@@ -152,9 +153,12 @@ class AppContext(BaseModel):
     profile: PFETLProfile | None = None
     run_mode: RunSelectionMode = RunSelectionMode.LATEST_SUCCESSFUL
     selected_run_id: str | None = None
+    analytical_run_id: str | None = None
+    analytical_provenance: RunProvenance | None = None
     available_runs: tuple[RunOption, ...] = ()
     provenance: RunProvenance | None = None
     compatibility: CompatibilityReport | None = None
+    catalog_snapshot: CatalogSnapshot | None = None
     drift: DriftCheckResult | None = None
     period_request: PeriodRequest = PeriodRequest()
     period_context: PeriodContext | None = None
@@ -169,10 +173,19 @@ class AppContext(BaseModel):
         return self.profile.profile_id if self.profile is not None else None
 
     @property
-    def effective_run_id(self) -> str | None:
-        """Return currently pinned PFETL run ID (`selected_run_id` or provenance run)."""
-        if self.selected_run_id:
+    def historical_inspection_run_id(self) -> str | None:
+        """Return run ID currently pinned for Operations/Forensics historical inspection."""
+        if self.run_mode == RunSelectionMode.HISTORICAL_RUN and self.selected_run_id:
             return self.selected_run_id
+        return self.effective_run_id
+
+    @property
+    def effective_run_id(self) -> str | None:
+        """Return latest committed analytical PFETL run ID bound to current DuckDB state."""
+        if self.analytical_run_id:
+            return self.analytical_run_id
+        if self.analytical_provenance is not None:
+            return self.analytical_provenance.run_id
         return self.provenance.run_id if self.provenance is not None else None
 
     @property
@@ -243,9 +256,12 @@ class AppSessionManager:
             profile=new_profile,
             run_mode=RunSelectionMode.LATEST_SUCCESSFUL,
             selected_run_id=None,
+            analytical_run_id=None,
+            analytical_provenance=None,
             available_runs=(),
             provenance=None,
             compatibility=None,
+            catalog_snapshot=None,
             drift=None,
             period_request=PeriodRequest(),
             period_context=None,
@@ -326,6 +342,45 @@ class AppSessionManager:
             self._hydrate_from_stores()
         return self._context
 
+    def check_run_freshness(self) -> bool:
+        """Detect newly completed PFETL runs in Control Plane and invalidate stale cache."""
+        profile = self._context.profile
+        if profile is None or not self._hydrated:
+            return False
+        cp_reader = ControlPlaneReader(profile)
+        if cp_reader.get_state() != ControlPlaneState.AVAILABLE or not cp_reader.table_exists(
+            "cp_runs"
+        ):
+            return False
+        try:
+            row = cp_reader.fetch_one(
+                """
+                SELECT run_id
+                FROM cp_runs
+                WHERE UPPER(COALESCE(status, '')) = 'SUCCESS'
+                ORDER BY started_at DESC
+                LIMIT 1;
+                """
+            )
+        except PFETLDataAccessError:
+            return False
+        latest_id = str(row["run_id"]) if row and row.get("run_id") else None
+        if not latest_id or latest_id == self._context.analytical_run_id:
+            return False
+        old_id = self._context.analytical_run_id
+        if self._context.profile_id and old_id:
+            self.cache.invalidate_run(self._context.profile_id, old_id)
+        self._context = self._context.model_copy(
+            update={
+                "period_options": None,
+                "filter_options": None,
+                "refresh_token": self._context.refresh_token + 1,
+            }
+        )
+        self._hydrated = False
+        self._hydrate_from_stores()
+        return True
+
     def _hydrate_from_stores(self) -> None:
         """Inspect upstream read-only DuckDB & Control Plane safely without raising."""
         profile = self._context.profile
@@ -334,20 +389,29 @@ class AppSessionManager:
             return
 
         catalog = PFETLCatalog(profile)
-        _, report = catalog.discover()
+        entries, report = catalog.discover()
+        cat_snap = CatalogSnapshot.from_entries(entries)
         runs = self._load_run_options(profile)
+        latest_prov = catalog.get_latest_provenance()
 
         self._context = self._context.model_copy(
             update={
                 "compatibility": report,
+                "catalog_snapshot": cat_snap,
                 "available_runs": runs,
+                "analytical_run_id": latest_prov.run_id if latest_prov is not None else None,
+                "analytical_provenance": latest_prov,
             }
         )
-        self._hydrate_provenance_and_drift(catalog=catalog)
+        self._hydrate_provenance_and_drift(catalog=catalog, latest_prov=latest_prov)
         self._hydrate_period()
         self._hydrated = True
 
-    def _hydrate_provenance_and_drift(self, catalog: PFETLCatalog | None = None) -> None:
+    def _hydrate_provenance_and_drift(
+        self,
+        catalog: PFETLCatalog | None = None,
+        latest_prov: RunProvenance | None = None,
+    ) -> None:
         """Load selected or latest successful run provenance and evaluate TOML drift."""
         profile = self._context.profile
         if profile is None:
@@ -359,7 +423,7 @@ class AppSessionManager:
         ):
             prov = cat.get_run_provenance(self._context.selected_run_id)
         else:
-            prov = cat.get_latest_provenance()
+            prov = latest_prov if latest_prov is not None else cat.get_latest_provenance()
 
         drift = evaluate_profile_drift(profile, prov)
         self._context = self._context.model_copy(update={"provenance": prov, "drift": drift})

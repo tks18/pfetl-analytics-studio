@@ -656,7 +656,8 @@ def _render_shell_header(
                 ).props("outline dense size=sm color=primary no-caps")
 
         with ui.row().classes("items-center gap-2 shrink-0 no-wrap"):
-            if ctx.profile is not None and ctx.available_runs:
+            is_ops_route = active_path == "/operations"
+            if ctx.profile is not None and ctx.available_runs and is_ops_route:
                 run_opts: dict[str, str] = {_LATEST_SENTINEL: "Latest Successful Run"}
                 for opt in ctx.available_runs:
                     run_opts[opt.run_id] = opt.label
@@ -675,13 +676,22 @@ def _render_shell_header(
                 ui.select(
                     options=run_opts,
                     value=current_run_val,
-                    label="PFETL Run",
+                    label="Inspect Run (Ops)",
                     on_change=_on_run_change,
                 ).props("dense filled dark options-dark").classes("studio-field min-w-[205px]")
-
-            if ctx.provenance and ctx.provenance.application_version:
+            elif ctx.profile is not None and ctx.effective_run_id:
                 status_badge(
-                    f"Core {ctx.provenance.application_version}",
+                    f"Warehouse Run {ctx.effective_run_id[:8]}",
+                    tone=BadgeTone.INFO,
+                    tooltip="Analytical views are bound to the latest committed warehouse run.",
+                )
+
+            header_prov = (
+                ctx.provenance if is_ops_route else (ctx.analytical_provenance or ctx.provenance)
+            )
+            if header_prov and header_prov.application_version:
+                status_badge(
+                    f"Core {header_prov.application_version}",
                     tone=BadgeTone.NEUTRAL,
                 )
             if ctx.drift is not None:
@@ -858,6 +868,8 @@ def create_app(profile: PFETLProfile | None = None) -> None:
     def _render_route(route: NavRoute, active_path: str, show_profile_cards: bool) -> None:
         apply_studio_theme()
         ctx = session.ensure_hydrated()
+        if session.check_run_freshness():
+            ctx = session.context
         drawer = _render_navigation_drawer(route.route_id, ctx)
         _render_shell_header(session, ctx, drawer, active_path)
 
@@ -869,6 +881,8 @@ def create_app(profile: PFETLProfile | None = None) -> None:
 
             if route.route_id == "overview":
                 render_overview_page(ctx, cache=session.cache)
+            elif route.route_id == "household":
+                render_household_page(ctx, cache=session.cache)
             else:
                 renderer = _PAGE_RENDERERS[route.route_id]
                 renderer(ctx)

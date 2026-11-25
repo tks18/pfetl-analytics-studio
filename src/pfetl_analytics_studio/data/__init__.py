@@ -11,6 +11,7 @@ from pfetl_analytics_studio.data.cache import CacheKey, CacheStats, QueryCache, 
 from pfetl_analytics_studio.data.catalog import (
     SURFACE_ATLAS,
     CatalogEntry,
+    CatalogSnapshot,
     ColumnInfo,
     CompatibilityReport,
     CompatibilityStatus,
@@ -23,7 +24,12 @@ from pfetl_analytics_studio.data.catalog import (
     evaluate_profile_drift,
 )
 from pfetl_analytics_studio.data.control_plane_reader import ControlPlaneReader
-from pfetl_analytics_studio.data.duckdb_reader import DuckDBReader, validate_identifier
+from pfetl_analytics_studio.data.duckdb_reader import (
+    DuckDBQueryPort,
+    DuckDBReader,
+    DuckDBSession,
+    validate_identifier,
+)
 from pfetl_analytics_studio.data.errors import (
     ControlPlaneState,
     DatabaseCorruptedError,
@@ -41,6 +47,7 @@ __all__ = [
     "CacheKey",
     "CacheStats",
     "CatalogEntry",
+    "CatalogSnapshot",
     "ColumnInfo",
     "CompatibilityReport",
     "CompatibilityStatus",
@@ -49,7 +56,9 @@ __all__ = [
     "DatabaseCorruptedError",
     "DatabaseNotFoundError",
     "DriftCheckResult",
+    "DuckDBQueryPort",
     "DuckDBReader",
+    "DuckDBSession",
     "LogReadResult",
     "LogSource",
     "PFETLCatalog",

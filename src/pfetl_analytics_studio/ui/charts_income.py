@@ -245,6 +245,10 @@ def build_income_composition_figure(
     act_vals = [round(pt.active_income or 0.0, 2) for pt in points]
     pass_vals = [round(pt.passive_income or 0.0, 2) for pt in points]
     nc_vals = [round(pt.non_cash_income or 0.0, 2) for pt in points]
+    other_vals = [
+        round(pt.total_income - a - p - nc, 2)
+        for pt, a, p, nc in zip(points, act_vals, pass_vals, nc_vals, strict=True)
+    ]
     dep_vals = [
         round(pt.active_dependency_pct * 100.0, 2) if pt.active_dependency_pct is not None else None
         for pt in points
@@ -278,6 +282,19 @@ def build_income_composition_figure(
             "marker": {"color": "rgba(192, 132, 252, 0.72)"},
         },
     ]
+    has_other = any(abs(v) >= 0.01 for v in other_vals)
+    if has_other:
+        traces.append(
+            {
+                "type": "bar",
+                "name": "Other / Unclassified",
+                "x": dates,
+                "y": other_vals,
+                "customdata": [format_currency(v, currency_id, compact=True) for v in other_vals],
+                "hovertemplate": "Other / Unclassified: <b>%{customdata}</b><extra></extra>",
+                "marker": {"color": "rgba(148, 163, 184, 0.72)"},
+            }
+        )
     y2_ticks = numeric_ticks(dep_vals, suffix="%") if any(v is not None for v in dep_vals) else None
     if y2_ticks is not None:
         traces.append(
@@ -296,7 +313,9 @@ def build_income_composition_figure(
                 "marker": {"size": 5},
             }
         )
-    stacked_totals = [a + p + n for a, p, n in zip(act_vals, pass_vals, nc_vals, strict=True)]
+    stacked_totals = [
+        a + p + n + o for a, p, n, o in zip(act_vals, pass_vals, nc_vals, other_vals, strict=True)
+    ]
     return {
         "data": traces,
         "layout": studio_plotly_layout(

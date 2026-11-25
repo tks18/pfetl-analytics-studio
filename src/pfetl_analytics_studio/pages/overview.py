@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
-from nicegui import ui
+import asyncio
+
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import OverviewKPI, OverviewService, OverviewSnapshot
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
@@ -26,6 +28,7 @@ from pfetl_analytics_studio.ui import (
     format_metric_value,
     format_percent,
     kpi_card,
+    loading_state_card,
     status_badge,
 )
 
@@ -249,6 +252,135 @@ def _render_health_footer(snapshot: OverviewSnapshot) -> None:
             ).props("outline dense size=sm no-caps color=primary")
 
 
+def _render_overview_body(snapshot: OverviewSnapshot) -> None:
+    """Render ready/empty Overview cockpit from an immutable `OverviewSnapshot`."""
+    if snapshot.state != "ready":
+        empty_state_panel(
+            title=(
+                "No Completed PFETL Run Recorded"
+                if snapshot.state == "no_run"
+                else "Overview Analytical Data Unavailable"
+            ),
+            message=snapshot.diagnostics[0]
+            if snapshot.diagnostics
+            else "No populated Gold rows match the active period.",
+            icon="hourglass_empty",
+            action_label="Inspect Operations & Runs",
+            action_target="/operations",
+        )
+        _render_health_footer(snapshot)
+        return
+
+    ui.label("Key Financial Highlights & Breakups").classes(
+        "text-xs font-semibold uppercase tracking-wider"
+    ).style(f"color: {StudioColor.DIM}")
+    _render_kpi_strip(snapshot.primary_kpis, snapshot.currency_id, compact=False)
+
+    ui.label("Portfolio Alpha, Book-vs-Market, Wealth Origin & Pipeline Telemetry").classes(
+        "text-xs font-semibold uppercase tracking-wider mt-2"
+    ).style(f"color: {StudioColor.DIM}")
+    _render_kpi_strip(snapshot.secondary_kpis, snapshot.currency_id, compact=True)
+
+    _render_attribution_bridge(snapshot)
+
+    ui.label("Net Worth Split by Asset Group (Market vs Book)").classes(
+        "text-xs font-semibold uppercase tracking-wider mt-2"
+    ).style(f"color: {StudioColor.DIM}")
+    chart_panel(
+        "Net Worth Split by Asset Group",
+        "Closing Market vs Book balance across wealth asset groups (including liabilities)",
+        build_wealth_asset_split_figure(snapshot.wealth_split, currency_id=snapshot.currency_id),
+        source_caption="Source: gold.wealth_asset_breakdown + silver.dim_asset_category",
+        drill_route="/wealth",
+    )
+
+    ui.label("Wealth, Cashflow & Portfolio Trends").classes(
+        "text-xs font-semibold uppercase tracking-wider mt-2"
+    ).style(f"color: {StudioColor.DIM}")
+    with ui.element("div").classes("studio-chart-grid"):
+        chart_panel(
+            "Net Worth & Attribution",
+            f"Market vs Book Net Worth decomposed into Net Savings & Market Return ({snapshot.chart_window_label})",
+            build_net_worth_attribution_figure(
+                snapshot.net_worth_series, currency_id=snapshot.currency_id
+            ),
+            source_caption="Source: gold.core_monthly_fact",
+            drill_route="/wealth",
+        )
+        chart_panel(
+            "Cashflow & Savings Flow",
+            f"Monthly Income, Expense & Net Cashflow ({snapshot.chart_window_label})",
+            build_cashflow_efficiency_figure(
+                snapshot.cashflow_series, currency_id=snapshot.currency_id
+            ),
+            source_caption="Source: gold.core_monthly_fact + cashflow_efficiency_analytics",
+            drill_route="/household",
+        )
+        chart_panel(
+            "Portfolio Valuation & Return",
+            f"Market Value vs Cost Basis and Portfolio vs Benchmark XIRR ({snapshot.chart_window_label})",
+            build_portfolio_return_figure(
+                snapshot.portfolio_series, currency_id=snapshot.currency_id
+            ),
+            source_caption="Source: gold.investment_by_portfolio (Closing_Date)",
+            drill_route="/investments",
+        )
+        chart_panel(
+            "FIRE Coverage & Simulation Probability",
+            f"Current FI Coverage vs Monte Carlo Probability of Success ({snapshot.chart_window_label})",
+            build_fire_trajectory_figure(snapshot.fire_series),
+            source_caption="Source: gold.wealth_fire_analytics",
+            drill_route="/fire",
+        )
+
+    ui.label("Income & Expense Breakup, Capital Deployment & Asset Class Mix").classes(
+        "text-xs font-semibold uppercase tracking-wider mt-2"
+    ).style(f"color: {StudioColor.DIM}")
+    with ui.element("div").classes("studio-chart-grid"):
+        chart_panel(
+            "Income Breakup by Source",
+            f"Top positive income categories across {snapshot.period_label}",
+            build_category_breakup_figure(
+                snapshot.income_breakup,
+                currency_id=snapshot.currency_id,
+                bar_color="rgba(52, 211, 153, 0.80)",
+            ),
+            source_caption="Source: gold.cashflow_income_breakdown",
+            drill_route="/household",
+        )
+        chart_panel(
+            "Expense Breakup by Group",
+            f"Top expense groups (Core vs Non-Core, Fixed vs Variable) across {snapshot.period_label}",
+            build_category_breakup_figure(
+                snapshot.expense_breakup,
+                currency_id=snapshot.currency_id,
+                bar_color="rgba(251, 191, 36, 0.80)",
+            ),
+            source_caption="Source: gold.cashflow_expense_breakdown",
+            drill_route="/household",
+        )
+        chart_panel(
+            "Capital Deployment vs Redemptions",
+            f"Gross invested, redeemed & net investment flow ({snapshot.chart_window_label})",
+            build_deployment_flow_figure(
+                snapshot.cashflow_series, currency_id=snapshot.currency_id
+            ),
+            source_caption="Source: gold.cashflow_efficiency_analytics",
+            drill_route="/investments",
+        )
+        chart_panel(
+            "Asset Class Allocation & Alpha",
+            "Market Value, Portfolio Weight, XIRR & Active Return by Instrument Class",
+            build_asset_class_mix_figure(
+                snapshot.asset_class_mix, currency_id=snapshot.currency_id
+            ),
+            source_caption="Source: gold.investment_by_class",
+            drill_route="/investments",
+        )
+
+    _render_health_footer(snapshot)
+
+
 def render_overview_page(context: AppContext, *, cache: QueryCache | None = None) -> None:
     """Render the Overview monthly financial decision cockpit from shared `AppContext`.
 
@@ -317,140 +449,47 @@ def render_overview_page(context: AppContext, *, cache: QueryCache | None = None
             )
             return
 
-        snapshot = OverviewService.get_snapshot(
-            context.profile,
-            context.period_context,
-            run_id=context.selected_run_id,
-            provenance=context.provenance,
-            compatibility=context.compatibility,
-            filters=context.filters,
-            cache=cache,
-        )
-
-        if snapshot.state != "ready":
-            empty_state_panel(
-                title=(
-                    "No Completed PFETL Run Recorded"
-                    if snapshot.state == "no_run"
-                    else "Overview Analytical Data Unavailable"
-                ),
-                message=snapshot.diagnostics[0]
-                if snapshot.diagnostics
-                else "No populated Gold rows match the active period.",
-                icon="hourglass_empty",
-                action_label="Inspect Operations & Runs",
-                action_target="/operations",
+        def _fetch_sync() -> OverviewSnapshot:
+            assert context.profile is not None
+            return OverviewService.get_snapshot(
+                context.profile,
+                context.period_context,
+                run_id=context.analytical_run_id,
+                provenance=context.analytical_provenance or context.provenance,
+                compatibility=context.compatibility,
+                catalog_snapshot=context.catalog_snapshot,
+                filters=context.filters,
+                cache=cache,
             )
-            _render_health_footer(snapshot)
+
+        try:
+            asyncio.get_running_loop()
+            has_loop = True
+        except RuntimeError:
+            has_loop = False
+
+        if not has_loop:
+            _render_overview_body(_fetch_sync())
             return
 
-        ui.label("Key Financial Highlights & Breakups").classes(
-            "text-xs font-semibold uppercase tracking-wider"
-        ).style(f"color: {StudioColor.DIM}")
-        _render_kpi_strip(snapshot.primary_kpis, snapshot.currency_id, compact=False)
+        body_slot = ui.column().classes("w-full gap-4")
+        with body_slot:
+            loading_state_card("Loading Overview cockpit...")
 
-        ui.label("Portfolio Alpha, Book-vs-Market, Wealth Origin & Pipeline Telemetry").classes(
-            "text-xs font-semibold uppercase tracking-wider mt-2"
-        ).style(f"color: {StudioColor.DIM}")
-        _render_kpi_strip(snapshot.secondary_kpis, snapshot.currency_id, compact=True)
+        async def _load_async() -> None:
+            try:
+                snap = await run.io_bound(_fetch_sync)
+            except Exception as exc:  # noqa: BLE001
+                body_slot.clear()
+                with body_slot:
+                    error_state_panel(
+                        title="Failed to Load Overview Cockpit",
+                        message="An error occurred while querying the read-only warehouse.",
+                        details=[str(exc)],
+                    )
+                return
+            body_slot.clear()
+            with body_slot:
+                _render_overview_body(snap)
 
-        _render_attribution_bridge(snapshot)
-
-        ui.label("Net Worth Split by Asset Group (Market vs Book)").classes(
-            "text-xs font-semibold uppercase tracking-wider mt-2"
-        ).style(f"color: {StudioColor.DIM}")
-        chart_panel(
-            "Net Worth Split by Asset Group",
-            "Closing Market vs Book balance across wealth asset groups (including liabilities)",
-            build_wealth_asset_split_figure(
-                snapshot.wealth_split, currency_id=snapshot.currency_id
-            ),
-            source_caption="Source: gold.wealth_asset_breakdown + silver.dim_asset_category",
-            drill_route="/wealth",
-        )
-
-        ui.label("Wealth, Cashflow & Portfolio Trends").classes(
-            "text-xs font-semibold uppercase tracking-wider mt-2"
-        ).style(f"color: {StudioColor.DIM}")
-        with ui.element("div").classes("studio-chart-grid"):
-            chart_panel(
-                "Net Worth & Attribution",
-                f"Market vs Book Net Worth decomposed into Net Savings & Market Return ({snapshot.chart_window_label})",
-                build_net_worth_attribution_figure(
-                    snapshot.net_worth_series, currency_id=snapshot.currency_id
-                ),
-                source_caption="Source: gold.core_monthly_fact",
-                drill_route="/wealth",
-            )
-            chart_panel(
-                "Cashflow & Savings Flow",
-                f"Monthly Income, Expense & Net Cashflow ({snapshot.chart_window_label})",
-                build_cashflow_efficiency_figure(
-                    snapshot.cashflow_series, currency_id=snapshot.currency_id
-                ),
-                source_caption="Source: gold.core_monthly_fact + cashflow_efficiency_analytics",
-                drill_route="/household",
-            )
-            chart_panel(
-                "Portfolio Valuation & Return",
-                f"Market Value vs Cost Basis and Portfolio vs Benchmark XIRR ({snapshot.chart_window_label})",
-                build_portfolio_return_figure(
-                    snapshot.portfolio_series, currency_id=snapshot.currency_id
-                ),
-                source_caption="Source: gold.investment_by_portfolio (Closing_Date)",
-                drill_route="/investments",
-            )
-            chart_panel(
-                "FIRE Coverage & Simulation Probability",
-                f"Current FI Coverage vs Monte Carlo Probability of Success ({snapshot.chart_window_label})",
-                build_fire_trajectory_figure(snapshot.fire_series),
-                source_caption="Source: gold.wealth_fire_analytics",
-                drill_route="/fire",
-            )
-
-        ui.label("Income & Expense Breakup, Capital Deployment & Asset Class Mix").classes(
-            "text-xs font-semibold uppercase tracking-wider mt-2"
-        ).style(f"color: {StudioColor.DIM}")
-        with ui.element("div").classes("studio-chart-grid"):
-            chart_panel(
-                "Income Breakup by Source",
-                f"Top positive income categories across {snapshot.period_label}",
-                build_category_breakup_figure(
-                    snapshot.income_breakup,
-                    currency_id=snapshot.currency_id,
-                    bar_color="rgba(52, 211, 153, 0.80)",
-                ),
-                source_caption="Source: gold.cashflow_income_breakdown",
-                drill_route="/household",
-            )
-            chart_panel(
-                "Expense Breakup by Group",
-                f"Top expense groups (Core vs Non-Core, Fixed vs Variable) across {snapshot.period_label}",
-                build_category_breakup_figure(
-                    snapshot.expense_breakup,
-                    currency_id=snapshot.currency_id,
-                    bar_color="rgba(251, 191, 36, 0.80)",
-                ),
-                source_caption="Source: gold.cashflow_expense_breakdown",
-                drill_route="/household",
-            )
-            chart_panel(
-                "Capital Deployment vs Redemptions",
-                f"Gross invested, redeemed & net investment flow ({snapshot.chart_window_label})",
-                build_deployment_flow_figure(
-                    snapshot.cashflow_series, currency_id=snapshot.currency_id
-                ),
-                source_caption="Source: gold.cashflow_efficiency_analytics",
-                drill_route="/investments",
-            )
-            chart_panel(
-                "Asset Class Allocation & Alpha",
-                "Market Value, Portfolio Weight, XIRR & Active Return by Instrument Class",
-                build_asset_class_mix_figure(
-                    snapshot.asset_class_mix, currency_id=snapshot.currency_id
-                ),
-                source_caption="Source: gold.investment_by_class",
-                drill_route="/investments",
-            )
-
-        _render_health_footer(snapshot)
+        ui.timer(0.01, _load_async, once=True)

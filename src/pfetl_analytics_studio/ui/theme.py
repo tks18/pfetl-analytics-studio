@@ -51,6 +51,39 @@ CHART_SERIES_COLORS: tuple[str, ...] = (
     "#F87171",
 )
 
+
+class ChartColorRole(StrEnum):
+    """Consistent semantic color roles across all domain Plotly charts."""
+
+    ACTUAL = "actual"
+    BENCHMARK = "benchmark"
+    TARGET = "target"
+    POSITIVE = "positive"
+    NEGATIVE = "negative"
+    NEUTRAL = "neutral"
+    MARKET = "market"
+    BOOK = "book"
+    ACTIVE = "active"
+    PASSIVE = "passive"
+    NON_CASH = "non_cash"
+    FX = "fx"
+
+
+CHART_ROLE_COLORS: dict[ChartColorRole, str] = {
+    ChartColorRole.ACTUAL: "#60A5FA",
+    ChartColorRole.BENCHMARK: "#FBBF24",
+    ChartColorRole.TARGET: "#FBBF24",
+    ChartColorRole.POSITIVE: "#34D399",
+    ChartColorRole.NEGATIVE: "#F87171",
+    ChartColorRole.NEUTRAL: "#94A3B8",
+    ChartColorRole.MARKET: "#38BDF8",
+    ChartColorRole.BOOK: "#CBD5E1",
+    ChartColorRole.ACTIVE: "#38BDF8",
+    ChartColorRole.PASSIVE: "#34D399",
+    ChartColorRole.NON_CASH: "#C084FC",
+    ChartColorRole.FX: "#2DD4BF",
+}
+
 _STUDIO_DARK_CSS = f"""
 <style>
   :root {{

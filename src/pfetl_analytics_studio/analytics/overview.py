@@ -58,12 +58,16 @@ from pfetl_analytics_studio.analytics.overview_queries import (
     query_tax_fy,
     query_wealth_aggregates,
     query_wealth_asset_split,
+    reset_catalog_snapshot,
+    use_catalog_snapshot,
 )
 from pfetl_analytics_studio.data import (
+    CatalogSnapshot,
     CompatibilityReport,
     CompatibilityStatus,
     ControlPlaneReader,
     ControlPlaneState,
+    DuckDBQueryPort,
     DuckDBReader,
     PFETLDataAccessError,
     QueryCache,
@@ -127,6 +131,7 @@ class OverviewService:
         run_id: str | None = None,
         provenance: RunProvenance | None = None,
         compatibility: CompatibilityReport | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
         filters: FilterSet | None = None,
         cache: QueryCache | None = None,
     ) -> OverviewSnapshot:
@@ -144,6 +149,8 @@ class OverviewService:
             Resolved run provenance carrying historical `FinancialRules` payload.
         compatibility : CompatibilityReport | None, optional
             Startup surface discovery report for health strip metadata.
+        catalog_snapshot : CatalogSnapshot | None, optional
+            Immutable session capability snapshot avoiding repeated `information_schema` probes.
         filters : FilterSet | None, optional
             Active normalized global domain filters (`FY`, income/expense categories, class).
         cache : QueryCache | None, optional
@@ -223,6 +230,7 @@ class OverviewService:
             active_filters=active_filters,
             currency_id=currency_id,
             run_health=run_health,
+            catalog_snapshot=catalog_snapshot,
         )
         if cache is not None and snapshot.state == "ready":
             cache.set(cache_key, snapshot)
@@ -360,7 +368,7 @@ class OverviewService:
     @classmethod
     def _resolve_comparison_deltas(
         cls,
-        duck_reader: DuckDBReader,
+        duck_reader: DuckDBQueryPort,
         *,
         period_context: PeriodContext,
         start_date: date,
@@ -1096,6 +1104,7 @@ class OverviewService:
         active_filters: FilterSet,
         currency_id: str,
         run_health: OverviewRunHealth,
+        catalog_snapshot: CatalogSnapshot | None = None,
     ) -> OverviewSnapshot:
         """Execute batched Gold & Meta queries to populate KPIs, breakups, and chart series."""
         assert period_context.start_date is not None and period_context.end_date is not None
@@ -1103,60 +1112,65 @@ class OverviewService:
         end_date = period_context.end_date
         chart_start, chart_label = _chart_window_start(start_date, end_date)
 
-        enriched_health = enrich_meta_counts(duck_reader, run_health)
-        core_flow, core_stock = query_core_monthly(duck_reader, start_date, end_date)
-        eff_flow, eff_latest = query_efficiency(duck_reader, start_date, end_date)
-        budget_summary = query_budget_variance(duck_reader, start_date, end_date)
-        inv_period, inv_latest_db = query_portfolio_dual(duck_reader, start_date, end_date)
-        fire_latest = query_fire_latest(duck_reader, start_date, end_date)
-        tax_summary = query_tax_fy(
-            duck_reader,
-            default_fy=period_context.financial_year,
-            filters=active_filters,
-        )
-        wealth_agg = query_wealth_aggregates(duck_reader, end_date)
-        comp_nw, comp_cf, comp_inc, comp_exp, comp_label = cls._resolve_comparison_deltas(
-            duck_reader,
-            period_context=period_context,
-            start_date=start_date,
-            has_core_stock=core_stock is not None,
-        )
+        token = use_catalog_snapshot(catalog_snapshot)
+        try:
+            with duck_reader.session() as db:
+                enriched_health = enrich_meta_counts(db, run_health)
+                core_flow, core_stock = query_core_monthly(db, start_date, end_date)
+                eff_flow, eff_latest = query_efficiency(db, start_date, end_date)
+                budget_summary = query_budget_variance(db, start_date, end_date)
+                inv_period, inv_latest_db = query_portfolio_dual(db, start_date, end_date)
+                fire_latest = query_fire_latest(db, start_date, end_date)
+                tax_summary = query_tax_fy(
+                    db,
+                    default_fy=period_context.financial_year,
+                    filters=active_filters,
+                )
+                wealth_agg = query_wealth_aggregates(db, end_date)
+                comp_nw, comp_cf, comp_inc, comp_exp, comp_label = cls._resolve_comparison_deltas(
+                    db,
+                    period_context=period_context,
+                    start_date=start_date,
+                    has_core_stock=core_stock is not None,
+                )
 
-        bundle = _OverviewQueryBundle(
-            end_date=end_date,
-            default_fy=period_context.financial_year,
-            core_flow=core_flow,
-            core_stock=core_stock,
-            eff_flow=eff_flow,
-            eff_latest=eff_latest,
-            budget_summary=budget_summary,
-            inv_period=inv_period,
-            inv_latest_db=inv_latest_db,
-            fire_latest=fire_latest,
-            tax_summary=tax_summary,
-            comp_nw=comp_nw,
-            comp_cf=comp_cf,
-            comp_inc=comp_inc,
-            comp_exp=comp_exp,
-            comp_label=comp_label,
-            enriched_health=enriched_health,
-            wealth_agg=wealth_agg,
-        )
-        primary_kpis = cls._build_primary_kpis(bundle)
-        secondary_kpis = cls._build_secondary_kpis(bundle)
-        nw_series, cf_series, port_series, fire_series = query_chart_series(
-            duck_reader,
-            chart_start=chart_start,
-            end_date=end_date,
-        )
-        income_breakup = query_income_breakup(
-            duck_reader, start_date, end_date, filters=active_filters
-        )
-        expense_breakup = query_expense_breakup(
-            duck_reader, start_date, end_date, filters=active_filters
-        )
-        asset_class_mix = query_asset_class_mix(duck_reader, end_date, filters=active_filters)
-        wealth_split = query_wealth_asset_split(duck_reader, end_date, filters=active_filters)
+                bundle = _OverviewQueryBundle(
+                    end_date=end_date,
+                    default_fy=period_context.financial_year,
+                    core_flow=core_flow,
+                    core_stock=core_stock,
+                    eff_flow=eff_flow,
+                    eff_latest=eff_latest,
+                    budget_summary=budget_summary,
+                    inv_period=inv_period,
+                    inv_latest_db=inv_latest_db,
+                    fire_latest=fire_latest,
+                    tax_summary=tax_summary,
+                    comp_nw=comp_nw,
+                    comp_cf=comp_cf,
+                    comp_inc=comp_inc,
+                    comp_exp=comp_exp,
+                    comp_label=comp_label,
+                    enriched_health=enriched_health,
+                    wealth_agg=wealth_agg,
+                )
+                primary_kpis = cls._build_primary_kpis(bundle)
+                secondary_kpis = cls._build_secondary_kpis(bundle)
+                nw_series, cf_series, port_series, fire_series = query_chart_series(
+                    db,
+                    chart_start=chart_start,
+                    end_date=end_date,
+                )
+                income_breakup = query_income_breakup(
+                    db, start_date, end_date, filters=active_filters
+                )
+                expense_breakup = query_expense_breakup(
+                    db, start_date, end_date, filters=active_filters
+                )
+                asset_class_mix = query_asset_class_mix(db, end_date, filters=active_filters)
+                wealth_split = query_wealth_asset_split(db, end_date, filters=active_filters)
+        finally:
+            reset_catalog_snapshot(token)
         nw_as_of = _as_date(core_stock.get("m_end")) if core_stock else None
 
         bridge: AttributionBridgeSummary | None = None
