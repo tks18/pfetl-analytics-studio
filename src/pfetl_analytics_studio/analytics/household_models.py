@@ -14,7 +14,7 @@ Does not own
 from __future__ import annotations
 
 from datetime import date
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -449,3 +449,124 @@ class HouseholdCashflowSnapshot(BaseModel):
     is_reconciled: bool = True
     run_health: OverviewRunHealth = OverviewRunHealth()
     diagnostics: tuple[str, ...] = ()
+
+
+class HouseholdTransactionQuery(BaseModel):
+    """Typed filter contract for the unified Household Transaction & Classification Explorer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    transaction_kind: Literal["all", "income", "expense", "transfer"] = "all"
+    start_date: date | None = None
+    end_date: date | None = None
+    asset_id: str | None = None
+    category_name: str | None = None
+    subcategory_name: str | None = None
+    currency_id: str | None = None
+    text_search: str | None = None
+    transfer_type: str | None = None
+    classification_flag: Literal[
+        "all",
+        "core",
+        "non_core",
+        "active",
+        "passive",
+        "dividend",
+        "interest",
+        "non_cash",
+    ] = "all"
+    min_amount: float | None = None
+    max_amount: float | None = None
+    has_transfer_only: bool = False
+
+
+class HouseholdTransactionRow(BaseModel):
+    """Normalized common Silver transaction row across income, expense, and transfers."""
+
+    model_config = ConfigDict(frozen=True)
+
+    uid: str
+    transaction_kind: Literal["income", "expense", "transfer"]
+    tx_date: date
+    tx_time: str = ""
+    asset_id: str = ""
+    asset_name: str = ""
+    to_asset_id: str | None = None
+    to_asset_name: str | None = None
+    category_name: str = ""
+    subcategory_name: str = ""
+    currency_id: str = "INR_INR"
+    base_amount: float = 0.0
+    amount_account: float | None = None
+    local_amount: float | None = None
+    exch_rate: float | None = None
+    transfer_uid: str | None = None
+    transfer_type: str | None = None
+    paid: str = ""
+    description: str = ""
+    classification_summary: str = ""
+
+
+class TxDailyPoint(BaseModel):
+    """Daily aggregated income, expense, and transfer volumes for the explorer timeline."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tx_date: date
+    income_amount: float = 0.0
+    expense_amount: float = 0.0
+    transfer_volume: float = 0.0
+
+
+class TxAccountPoint(BaseModel):
+    """Account-level transaction volume and count for matching explorer rows."""
+
+    model_config = ConfigDict(frozen=True)
+
+    account_name: str
+    volume: float = 0.0
+    tx_count: int = 0
+
+
+class HouseholdTransactionSummary(BaseModel):
+    """Server-side aggregates and filter options for `HouseholdTransactionPage`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_count: int = 0
+    income_total: float = 0.0
+    expense_total: float = 0.0
+    transfer_volume: float = 0.0
+    income_count: int = 0
+    expense_count: int = 0
+    transfer_count: int = 0
+    daily_series: tuple[TxDailyPoint, ...] = ()
+    account_breakdown: tuple[TxAccountPoint, ...] = ()
+    available_assets: tuple[tuple[str, str], ...] = ()
+    available_currencies: tuple[str, ...] = ()
+    available_categories: tuple[str, ...] = ()
+    available_subcategories: tuple[str, ...] = ()
+
+
+class HouseholdTransactionPage(BaseModel):
+    """Server-paginated result for the Household Transaction & Classification Explorer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    rows: tuple[HouseholdTransactionRow, ...] = ()
+    summary: HouseholdTransactionSummary = HouseholdTransactionSummary()
+    limit: int = 50
+    offset: int = 0
+    currency_id: str = "INR_INR"
+
+
+class HouseholdTransactionDetail(BaseModel):
+    """Full raw kind-specific fields, classification lineage, and linked transfer legs."""
+
+    model_config = ConfigDict(frozen=True)
+
+    row: HouseholdTransactionRow
+    raw_fields: dict[str, Any] = {}
+    lineage: dict[str, str] = {}
+    flags: tuple[str, ...] = ()
+    linked_transfers: tuple[HouseholdTransactionRow, ...] = ()

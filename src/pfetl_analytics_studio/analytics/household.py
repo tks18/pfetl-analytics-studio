@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date
-from typing import Any
+from typing import Any, Literal
 
 from pfetl_analytics_studio.analytics.household_budget_cashflow_queries import (
     build_budget_kpis,
@@ -42,6 +42,9 @@ from pfetl_analytics_studio.analytics.household_models import (
     HouseholdCashflowSnapshot,
     HouseholdExpenseSnapshot,
     HouseholdIncomeSnapshot,
+    HouseholdTransactionDetail,
+    HouseholdTransactionPage,
+    HouseholdTransactionQuery,
     IncomeCategoryRow,
     IncomeGroupRow,
     IncomeTaxabilitySummary,
@@ -55,6 +58,13 @@ from pfetl_analytics_studio.analytics.household_queries import (
     query_income_efficiency,
     query_income_monthly_series,
     query_income_transactions,
+)
+from pfetl_analytics_studio.analytics.household_transaction_queries import (
+    export_transactions_csv as _export_transactions_csv,
+)
+from pfetl_analytics_studio.analytics.household_transaction_queries import (
+    query_household_transaction_detail,
+    query_household_transactions,
 )
 from pfetl_analytics_studio.analytics.overview import OverviewService
 from pfetl_analytics_studio.analytics.overview_models import (
@@ -1418,3 +1428,56 @@ class HouseholdAnalytics:
                 )
             finally:
                 reset_catalog_snapshot(tok)
+
+    @classmethod
+    def household_transactions(
+        cls,
+        profile: PFETLProfile,
+        query: HouseholdTransactionQuery,
+        *,
+        limit: int = 50,
+        offset: int = 0,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ) -> HouseholdTransactionPage:
+        """Query server-paginated Silver transactions across income, expense, and transfers."""
+        currency_id = OverviewService.resolve_currency_id(profile, None)
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() != WarehouseState.AVAILABLE:
+            return HouseholdTransactionPage(limit=limit, offset=offset, currency_id=currency_id)
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                return query_household_transactions(
+                    session_reader,
+                    query,
+                    limit=limit,
+                    offset=offset,
+                    currency_id=currency_id,
+                )
+            finally:
+                reset_catalog_snapshot(tok)
+
+    @classmethod
+    def household_transaction_detail(
+        cls,
+        profile: PFETLProfile,
+        transaction_kind: Literal["income", "expense", "transfer"],
+        uid: str,
+        *,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ) -> HouseholdTransactionDetail | None:
+        """Fetch raw kind-specific fields, classification lineage, and linked transfer rows."""
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() != WarehouseState.AVAILABLE:
+            return None
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                return query_household_transaction_detail(session_reader, transaction_kind, uid)
+            finally:
+                reset_catalog_snapshot(tok)
+
+    @staticmethod
+    def export_transactions_csv(page: HouseholdTransactionPage) -> str:
+        """Export current paged HouseholdTransactionPage rows to RFC-4180 CSV."""
+        return _export_transactions_csv(page)
