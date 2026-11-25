@@ -36,6 +36,13 @@ from pfetl_analytics_studio.ui import (
     build_cashflow_efficiency_figure,
     build_category_breakup_figure,
     build_deployment_flow_figure,
+    build_expense_account_mix_figure,
+    build_expense_cash_vs_noncash_figure,
+    build_expense_category_bars_figure,
+    build_expense_core_trend_figure,
+    build_expense_heatmap_figure,
+    build_expense_real_vs_nominal_figure,
+    build_expense_treemap_figure,
     build_fire_trajectory_figure,
     build_heatmap_figure,
     build_income_account_mix_figure,
@@ -333,6 +340,45 @@ def test_formatting_and_chart_figure_builders() -> None:
         ["2026-09", "2026-10"], ["Food", "Travel"], [[100.0, None], [50.0, 75.0]]
     )
     assert hm_fig is not None and hm_fig["data"][0]["type"] == "heatmap"
+
+    class _ExpPt:
+        month_end = date(2026, 10, 31)
+        total_expense = 47000.0
+        core_expense = 33000.0
+        non_core_expense = 14000.0
+        cash_expense = 32800.0
+        non_cash_expense = 14200.0
+        inflation_adjusted_core = 29000.0
+        real_core_growth_pct = 0.12
+        trailing_3m_avg = 46000.0
+        category_id = "e1"
+        category_name = "House Rent"
+        category_group = "Rents"
+        spend_type = "Fixed"
+        is_core = True
+        is_discretionary = False
+        amount = 15000.0
+        share_pct = 0.32
+        account_name = "HDFC Bank"
+        tx_count = 3
+        months = ("2026-09", "2026-10")
+        groups = ("Rents", "Food")
+        matrix = ((15000.0, 15000.0), (5000.0, 7000.0))
+
+    exp_pt = _ExpPt()
+    assert build_expense_core_trend_figure([exp_pt]) is not None
+    assert build_expense_real_vs_nominal_figure([exp_pt]) is not None
+    assert build_expense_cash_vs_noncash_figure([exp_pt]) is not None
+    assert build_expense_treemap_figure([exp_pt]) is not None
+    assert build_expense_heatmap_figure(exp_pt) is not None
+    assert build_expense_category_bars_figure([exp_pt]) is not None
+    assert build_expense_account_mix_figure([exp_pt]) is not None
+
+    # Numeric/right-aligned TableColumn attaches custom JS numeric comparator
+    num_col = TableColumn(name="amt", label="Amount", field="amt", align="right").to_quasar_dict()
+    txt_col = TableColumn(name="cat", label="Category", field="cat", align="left").to_quasar_dict()
+    assert ":sort" in num_col
+    assert ":sort" not in txt_col
 
 
 def test_ui_package_has_no_data_or_analytics_imports() -> None:

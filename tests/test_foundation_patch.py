@@ -10,12 +10,17 @@ from typing import Any
 import duckdb
 import pytest
 
-from pfetl_analytics_studio.analytics import OverviewService
+from pfetl_analytics_studio.analytics import HouseholdAnalytics, OverviewService
+from pfetl_analytics_studio.app import render_navigation_drawer
 from pfetl_analytics_studio.context import AppSessionManager, RunSelectionMode
 from pfetl_analytics_studio.data import CatalogSnapshot, DuckDBReader, DuckDBSession, PFETLCatalog
+from pfetl_analytics_studio.pages.household import render_household_page
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import (
     DEFAULT_DATASETS,
+    FilterField,
+    FilterSet,
+    FilterSpec,
     MetricAggregation,
     MetricFormat,
     MetricOrigin,
@@ -158,3 +163,100 @@ def test_metric_origin_distinguishes_core_and_derived() -> None:
         origin=MetricOrigin.STUDIO_DERIVED,
     )
     assert derived.origin == MetricOrigin.STUDIO_DERIVED
+
+
+def test_household_lazy_tab_skips_expense_on_initial_load(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify opening Household executes Income only and zero Expense queries until tab click."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    prof = _isolated_profile(tmp_path)
+    session = AppSessionManager(initial_profile=prof)
+    ctx = session.ensure_hydrated()
+    expense_calls = 0
+
+    def _spy_expense(*args: Any, **kwargs: Any) -> Any:
+        nonlocal expense_calls
+        expense_calls += 1
+        return None
+
+    monkeypatch.setattr(HouseholdAnalytics, "expense_summary", _spy_expense)
+    client = Client(page("/test_lazy_household"))
+    try:
+        with client:
+            render_household_page(ctx, cache=session.cache)
+    finally:
+        client.delete()
+    assert expense_calls == 0
+
+
+def test_household_preserves_active_tab_across_period_and_filter_changes(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Verify `active_tabs` persists across period/filter updates and skips unopened Income."""
+    from nicegui import Client
+    from nicegui.page import page
+
+    prof = _isolated_profile(tmp_path)
+    session = AppSessionManager(initial_profile=prof)
+    session.ensure_hydrated()
+    session.set_active_tab("household", "expense")
+    ctx_after = session.set_period(PeriodRequest(preset=PeriodPreset.LATEST_COMPLETE_MONTH))
+    assert ctx_after.active_tabs["household"] == "expense"
+
+    income_calls = 0
+
+    def _spy_income(*args: Any, **kwargs: Any) -> Any:
+        nonlocal income_calls
+        income_calls += 1
+        return None
+
+    monkeypatch.setattr(HouseholdAnalytics, "income_summary", _spy_income)
+    client = Client(page("/test_preserve_tab_household"))
+    try:
+        with client:
+            render_household_page(
+                ctx_after,
+                cache=session.cache,
+                initial_tab=ctx_after.active_tabs.get("household", "income"),
+            )
+    finally:
+        client.delete()
+    assert income_calls == 0
+
+
+def test_sidebar_collapsed_persists_across_period_filter_and_drawer_render(tmp_path: Path) -> None:
+    """Verify collapsed icon-rail state survives period/filter/profile updates and renders mini."""
+    from nicegui import Client, ui
+    from nicegui.page import page
+
+    prof = _isolated_profile(tmp_path)
+    session = AppSessionManager(initial_profile=prof)
+    session.ensure_hydrated()
+    assert session.context.sidebar_collapsed is False
+
+    session.set_sidebar_collapsed(True)
+    ctx_after_period = session.set_period(PeriodRequest(preset=PeriodPreset.LATEST_COMPLETE_MONTH))
+    ctx_after_filter = session.set_filters(
+        FilterSet(filters=(FilterSpec(field=FilterField.ASSET_GROUP, value="Equity"),))
+    )
+    ctx_after_switch = session.switch_profile(prof, hydrate=False)
+
+    assert ctx_after_period.sidebar_collapsed is True
+    assert ctx_after_filter.sidebar_collapsed is True
+    assert ctx_after_switch.sidebar_collapsed is True
+
+    client = Client(page("/test_sidebar_mini_rail"))
+    try:
+        with client:
+            with ui.header():
+                pass
+            drawer = render_navigation_drawer("household", ctx_after_filter)
+            props: dict[str, Any] = dict(drawer.props)
+            assert props.get("mini") is True
+            assert props.get(":mini-width") == "64"
+            assert props.get("model-value") is True
+    finally:
+        client.delete()
