@@ -59,6 +59,11 @@ from pfetl_analytics_studio.ui.charts_income import (
     build_income_ytd_figure,
     build_passive_income_engine_figure,
 )
+from pfetl_analytics_studio.ui.charts_transactions import (
+    build_tx_account_breakdown_figure,
+    build_tx_daily_activity_figure,
+    build_tx_kind_volume_figure,
+)
 from pfetl_analytics_studio.ui.filters import filter_chips_bar, period_selector
 from pfetl_analytics_studio.ui.formatting import (
     currency_symbol,
@@ -117,6 +122,9 @@ __all__ = [
     "build_passive_income_engine_figure",
     "build_portfolio_return_figure",
     "build_treemap_figure",
+    "build_tx_account_breakdown_figure",
+    "build_tx_daily_activity_figure",
+    "build_tx_kind_volume_figure",
     "build_waterfall_figure",
     "build_wealth_asset_split_figure",
     "chart_config",

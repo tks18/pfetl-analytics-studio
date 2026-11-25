@@ -9,7 +9,7 @@ from pathlib import Path
 import duckdb
 import pytest
 
-from pfetl_analytics_studio.analytics import HouseholdAnalytics
+from pfetl_analytics_studio.analytics import HouseholdAnalytics, HouseholdTransactionQuery
 from pfetl_analytics_studio.data import DuckDBReader, PFETLCatalog
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest, PeriodResolver
@@ -521,6 +521,7 @@ def test_household_module_never_touches_bronze_or_ui() -> None:
         "household_queries.py",
         "household_expense_queries.py",
         "household_budget_cashflow_queries.py",
+        "household_transaction_queries.py",
     ):
         src_path = (
             Path(__file__).resolve().parents[2]
@@ -695,3 +696,75 @@ def test_household_budget_cashflow_and_transfer_drill(tmp_path: Path) -> None:
 
     fin_drill = HouseholdAnalytics.transfer_transactions(prof, period, activity_filter="Financing")
     assert fin_drill.total_count == 0
+
+
+def test_household_unified_transactions_pagination_and_linkage(tmp_path: Path) -> None:
+    """Verify unified UNION ALL explorer, server pagination, search, detail lineage, and CSV."""
+    prof = _build_household_profile(tmp_path)
+    con = duckdb.connect(str(prof.duckdb_path))
+    try:
+        con.execute("DROP TABLE IF EXISTS silver.fact_transfer_transactions;")
+        con.execute(
+            """
+            CREATE TABLE silver.fact_transfer_transactions (
+                UID VARCHAR,
+                DATE DATE,
+                ADJUSTED_DATE_FOR_ANALYSIS DATE,
+                ASSET_ID VARCHAR,
+                TO_ASSET_ID VARCHAR,
+                CATEGORY_ID VARCHAR,
+                CURRENCY_ID VARCHAR,
+                TRANSFER_UID VARCHAR,
+                TIME VARCHAR,
+                DESCRIPTION VARCHAR,
+                PAID VARCHAR,
+                TRANSACTION_TYPE VARCHAR,
+                TRANSFER_TYPE VARCHAR,
+                BASE_AMOUNT DOUBLE,
+                AMOUNT_ACCOUNT DOUBLE,
+                LOCAL_AMOUNT DOUBLE,
+                EXCH_RATE DOUBLE
+            );
+            """
+        )
+        con.execute(
+            """
+            INSERT INTO silver.fact_transfer_transactions VALUES
+            ('tr_a','2026-10-15','2026-10-15','a_hdfc','a_cash','','INR_INR','tx_pair_1',
+             '10:00:00','Linked SIP Out','Broker','Transfer','Out',20000.0,20000.0,20000.0,1.0),
+            ('tr_b','2026-10-15','2026-10-15','a_cash','a_hdfc','','INR_INR','tx_pair_1',
+             '10:00:00','Linked SIP In','Broker','Transfer','In',20000.0,20000.0,20000.0,1.0);
+            """
+        )
+    finally:
+        con.close()
+
+    q_all = HouseholdTransactionQuery(start_date=date(2026, 10, 1), end_date=date(2026, 10, 31))
+    page1 = HouseholdAnalytics.household_transactions(prof, q_all, limit=2, offset=0)
+    page2 = HouseholdAnalytics.household_transactions(prof, q_all, limit=2, offset=2)
+    assert page1.summary.total_count >= 4
+    assert len(page1.rows) == 2
+    assert len(page2.rows) == 2
+    assert page1.rows[0].uid != page2.rows[0].uid
+
+    # Text search applies to DESCRIPTION/PAID with bound LIKE
+    q_search = HouseholdTransactionQuery(
+        start_date=date(2026, 10, 1),
+        end_date=date(2026, 10, 31),
+        text_search="Linked SIP",
+    )
+    res_search = HouseholdAnalytics.household_transactions(prof, q_search)
+    assert res_search.summary.total_count == 2
+    assert res_search.summary.transfer_count == 2
+
+    # Detail fetch resolves lineage and linked TRANSFER_UID legs
+    detail = HouseholdAnalytics.household_transaction_detail(prof, "transfer", "tr_a")
+    assert detail is not None
+    assert detail.row.uid == "tr_a"
+    assert len(detail.linked_transfers) == 1
+    assert detail.linked_transfers[0].uid == "tr_b"
+
+    # CSV export hook emits header + rows
+    csv_out = HouseholdAnalytics.export_transactions_csv(res_search)
+    assert "UID,Kind,Date" in csv_out
+    assert "tr_a" in csv_out

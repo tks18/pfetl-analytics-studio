@@ -20,6 +20,7 @@ from pfetl_analytics_studio.analytics import (
 )
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache
+from pfetl_analytics_studio.pages.household_transactions import render_transactions_tab
 from pfetl_analytics_studio.semantic import MetricFormat
 from pfetl_analytics_studio.ui import (
     BadgeTone,
@@ -1112,8 +1113,8 @@ def _render_budget_cashflow_body(
                             label="Activity",
                             on_change=_on_act,
                         )
-                        .props("dense outlined")
-                        .classes("w-44")
+                        .props("dense filled dark hide-bottom-space options-dense")
+                        .classes("studio-field w-44 text-xs")
                     )
 
                     def _on_search(evt: Any) -> None:
@@ -1126,7 +1127,9 @@ def _render_budget_cashflow_body(
                         value=drill_state["search"],
                         placeholder="Account, payee, note...",
                         on_change=_on_search,
-                    ).props("debounce=200 dense outlined clearable").classes("w-52")
+                    ).props("debounce=200 dense filled dark hide-bottom-space clearable").classes(
+                        "studio-field w-52 text-xs"
+                    )
 
             _transfer_table_body()
 
@@ -1400,11 +1403,7 @@ def render_household_page(
                     _render_budget_cashflow_tab(context, cache=cache)
             elif tab_key == "transactions":
                 with tx_slot:
-                    empty_state_panel(
-                        title="Unified Household Transaction Explorer",
-                        message="Income transaction evidence is available directly inside the Income tab above.",
-                        icon="list_alt",
-                    )
+                    render_transactions_tab(context)
 
         _ensure_tab_rendered(resolved_initial)
 
