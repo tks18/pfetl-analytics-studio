@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.15](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.14...0.1.15) (2026-11-25)
+
+
+### Bug Fixes 🛠
+
+* **investments:** add Benchmark Alpha label, and unique KPIs ([849a271](https://github.com/tks18/pfetl-analytics-studio/commit/849a271c92f410bbeb1f0e80d9ee43877207a525))
+
 ### [0.1.14](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.13...0.1.14) (2026-11-25)
 
 

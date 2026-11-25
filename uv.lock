@@ -1307,7 +1307,7 @@ wheels = [
 
 [[package]]
 name = "pfetl-analytics-studio"
-version = "0.1.14"
+version = "0.1.15"
 source = { editable = "." }
 dependencies = [
     { name = "duckdb" },
