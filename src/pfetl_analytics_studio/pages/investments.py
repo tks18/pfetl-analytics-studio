@@ -30,6 +30,14 @@ from pfetl_analytics_studio.ui import (
     build_inv_gainers_losers_figure,
     build_inv_holdings_top_figure,
     build_inv_isin_history_figure,
+    build_inv_perf_alpha_trend_figure,
+    build_inv_perf_asset_vs_fx_pnl_figure,
+    build_inv_perf_concentration_figure,
+    build_inv_perf_drawdown_figure,
+    build_inv_perf_fx_impact_figure,
+    build_inv_perf_risk_return_quadrant_figure,
+    build_inv_perf_segment_alpha_figure,
+    build_inv_perf_xirr_vs_bm_figure,
     build_inv_pnl_decomposition_figure,
     build_inv_risk_return_scatter_figure,
     build_inv_tax_harvest_figure,
@@ -176,11 +184,7 @@ def render_investments_page(
             with ui.tab_panel("overview").classes("p-0 pt-3"):
                 _render_overview_tab(context, cache=cache)
             with ui.tab_panel("performance").classes("p-0 pt-3"):
-                empty_state_panel(
-                    "Performance & Benchmarks",
-                    "Benchmark XIRR comparison, drawdown curves, and FX attribution arrive in Phase 14.",
-                    icon="show_chart",
-                )
+                _render_performance_tab(context, cache=cache)
             with ui.tab_panel("lots").classes("p-0 pt-3"):
                 empty_state_panel(
                     "Lot Explorer",
@@ -624,3 +628,227 @@ def _render_holdings_table(
                     icon="open_in_new",
                     on_click=lambda: on_select_isin(str(picker.value)),
                 ).props("outline dense")
+
+
+def _render_performance_tab(
+    context: AppContext,
+    *,
+    cache: QueryCache | None = None,
+) -> None:
+    """Render the Phase 14 Performance, Benchmark, FX & Concentration sub-tab."""
+    profile = context.profile
+    if profile is None:
+        return
+
+    dim_state = {"value": AllocationDimension.CLASS.value}
+
+    with ui.element("div").classes("studio-filter-bar w-full mb-3"):
+        with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+            dim_select = (
+                ui.select(
+                    options=_DIMENSION_OPTIONS,
+                    value=dim_state["value"],
+                    label="Segment Dimension",
+                )
+                .props("dense outlined dark")
+                .classes("w-56")
+            )
+
+    perf_container = ui.column().classes("w-full gap-4")
+
+    def _render_perf_body(dim_value: str) -> None:
+        perf_container.clear()
+        dim = AllocationDimension(dim_value)
+        dim_label = _DIMENSION_OPTIONS.get(dim_value, dim_value)
+        try:
+            snap = InvestmentAnalytics.performance(
+                profile,
+                dim,
+                context.period_context,
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                filters=context.filters,
+                cache=cache,
+            )
+        except Exception as exc:
+            with perf_container:
+                error_state_panel("Unable to load investment performance", str(exc))
+            return
+
+        if snap.state != "ready":
+            with perf_container:
+                empty_state_panel(
+                    "No performance data found",
+                    "No performance rows matched the active profile and period.",
+                    icon="show_chart",
+                )
+            return
+
+        currency_id = snap.currency_id or "INR_INR"
+        with perf_container:
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2 mb-1"):
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    if snap.as_of_date is not None:
+                        status_badge(f"As of: {snap.as_of_date.isoformat()}", tone=BadgeTone.INFO)
+                    if snap.period_label:
+                        status_badge(f"Period: {snap.period_label}", tone=BadgeTone.NEUTRAL)
+                    status_badge(f"Segment: {dim_label}", tone=BadgeTone.NEUTRAL)
+
+            _render_kpi_grid(snap.kpis, currency_id)
+
+            with ui.element("div").classes("studio-chart-grid w-full"):
+                _render_chart_card(
+                    "Portfolio XIRR vs Benchmark XIRR",
+                    build_inv_perf_xirr_vs_bm_figure(snap.history),
+                )
+                _render_chart_card(
+                    "Asset P&L vs Forex P&L",
+                    build_inv_perf_asset_vs_fx_pnl_figure(snap.history, currency_id),
+                )
+                _render_chart_card(
+                    "Historical Max Drawdown",
+                    build_inv_perf_drawdown_figure(snap.history),
+                )
+                _render_chart_card(
+                    f"Segment XIRR vs Benchmark ({dim_label})",
+                    build_inv_perf_segment_alpha_figure(
+                        snap.segment_rows, dimension_label=dim_label
+                    ),
+                )
+                _render_chart_card(
+                    "Country / Currency FX Impact",
+                    build_inv_perf_fx_impact_figure(snap.fx_country_rows or snap.fx_currency_rows),
+                )
+                _render_chart_card(
+                    "Portfolio Concentration Ladder",
+                    build_inv_perf_concentration_figure(snap.concentration),
+                )
+                _render_chart_card(
+                    "Active Alpha Trend (vs Benchmark)",
+                    build_inv_perf_alpha_trend_figure(snap.history),
+                )
+                _render_chart_card(
+                    "Risk-Adjusted Return (XIRR % vs Max Drawdown %)",
+                    build_inv_perf_risk_return_quadrant_figure(snap.isin_perf_rows, currency_id),
+                )
+
+            _render_segment_perf_table(snap.segment_rows, currency_id, dim_label)
+            _render_fx_table(snap.fx_country_rows or snap.fx_currency_rows, currency_id)
+            _render_isin_alpha_leaderboard(snap.isin_perf_rows, currency_id)
+
+    dim_select.on_value_change(lambda e: _render_perf_body(str(e.value)))
+    _render_perf_body(dim_state["value"])
+
+
+def _render_segment_perf_table(
+    rows: tuple[Any, ...],
+    currency_id: str,
+    dim_label: str,
+) -> None:
+    columns = [
+        TableColumn(name="bucket", label=dim_label, field="bucket", align="left"),
+        TableColumn(name="current", label="Current Value", field="current", align="right"),
+        TableColumn(name="xirr", label="XIRR %", field="xirr", align="right"),
+        TableColumn(name="bm_xirr", label="BM XIRR %", field="bm_xirr", align="right"),
+        TableColumn(name="alpha", label="Active Alpha %", field="alpha", align="right"),
+        TableColumn(name="dd", label="Max DD %", field="dd", align="right"),
+    ]
+    table_rows = [
+        {
+            "bucket": r.label,
+            "current": format_currency(r.current_value, currency_id),
+            "xirr": format_percent(r.xirr) if r.xirr is not None else "—",
+            "bm_xirr": format_percent(r.bm_xirr) if r.bm_xirr is not None else "—",
+            "alpha": format_percent(r.active_return) if r.active_return is not None else "—",
+            "dd": format_percent(r.max_drawdown) if r.max_drawdown is not None else "—",
+        }
+        for r in rows
+    ]
+    bounded_data_table(
+        title=f"Segment Performance by {dim_label}",
+        columns=columns,
+        rows=table_rows,
+        pagination=12,
+    )
+
+
+def _render_fx_table(rows: tuple[Any, ...], currency_id: str) -> None:
+    if not rows:
+        return
+    columns = [
+        TableColumn(name="bucket", label="Country / Currency", field="bucket", align="left"),
+        TableColumn(name="base_val", label="Base Value", field="base_val", align="right"),
+        TableColumn(name="fx_rate", label="FX Rate", field="fx_rate", align="right"),
+        TableColumn(name="local_xirr", label="Local XIRR %", field="local_xirr", align="right"),
+        TableColumn(name="base_xirr", label="Base XIRR %", field="base_xirr", align="right"),
+        TableColumn(name="fx_impact", label="FX Impact %", field="fx_impact", align="right"),
+    ]
+    table_rows = [
+        {
+            "bucket": r.bucket,
+            "base_val": format_currency(r.base_current, currency_id),
+            "fx_rate": f"{r.fx_rate:.4f}" if r.fx_rate is not None else "—",
+            "local_xirr": format_percent(r.local_xirr) if r.local_xirr is not None else "—",
+            "base_xirr": format_percent(r.base_xirr) if r.base_xirr is not None else "—",
+            "fx_impact": format_percent(r.fx_xirr_impact) if r.fx_xirr_impact is not None else "—",
+        }
+        for r in rows
+    ]
+    bounded_data_table(
+        title="Country & Currency FX Attribution",
+        columns=columns,
+        rows=table_rows,
+        pagination=12,
+    )
+
+
+def _render_isin_alpha_leaderboard(rows: tuple[Any, ...], currency_id: str) -> None:
+    if not rows:
+        return
+    sorted_rows = sorted(
+        rows,
+        key=lambda r: float(r.active_return) if r.active_return is not None else -9999.0,
+        reverse=True,
+    )
+    columns = [
+        TableColumn(name="isin", label="ISIN", field="isin", align="left"),
+        TableColumn(name="current", label="Current Value", field="current", align="right"),
+        TableColumn(name="xirr", label="XIRR %", field="xirr", align="right"),
+        TableColumn(name="bm_xirr", label="BM XIRR %", field="bm_xirr", align="right"),
+        TableColumn(name="alpha", label="Active Alpha %", field="alpha", align="right"),
+        TableColumn(name="dd", label="Max DD %", field="dd", align="right"),
+    ]
+    table_rows = [
+        {
+            "isin": r.label,
+            "current": format_currency(r.current_value, currency_id),
+            "xirr": format_percent(r.xirr) if r.xirr is not None else "—",
+            "bm_xirr": format_percent(r.bm_xirr) if r.bm_xirr is not None else "—",
+            "alpha": format_percent(r.active_return) if r.active_return is not None else "—",
+            "dd": format_percent(r.max_drawdown) if r.max_drawdown is not None else "—",
+        }
+        for r in sorted_rows
+    ]
+    with ui.column().classes("w-full gap-2"):
+        search = (
+            ui.input(placeholder="Search ISIN...")
+            .props("dense outlined dark clearable")
+            .classes("w-72")
+        )
+        box = ui.column().classes("w-full")
+
+        def _render_filtered(q: str = "") -> None:
+            ql = q.strip().lower()
+            filtered = [r for r in table_rows if ql in str(r["isin"]).lower()] if ql else table_rows
+            box.clear()
+            with box:
+                bounded_data_table(
+                    title=f"ISIN Alpha Leaderboard ({len(filtered)})",
+                    columns=columns,
+                    rows=filtered,
+                    pagination=15,
+                )
+
+        search.on_value_change(lambda e: _render_filtered(str(e.value or "")))
+        _render_filtered("")

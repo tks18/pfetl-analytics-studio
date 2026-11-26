@@ -558,3 +558,358 @@ def build_inv_active_alpha_figure(
         ],
         "layout": layout,
     }
+
+
+def _pct(val: Any) -> float:
+    """Convert decimal ratio (e.g. 0.061) to percentage points (6.1)."""
+    if val is None:
+        return 0.0
+    v = float(val)
+    return v * 100.0 if abs(v) <= 1.5 else v
+
+
+def build_inv_perf_xirr_vs_bm_figure(
+    history: Sequence[Any],
+) -> dict[str, Any] | None:
+    """Build Portfolio XIRR vs Benchmark XIRR (trend if multi-date, grouped bar if single-date)."""
+    if not history:
+        return None
+    if len(history) == 1:
+        pt = history[0]
+        labels = ["Portfolio XIRR", "After-Tax XIRR", "Benchmark XIRR"]
+        vals = [
+            _pct(getattr(pt, "xirr", 0.0)),
+            _pct(getattr(pt, "after_tax_xirr", 0.0)),
+            _pct(getattr(pt, "bm_xirr", 0.0)),
+        ]
+        y_ticks = numeric_ticks(vals, suffix="%")
+        layout = studio_plotly_layout(height=340, y_ticks=y_ticks, x_axis_type="category")
+        layout["showlegend"] = False
+        return {
+            "data": [
+                {
+                    "type": "bar",
+                    "x": labels,
+                    "y": vals,
+                    "marker": {"color": ["#38BDF8", "#34D399", "#94A3B8"]},
+                    "hovertemplate": "%{x}: %{y:.2f}%<extra></extra>",
+                }
+            ],
+            "layout": layout,
+        }
+    dates = [str(getattr(p, "closing_date", "")) for p in history]
+    xirr = [_pct(v) if (v := getattr(p, "xirr", None)) is not None else None for p in history]
+    bm = [_pct(v) if (v := getattr(p, "bm_xirr", None)) is not None else None for p in history]
+    y_ticks = numeric_ticks([v for v in (*xirr, *bm) if v is not None], suffix="%")
+    layout = studio_plotly_layout(
+        height=340,
+        y_ticks=y_ticks,
+        x_axis_type="date",
+        date_tick_format="%d %b",
+    )
+    return {
+        "data": [
+            {
+                "type": "scatter",
+                "mode": "lines+markers",
+                "x": dates,
+                "y": xirr,
+                "name": "Portfolio XIRR",
+                "line": {"color": "#38BDF8", "width": 2.5},
+            },
+            {
+                "type": "scatter",
+                "mode": "lines+markers",
+                "x": dates,
+                "y": bm,
+                "name": "Benchmark XIRR",
+                "line": {"color": "#94A3B8", "width": 2, "dash": "dot"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_asset_vs_fx_pnl_figure(
+    history: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build Asset P&L vs Forex P&L chart."""
+    if not history:
+        return None
+    dates = [str(getattr(p, "closing_date", "")) for p in history]
+    asset_p = [float(getattr(p, "asset_pnl", 0.0) or 0.0) for p in history]
+    forex_p = [float(getattr(p, "forex_pnl", 0.0) or 0.0) for p in history]
+    y_ticks = currency_ticks([*asset_p, *forex_p], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340,
+        barmode="relative",
+        y_ticks=y_ticks,
+        x_axis_type="date" if len(history) > 1 else "category",
+        date_tick_format="%d %b",
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": dates,
+                "y": asset_p,
+                "name": "Asset P&L",
+                "marker": {"color": "#38BDF8"},
+                "hovertemplate": "%{x}<br>Asset P&L: %{customdata}<extra></extra>",
+                "customdata": [format_currency(v, currency_id) for v in asset_p],
+            },
+            {
+                "type": "bar",
+                "x": dates,
+                "y": forex_p,
+                "name": "Forex P&L",
+                "marker": {"color": "#FBBF24"},
+                "hovertemplate": "%{x}<br>Forex P&L: %{customdata}<extra></extra>",
+                "customdata": [format_currency(v, currency_id) for v in forex_p],
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_drawdown_figure(
+    history: Sequence[Any],
+) -> dict[str, Any] | None:
+    """Build historical Max Drawdown curve."""
+    pts = [p for p in history if getattr(p, "max_drawdown", None) is not None]
+    if not pts:
+        return None
+    dates = [str(getattr(p, "closing_date", "")) for p in pts]
+    dd = [_pct(getattr(p, "max_drawdown", 0.0)) for p in pts]
+    y_ticks = numeric_ticks(dd, suffix="%")
+    layout = studio_plotly_layout(
+        height=340,
+        y_ticks=y_ticks,
+        x_axis_type="date" if len(pts) > 1 else "category",
+        date_tick_format="%d %b",
+    )
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "scatter" if len(pts) > 1 else "bar",
+                "mode": "lines+markers" if len(pts) > 1 else None,
+                "fill": "tozeroy" if len(pts) > 1 else None,
+                "x": dates,
+                "y": dd,
+                "line": {"color": "#F87171", "width": 2},
+                "marker": {"color": "#F87171"},
+                "hovertemplate": "%{x}<br>Drawdown: %{y:.2f}%<extra></extra>",
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_segment_alpha_figure(
+    rows: Sequence[Any],
+    *,
+    dimension_label: str = "Asset Class",
+) -> dict[str, Any] | None:
+    """Build Segment XIRR vs Benchmark XIRR grouped bars."""
+    top = list(rows[:10])
+    if not top:
+        return None
+    top.reverse()
+    labels = [str(getattr(r, "label", "")) for r in top]
+    xirr = [_pct(getattr(r, "xirr", 0.0)) for r in top]
+    bm = [_pct(getattr(r, "bm_xirr", 0.0)) for r in top]
+    _ = dimension_label
+    x_ticks = numeric_ticks([*xirr, *bm], suffix="%")
+    layout = studio_plotly_layout(
+        height=340,
+        barmode="group",
+        horizontal_bars=True,
+        x_currency_ticks=x_ticks,
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": xirr,
+                "name": "Segment XIRR %",
+                "orientation": "h",
+                "marker": {"color": "#38BDF8"},
+                "hovertemplate": "%{y}<br>XIRR: %{x:.2f}%<extra></extra>",
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": bm,
+                "name": "Benchmark XIRR %",
+                "orientation": "h",
+                "marker": {"color": "#94A3B8"},
+                "hovertemplate": "%{y}<br>BM XIRR: %{x:.2f}%<extra></extra>",
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_fx_impact_figure(
+    fx_rows: Sequence[Any],
+) -> dict[str, Any] | None:
+    """Build Local XIRR vs Base XIRR & FX XIRR Impact by Country/Currency."""
+    top = list(fx_rows[:10])
+    if not top:
+        return None
+    top.reverse()
+    labels = [str(getattr(r, "bucket", "")) for r in top]
+    local_x = [_pct(getattr(r, "local_xirr", 0.0)) for r in top]
+    base_x = [_pct(getattr(r, "base_xirr", 0.0)) for r in top]
+    fx_imp = [_pct(getattr(r, "fx_xirr_impact", 0.0)) for r in top]
+    x_ticks = numeric_ticks([*local_x, *base_x, *fx_imp], suffix="%")
+    layout = studio_plotly_layout(
+        height=340,
+        barmode="group",
+        horizontal_bars=True,
+        x_currency_ticks=x_ticks,
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": local_x,
+                "name": "Local XIRR %",
+                "orientation": "h",
+                "marker": {"color": "#A78BFA"},
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": base_x,
+                "name": "Base XIRR %",
+                "orientation": "h",
+                "marker": {"color": "#38BDF8"},
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": fx_imp,
+                "name": "FX Impact %",
+                "orientation": "h",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_concentration_figure(
+    concentration: Any,
+) -> dict[str, Any] | None:
+    """Build Top 1 / Top 5 / Top 10 Concentration Ladder bar chart."""
+    t1 = getattr(concentration, "top1_weight", None)
+    t5 = getattr(concentration, "top5_weight", None)
+    t10 = getattr(concentration, "top10_weight", None)
+    if t1 is None and t5 is None and t10 is None:
+        return None
+    labels = ["Top 1 Holding", "Top 5 Holdings", "Top 10 Holdings"]
+    vals = [_pct(t1), _pct(t5), _pct(t10)]
+    y_ticks = numeric_ticks(vals, suffix="%")
+    layout = studio_plotly_layout(height=340, y_ticks=y_ticks, x_axis_type="category")
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": vals,
+                "marker": {"color": ["#38BDF8", "#A78BFA", "#34D399"]},
+                "hovertemplate": "%{x}: %{y:.2f}%<extra></extra>",
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_alpha_trend_figure(
+    history: Sequence[Any],
+) -> dict[str, Any] | None:
+    """Build Active Alpha (Portfolio XIRR - Benchmark XIRR) zero-baseline area chart."""
+    pts = [p for p in history if getattr(p, "active_return", None) is not None]
+    if not pts:
+        return None
+    dates = [str(getattr(p, "closing_date", "")) for p in pts]
+    alpha = [_pct(getattr(p, "active_return", 0.0)) for p in pts]
+    y_ticks = numeric_ticks(alpha, suffix="%")
+    layout = studio_plotly_layout(
+        height=340,
+        y_ticks=y_ticks,
+        x_axis_type="date" if len(pts) > 1 else "category",
+        date_tick_format="%d %b",
+    )
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "scatter" if len(pts) > 1 else "bar",
+                "mode": "lines+markers" if len(pts) > 1 else None,
+                "fill": "tozeroy" if len(pts) > 1 else None,
+                "x": dates,
+                "y": alpha,
+                "line": {"color": "#34D399", "width": 2.5},
+                "marker": {"color": ["#34D399" if v >= 0 else "#F87171" for v in alpha]},
+                "hovertemplate": "%{x}<br>Active Alpha: %{y:.2f}%<extra></extra>",
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_inv_perf_risk_return_quadrant_figure(
+    isin_rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build XIRR % vs Max Drawdown % bubble chart across ISINs."""
+    pts = [
+        r
+        for r in isin_rows
+        if getattr(r, "xirr", None) is not None and getattr(r, "max_drawdown", None) is not None
+    ]
+    if not pts:
+        return None
+    x_vals = [_pct(getattr(r, "max_drawdown", 0.0)) for r in pts]
+    y_vals = [_pct(getattr(r, "xirr", 0.0)) for r in pts]
+    cur_vals = [max(float(getattr(r, "current_value", 0.0)), 1.0) for r in pts]
+    max_cv = max(cur_vals)
+    sizes = [max(10.0, min(36.0, (cv / max_cv) * 36.0)) for cv in cur_vals]
+    labels = [str(getattr(r, "label", ""))[:28] for r in pts]
+    layout = studio_plotly_layout(
+        height=340,
+        y_ticks=numeric_ticks(y_vals, suffix="%"),
+        x_currency_ticks=numeric_ticks(x_vals, suffix="%"),
+        x_axis_type="linear",
+    )
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "scatter",
+                "mode": "markers",
+                "x": x_vals,
+                "y": y_vals,
+                "marker": {
+                    "size": sizes,
+                    "color": y_vals,
+                    "colorscale": [[0.0, "#F87171"], [0.5, "#FBBF24"], [1.0, "#34D399"]],
+                    "opacity": 0.85,
+                    "line": {"color": "#0F172A", "width": 1},
+                },
+                "hovertemplate": "%{customdata[0]}<br>Max DD: %{x:.2f}% | XIRR: %{y:.2f}%<br>Value: %{customdata[1]}<extra></extra>",
+                "customdata": [
+                    [lbl, format_currency(cv, currency_id)]
+                    for lbl, cv in zip(labels, cur_vals, strict=True)
+                ],
+            }
+        ],
+        "layout": layout,
+    }
