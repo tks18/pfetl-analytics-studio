@@ -131,3 +131,75 @@ class InstrumentDetailSnapshot(BaseModel):
     instrument_name: str
     master_metadata: dict[str, Any] = {}
     history: tuple[InvestmentHoldingRow, ...] = ()
+
+
+class PerformanceHistoryPoint(BaseModel):
+    """Single Closing_Date point from `gold.investment_by_portfolio`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    closing_date: date
+    invested_value: float = 0.0
+    current_value: float = 0.0
+    unrealized_pl: float = 0.0
+    asset_pnl: float | None = None
+    forex_pnl: float | None = None
+    forex_contribution_pct: float | None = None
+    absolute_return: float | None = None
+    xirr: float | None = None
+    after_tax_xirr: float | None = None
+    bm_xirr: float | None = None
+    active_return: float | None = None
+    max_drawdown: float | None = None
+
+
+class ConcentrationSummary(BaseModel):
+    """Portfolio concentration metrics from `gold.investment_by_portfolio`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    hhi_score: float | None = None
+    effective_holdings_count: float | None = None
+    top1_weight: float | None = None
+    top5_weight: float | None = None
+    top10_weight: float | None = None
+
+
+class FxExposureRow(BaseModel):
+    """Country or currency FX exposure row from Gold country/currency marts."""
+
+    model_config = ConfigDict(frozen=True)
+
+    bucket: str
+    local_invested: float | None = None
+    local_current: float | None = None
+    base_invested: float = 0.0
+    base_current: float = 0.0
+    fx_rate: float | None = None
+    blended_buy_rate: float | None = None
+    currency_appreciation_pct: float | None = None
+    local_xirr: float | None = None
+    base_xirr: float | None = None
+    fx_xirr_impact: float | None = None
+    bm_xirr: float | None = None
+    active_return: float | None = None
+
+
+class InvestmentPerformanceSnapshot(BaseModel):
+    """Complete immutable Phase 14 Performance, Benchmark, FX & Concentration snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    as_of_date: date | None = None
+    period_label: str = ""
+    dimension: AllocationDimension = AllocationDimension.CLASS
+    kpis: tuple[OverviewKPI, ...] = ()
+    history: tuple[PerformanceHistoryPoint, ...] = ()
+    concentration: ConcentrationSummary = ConcentrationSummary()
+    segment_rows: tuple[AllocationRow, ...] = ()
+    isin_perf_rows: tuple[AllocationRow, ...] = ()
+    fx_country_rows: tuple[FxExposureRow, ...] = ()
+    fx_currency_rows: tuple[FxExposureRow, ...] = ()
+    diagnostics: tuple[str, ...] = ()
