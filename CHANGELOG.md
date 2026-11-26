@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.19](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.18...0.1.19) (2026-11-26)
+
+
+### Features 🔥
+
+* **analytics:** add market evidence query module for investments ([99d7e69](https://github.com/tks18/pfetl-analytics-studio/commit/99d7e69d59fe7be983b1851d7bf16509d293f437))
+* **analytics:** add Phase 16 realized and reconciliation queries ([903a130](https://github.com/tks18/pfetl-analytics-studio/commit/903a130375c3e6be34d68ad91fb4d95b81bc57f3))
+* **ui:** add realized, reconciliation, and market evidence views ([1090647](https://github.com/tks18/pfetl-analytics-studio/commit/1090647984d6f81ca235ae75862e3d047b192426))
+
+
+### Tests 🧪
+
+* **analytics:** add tests for Phase 16 investment queries ([e1c9651](https://github.com/tks18/pfetl-analytics-studio/commit/e1c9651144ab2e4bce2ba5b831d8a3c641477327))
+
 ### [0.1.18](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.17...0.1.18) (2026-11-26)
 
 
