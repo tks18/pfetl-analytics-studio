@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.22](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.21...0.1.22) (2026-11-26)
+
+
+### Features 🔥
+
+* **analytics:** add Phase 19 OperationsAnalytics models and queries ([036e7be](https://github.com/tks18/pfetl-analytics-studio/commit/036e7be38c62228d2e26c522bb992fc54aeeac0e))
+* **ui:** add 6 operations charts and 4-tab Operations workspace ([2cf3c95](https://github.com/tks18/pfetl-analytics-studio/commit/2cf3c95f175d38751e459239a4ac389a0d774fad))
+
+
+### Tests 🧪
+
+* **operations:** add Phase 19 run history and warehouse health tests ([1240ed9](https://github.com/tks18/pfetl-analytics-studio/commit/1240ed9e621bf840e8e0d64c654c7ab4cb511e8c))
+
 ### [0.1.21](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.20...0.1.21) (2026-11-26)
 
 
