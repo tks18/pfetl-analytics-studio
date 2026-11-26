@@ -6,6 +6,13 @@ Forbidden: Does not import NiceGUI widgets or mutate warehouse/state data.
 
 from __future__ import annotations
 
+from pfetl_analytics_studio.analytics.fire import FireAnalytics
+from pfetl_analytics_studio.analytics.fire_models import (
+    FireMonthlyPoint,
+    FireSummarySnapshot,
+    SimulationHistorySnapshot,
+    SimulationRunRecord,
+)
 from pfetl_analytics_studio.analytics.household import HouseholdAnalytics
 from pfetl_analytics_studio.analytics.household_models import (
     BudgetHealthFlags,
@@ -129,7 +136,10 @@ __all__ = [
     "ExpenseMonthlyPoint",
     "ExpenseTransactionPage",
     "ExpenseTransactionRow",
+    "FireAnalytics",
+    "FireMonthlyPoint",
     "FirePoint",
+    "FireSummarySnapshot",
     "HouseholdAnalytics",
     "HouseholdBudgetSnapshot",
     "HouseholdCashflowSnapshot",
@@ -174,6 +184,8 @@ __all__ = [
     "RealizedReconciliationSnapshot",
     "ReconciliationEventRow",
     "ReconciliationGroupRow",
+    "SimulationHistorySnapshot",
+    "SimulationRunRecord",
     "TaxAnalytics",
     "TaxEventFilter",
     "TaxEventRow",
