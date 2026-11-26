@@ -245,3 +245,27 @@ def test_instrument_detail_and_currency_filter(tmp_path: Path) -> None:
     )
     assert len(alloc_cur.rows) == 2
     assert len(filters.filters) == 1
+
+
+def test_performance_history_fx_and_concentration(tmp_path: Path) -> None:
+    db_path = tmp_path / "inv_perf.duckdb"
+    _create_investment_db(db_path)
+    profile = _make_profile(db_path)
+    period = _make_period()
+    prov = _make_provenance()
+
+    snap = InvestmentAnalytics.performance(
+        profile,
+        AllocationDimension.CLASS,
+        period,
+        run_id=prov.run_id,
+        provenance=prov,
+        cache=QueryCache(),
+    )
+    assert snap.state == "ready"
+    assert len(snap.history) == 1
+    assert snap.history[0].xirr == 16.5
+    assert snap.history[0].bm_xirr == 12.0
+    assert len(snap.kpis) == 12
+    assert len(snap.fx_country_rows) == 2
+    assert len(snap.fx_currency_rows) == 2

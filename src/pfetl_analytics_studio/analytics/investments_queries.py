@@ -19,8 +19,11 @@ from typing import Any
 from pfetl_analytics_studio.analytics.investments_models import (
     AllocationDimension,
     AllocationRow,
+    ConcentrationSummary,
+    FxExposureRow,
     InstrumentDetailSnapshot,
     InvestmentHoldingRow,
+    PerformanceHistoryPoint,
 )
 from pfetl_analytics_studio.analytics.overview_models import (
     OverviewBreakupItem,
@@ -383,6 +386,8 @@ def query_instrument_detail(
 def build_investment_kpis(
     header: dict[str, Any] | None,
     holdings: tuple[InvestmentHoldingRow, ...],
+    *,
+    prior_header: dict[str, Any] | None = None,
 ) -> tuple[OverviewKPI, ...]:
     """Build Investment Overview KPI cards from `gold.investment_by_portfolio`."""
     if header is None and not holdings:
@@ -561,6 +566,340 @@ def build_investment_kpis(
             available=max_dd is not None,
             breakups=(
                 OverviewBreakupItem(label="Holdings", value=stocks, format=MetricFormat.INTEGER),
+            ),
+        ),
+    )
+
+
+def query_portfolio_performance_history(
+    duck_reader: DuckDBQueryPort,
+    start_date: date,
+    end_date: date,
+) -> tuple[tuple[PerformanceHistoryPoint, ...], ConcentrationSummary]:
+    """Query `gold.investment_by_portfolio` history and latest concentration metrics."""
+    if not table_exists(duck_reader, "gold", "investment_by_portfolio"):
+        return (), ConcentrationSummary()
+    rows = duck_reader.fetch_all(
+        """
+        SELECT *
+        FROM gold.investment_by_portfolio
+        WHERE "Closing_Date" BETWEEN ? AND ?
+        ORDER BY "Closing_Date" ASC;
+        """,
+        (start_date, end_date),
+    )
+    if not rows:
+        latest = duck_reader.fetch_one(
+            """
+            SELECT *
+            FROM gold.investment_by_portfolio
+            WHERE "Closing_Date" <= ?
+            ORDER BY "Closing_Date" DESC
+            LIMIT 1;
+            """,
+            (end_date,),
+        )
+        rows = [latest] if latest else []
+
+    history: list[PerformanceHistoryPoint] = []
+    for r in rows:
+        dt = as_date(r.get("Closing_Date"))
+        if dt is None:
+            continue
+        history.append(
+            PerformanceHistoryPoint(
+                closing_date=dt,
+                invested_value=as_float(r.get("Total_Invested_Value")) or 0.0,
+                current_value=as_float(r.get("Total_Current_Value")) or 0.0,
+                unrealized_pl=as_float(r.get("Unrealized_PL")) or 0.0,
+                asset_pnl=as_float(r.get("Asset_PnL")),
+                forex_pnl=as_float(r.get("Forex_PnL")),
+                forex_contribution_pct=as_float(r.get("Forex_Contribution_Pct")),
+                absolute_return=as_float(r.get("Absolute_Return")),
+                xirr=as_float(r.get("XIRR")),
+                after_tax_xirr=as_float(r.get("After_Tax_XIRR")),
+                bm_xirr=as_float(r.get("BM_XIRR")),
+                active_return=as_float(r.get("Active_Return")),
+                max_drawdown=as_float(r.get("Max_Drawdown")),
+            )
+        )
+    latest_row = rows[-1] if rows else {}
+    concentration = ConcentrationSummary(
+        hhi_score=as_float(latest_row.get("HHI_Score")),
+        effective_holdings_count=as_float(latest_row.get("Effective_Holdings_Count")),
+        top1_weight=as_float(
+            latest_row.get("Top1_Holding_Weight")
+            if latest_row.get("Top1_Holding_Weight") is not None
+            else latest_row.get("Top1_Holdings_Weight")
+        ),
+        top5_weight=as_float(latest_row.get("Top5_Holdings_Weight")),
+        top10_weight=as_float(latest_row.get("Top10_Holdings_Weight")),
+    )
+    return tuple(history), concentration
+
+
+def query_fx_exposure(
+    duck_reader: DuckDBQueryPort,
+    mart_name: str,
+    bucket_col: str,
+    end_date: date,
+) -> tuple[FxExposureRow, ...]:
+    """Query country or currency mart for local vs base valuation and FX XIRR impact."""
+    if not table_exists(duck_reader, "gold", mart_name):
+        return ()
+    latest = duck_reader.fetch_one(
+        f'SELECT MAX("Closing_Date") AS max_dt FROM gold.{mart_name} WHERE "Closing_Date" <= ?;',
+        (end_date,),
+    )
+    max_dt = as_date(latest.get("max_dt")) if latest else None
+    if max_dt is None:
+        return ()
+    rows = duck_reader.fetch_all(
+        f"""
+        SELECT *
+        FROM gold.{mart_name}
+        WHERE "Closing_Date" = ?
+        ORDER BY COALESCE("Total_Current_Value", 0.0) DESC;
+        """,
+        (max_dt,),
+    )
+    result: list[FxExposureRow] = []
+    for r in rows:
+        bucket = str(r.get(bucket_col) or "Unclassified")
+        result.append(
+            FxExposureRow(
+                bucket=bucket,
+                local_invested=as_float(r.get("Total_Invested_Value_Local")),
+                local_current=as_float(r.get("Total_Current_Value_Local")),
+                base_invested=as_float(r.get("Total_Invested_Value")) or 0.0,
+                base_current=as_float(r.get("Total_Current_Value")) or 0.0,
+                fx_rate=as_float(r.get("FX_Rate")),
+                blended_buy_rate=as_float(r.get("Blended_Buy_Rate")),
+                currency_appreciation_pct=as_float(r.get("Currency_Appreciation_Pct")),
+                local_xirr=as_float(r.get("XIRR_Local")),
+                base_xirr=as_float(r.get("XIRR")),
+                fx_xirr_impact=as_float(r.get("FX_XIRR_Impact")),
+                bm_xirr=as_float(r.get("BM_XIRR")),
+                active_return=as_float(r.get("Active_Return")),
+            )
+        )
+    return tuple(result)
+
+
+def build_performance_kpis(
+    header: dict[str, Any] | None,
+    concentration: ConcentrationSummary,
+    *,
+    isin_rows: tuple[AllocationRow, ...] = (),
+    prior_header: dict[str, Any] | None = None,
+) -> tuple[OverviewKPI, ...]:
+    """Build 9 unique KPI cards for the Investments Performance & Benchmarks tab."""
+    if header is None:
+        return ()
+    as_of = as_date(header.get("Closing_Date"))
+    abs_ret = as_float(header.get("Absolute_Return"))
+    xirr = as_float(header.get("XIRR"))
+    after_tax_xirr = as_float(header.get("After_Tax_XIRR"))
+    bm_xirr = as_float(header.get("BM_XIRR"))
+    act_ret = as_float(header.get("Active_Return"))
+    max_dd = as_float(header.get("Max_Drawdown"))
+    asset_pnl = as_float(header.get("Asset_PnL"))
+    forex_pnl = as_float(header.get("Forex_PnL"))
+    fx_contrib = as_float(header.get("Forex_Contribution_Pct"))
+    inv_val = as_float(header.get("Total_Invested_Value"))
+    cur_val = as_float(header.get("Total_Current_Value"))
+    p_xirr = as_float((prior_header or {}).get("XIRR"))
+    p_abs = as_float((prior_header or {}).get("Absolute_Return"))
+
+    laggards = sum(1 for r in isin_rows if r.active_return is not None and r.active_return < 0)
+    fy_realized_net = as_float(header.get("FY_Realized_Net_PnL"))
+    fy_realized_gain = as_float(header.get("FY_Realized_Gain"))
+    fy_realized_loss = as_float(header.get("FY_Realized_Loss"))
+    ltcg_mature_val = as_float(header.get("LTCG_Mature_Value"))
+    cur_val_tmp = as_float(header.get("Total_Current_Value"))
+    ltcg_pct = (
+        (ltcg_mature_val / cur_val_tmp)
+        if (ltcg_mature_val is not None and cur_val_tmp and cur_val_tmp > 0)
+        else None
+    )
+
+    return (
+        OverviewKPI(
+            kpi_id="perf_laggards",
+            label="Benchmark Laggards",
+            value=float(laggards),
+            format=MetricFormat.INTEGER,
+            subtitle="Holdings trailing their benchmark XIRR",
+            source_table="gold.investment_by_isin",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=bool(isin_rows),
+            breakups=(
+                OverviewBreakupItem(
+                    label="Total ISINs",
+                    value=float(len(isin_rows)),
+                    format=MetricFormat.INTEGER,
+                ),
+            ),
+        ),
+        OverviewKPI(
+            kpi_id="perf_fy_realized_net",
+            label="FY Realized Net P&L",
+            value=fy_realized_net,
+            format=MetricFormat.CURRENCY,
+            subtitle="Fiscal year realized capital gains net of losses",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=fy_realized_net is not None,
+            breakups=(
+                OverviewBreakupItem(label="Gain", value=fy_realized_gain),
+                OverviewBreakupItem(label="Loss", value=fy_realized_loss),
+            ),
+        ),
+        OverviewKPI(
+            kpi_id="perf_ltcg_eligible",
+            label="LTCG Mature %",
+            value=ltcg_pct,
+            format=MetricFormat.PERCENT,
+            subtitle="Share of portfolio matured for LTCG",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=ltcg_pct is not None,
+            breakups=(OverviewBreakupItem(label="Mature Val", value=ltcg_mature_val),),
+        ),
+        OverviewKPI(
+            kpi_id="perf_abs_return",
+            label="Absolute Return %",
+            value=abs_ret,
+            format=MetricFormat.PERCENT,
+            delta_value=(abs_ret - p_abs) if (abs_ret is not None and p_abs is not None) else None,
+            delta_format=MetricFormat.PERCENT,
+            delta_label="vs Prior",
+            subtitle="Cumulative return on invested capital",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=abs_ret is not None,
+            breakups=(
+                OverviewBreakupItem(label="Invested", value=inv_val),
+                OverviewBreakupItem(label="Current", value=cur_val),
+            ),
+        ),
+        OverviewKPI(
+            kpi_id="perf_xirr",
+            label="Portfolio XIRR",
+            value=xirr,
+            format=MetricFormat.PERCENT,
+            delta_value=(xirr - p_xirr) if (xirr is not None and p_xirr is not None) else act_ret,
+            delta_format=MetricFormat.PERCENT,
+            delta_label="vs Prior"
+            if (xirr is not None and p_xirr is not None)
+            else "Benchmark Alpha",
+            subtitle="Annualized money-weighted return",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=xirr is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_after_tax_xirr",
+            label="After-Tax XIRR",
+            value=after_tax_xirr,
+            format=MetricFormat.PERCENT,
+            delta_value=(
+                (after_tax_xirr - xirr)
+                if (after_tax_xirr is not None and xirr is not None)
+                else None
+            ),
+            delta_format=MetricFormat.PERCENT,
+            delta_label="Tax Drag",
+            subtitle="Net annualized return post-tax",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=after_tax_xirr is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_bm_xirr",
+            label="Benchmark XIRR",
+            value=bm_xirr,
+            format=MetricFormat.PERCENT,
+            subtitle="Blended benchmark annualized return",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=bm_xirr is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_active_return",
+            label="Active Alpha",
+            value=act_ret,
+            format=MetricFormat.PERCENT,
+            subtitle="Portfolio XIRR minus Benchmark XIRR",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=act_ret is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_max_drawdown",
+            label="Max Drawdown",
+            value=max_dd,
+            format=MetricFormat.PERCENT,
+            subtitle="Peak-to-trough portfolio drawdown",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=max_dd is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_asset_pnl",
+            label="Asset Price P&L",
+            value=asset_pnl,
+            format=MetricFormat.CURRENCY,
+            subtitle="Pure underlying asset price gain/loss",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=asset_pnl is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_fx_pnl",
+            label="Forex P&L & Contribution",
+            value=forex_pnl,
+            format=MetricFormat.CURRENCY,
+            delta_value=fx_contrib,
+            delta_format=MetricFormat.PERCENT,
+            delta_label="FX Share",
+            subtitle="Currency translation impact on return",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=forex_pnl is not None,
+        ),
+        OverviewKPI(
+            kpi_id="perf_hhi",
+            label="Concentration (HHI)",
+            value=concentration.hhi_score,
+            format=MetricFormat.NUMBER,
+            subtitle="Herfindahl-Hirschman concentration index",
+            source_table="gold.investment_by_portfolio",
+            as_of_date=as_of,
+            drill_route="/investments",
+            available=concentration.hhi_score is not None,
+            breakups=(
+                OverviewBreakupItem(
+                    label="Effective N",
+                    value=concentration.effective_holdings_count,
+                    format=MetricFormat.NUMBER,
+                ),
+                OverviewBreakupItem(
+                    label="Top 5 Wt",
+                    value=concentration.top5_weight,
+                    format=MetricFormat.PERCENT,
+                ),
             ),
         ),
     )

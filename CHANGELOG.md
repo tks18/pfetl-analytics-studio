@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.17](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.16...0.1.17) (2026-11-26)
+
+
+### Features 🔥
+
+* **analytics:** implement Phase 14 investment queries and models ([cfa9bcb](https://github.com/tks18/pfetl-analytics-studio/commit/cfa9bcba7ea3a2e0cf257c2e593a4bff3aae05c1))
+* **semantic:** add investment performance, benchmark, and FX metrics ([94d409c](https://github.com/tks18/pfetl-analytics-studio/commit/94d409c462d13c7f5028c05f4b4b58e530d33eda))
+* **ui:** add performance, benchmark, FX, and concentration views ([8b00428](https://github.com/tks18/pfetl-analytics-studio/commit/8b00428224d0e49a98832ddfa07181014bedef71))
+
+
+### Tests 🧪
+
+* **analytics:** add unit tests for Phase 14 investment queries ([2d6427b](https://github.com/tks18/pfetl-analytics-studio/commit/2d6427b949dc267884c4f53b392838f6a3dde444))
+
 ### [0.1.16](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.15...0.1.16) (2026-11-25)
 
 

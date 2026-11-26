@@ -17,14 +17,18 @@ from pfetl_analytics_studio.analytics.investments_models import (
     AllocationDimension,
     AllocationSnapshot,
     InstrumentDetailSnapshot,
+    InvestmentPerformanceSnapshot,
     InvestmentPortfolioSnapshot,
 )
 from pfetl_analytics_studio.analytics.investments_queries import (
     build_investment_kpis,
+    build_performance_kpis,
     query_allocation,
+    query_fx_exposure,
     query_instrument_detail,
     query_portfolio_header,
     query_portfolio_holdings,
+    query_portfolio_performance_history,
 )
 from pfetl_analytics_studio.analytics.overview import OverviewService
 from pfetl_analytics_studio.analytics.overview_models import as_date, as_float
@@ -258,3 +262,148 @@ class InvestmentAnalytics:
                 )
             finally:
                 reset_catalog_snapshot(tok)
+
+    @classmethod
+    def performance(
+        cls,
+        profile: PFETLProfile,
+        dimension: AllocationDimension,
+        period_context: PeriodContext | None,
+        *,
+        run_id: str | None = None,
+        provenance: RunProvenance | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        filters: FilterSet | None = None,
+        cache: QueryCache | None = None,
+    ) -> InvestmentPerformanceSnapshot:
+        """Return portfolio performance history, benchmark, FX exposure, and concentration."""
+        currency_id = OverviewService.resolve_currency_id(profile, provenance)
+        _, has_success = OverviewService.load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=None,
+        )
+        if not has_success:
+            return InvestmentPerformanceSnapshot(
+                state="no_run",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                dimension=dimension,
+                diagnostics=("No completed PFETL run found in Control Plane.",),
+            )
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() == WarehouseState.LOCKED:
+            return InvestmentPerformanceSnapshot(
+                state="locked",
+                currency_id=currency_id,
+                period_label=period_context.label if period_context else "",
+                dimension=dimension,
+                diagnostics=("PFETL pipeline.lock is active on DuckDB.",),
+            )
+        if period_context is None or period_context.is_empty:
+            return InvestmentPerformanceSnapshot(
+                state="empty",
+                currency_id=currency_id,
+                dimension=dimension,
+                diagnostics=("No active period selected.",),
+            )
+        assert period_context.start_date is not None and period_context.end_date is not None
+        active_run_id = run_id or (provenance.run_id if provenance else "unknown")
+
+        def _execute() -> InvestmentPerformanceSnapshot:
+            assert period_context.start_date is not None and period_context.end_date is not None
+            with duck_reader.session() as session_reader:
+                tok = use_catalog_snapshot(catalog_snapshot)
+                try:
+                    header = query_portfolio_header(
+                        session_reader, period_context.start_date, period_context.end_date
+                    )
+                    comp = period_context.comparison
+                    prior_header = (
+                        query_portfolio_header(
+                            session_reader,
+                            comp.start_date,
+                            comp.end_date,
+                        )
+                        if comp is not None
+                        and not comp.is_empty
+                        and comp.start_date is not None
+                        and comp.end_date is not None
+                        else None
+                    )
+                    history, concentration = query_portfolio_performance_history(
+                        session_reader,
+                        period_context.start_date,
+                        period_context.end_date,
+                    )
+                    seg_rows = query_allocation(
+                        session_reader,
+                        dimension,
+                        period_context.start_date,
+                        period_context.end_date,
+                    )
+                    isin_perf_rows = (
+                        seg_rows
+                        if dimension == AllocationDimension.ISIN
+                        else query_allocation(
+                            session_reader,
+                            AllocationDimension.ISIN,
+                            period_context.start_date,
+                            period_context.end_date,
+                        )
+                    )
+                    fx_country = query_fx_exposure(
+                        session_reader,
+                        "investment_by_country",
+                        "COUNTRY",
+                        period_context.end_date,
+                    )
+                    fx_currency = query_fx_exposure(
+                        session_reader,
+                        "investment_by_currency",
+                        "CURRENCY_ID",
+                        period_context.end_date,
+                    )
+                finally:
+                    reset_catalog_snapshot(tok)
+
+            as_of = (
+                (as_date(header.get("Closing_Date")) if header else None)
+                or (seg_rows[0].closing_date if seg_rows else None)
+                or (history[-1].closing_date if history else None)
+            )
+            kpis = build_performance_kpis(
+                header, concentration, isin_rows=isin_perf_rows, prior_header=prior_header
+            )
+            return InvestmentPerformanceSnapshot(
+                state="ready" if (header or history or seg_rows) else "empty",
+                currency_id=currency_id,
+                as_of_date=as_of,
+                period_label=period_context.label,
+                dimension=dimension,
+                kpis=kpis,
+                history=history,
+                concentration=concentration,
+                segment_rows=seg_rows,
+                isin_perf_rows=isin_perf_rows,
+                fx_country_rows=fx_country,
+                fx_currency_rows=fx_currency,
+            )
+
+        key = build_cache_key(
+            "inv_performance",
+            profile.profile_id,
+            active_run_id,
+            period_context,
+            filters,
+            {"dimension": dimension.value},
+        )
+        if cache is not None:
+            cached = cache.get(key)
+            if isinstance(cached, InvestmentPerformanceSnapshot):
+                return cached
+        snap = _execute()
+        if cache is not None:
+            cache.set(key, snap)
+        return snap
