@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.24](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.23...0.1.24) (2026-11-26)
+
+
+### Features 🔥
+
+* **operations:** decode archived JSONL traces and retained payloads ([c074984](https://github.com/tks18/pfetl-analytics-studio/commit/c0749846eb9b2ad928ba8580599fb1e94ca416b6))
+* **ui:** add Forensics & Evidence tab with stage and ops charts ([3dce243](https://github.com/tks18/pfetl-analytics-studio/commit/3dce243bd4d2af75786c4dc92d1d12fb4af77fcd))
+
+
+### Tests 🧪
+
+* **operations:** verify JSONL ordering, tree, and payload download ([83894e3](https://github.com/tks18/pfetl-analytics-studio/commit/83894e3ff515fc54d23f71c1b794dd5aad8431f7))
+
 ### [0.1.23](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.22...0.1.23) (2026-11-26)
 
 

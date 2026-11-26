@@ -7,27 +7,38 @@ from typing import Literal
 from pfetl_analytics_studio.analytics.operations_models import (
     ArtifactEventFilter,
     ArtifactEventsSnapshot,
+    ForensicEventFilter,
+    ForensicEventsSnapshot,
+    ForensicSummarySnapshot,
     OperationRunRecord,
     OperationsSnapshot,
+    OperationTreeNode,
     ProviderRequestFilter,
     ProviderRequestsSnapshot,
     RunFailuresSnapshot,
     RunHistoryFilter,
     SnapshotDiffResult,
+    SourcePayloadResult,
     SourceRegistryFilter,
     SourceRegistrySnapshot,
     WarehouseHealthSnapshot,
 )
 from pfetl_analytics_studio.analytics.operations_queries import (
+    build_forensic_summary,
+    build_operation_tree,
     build_operations_kpis,
     build_providers_kpis,
     build_sources_kpis,
     compute_structural_json_diff,
+    filter_forensic_events,
+    normalize_forensic_events,
     query_artifact_events,
     query_cp_runs_with_sync,
+    query_payload_availability,
     query_provider_requests,
     query_run_failures,
     query_snapshot_payload,
+    query_source_payload_bytes,
     query_source_registry,
     query_warehouse_contracts,
     query_warehouse_row_counts,
@@ -37,6 +48,7 @@ from pfetl_analytics_studio.analytics.overview_queries import (
     use_catalog_snapshot,
 )
 from pfetl_analytics_studio.data import (
+    ArchivedLogReader,
     CatalogSnapshot,
     ControlPlaneReader,
     DuckDBReader,
@@ -424,3 +436,110 @@ class OperationsAnalytics:
         res = _execute()
         cache.set(key, res)
         return res
+
+    @classmethod
+    def forensic_events(
+        cls,
+        profile: PFETLProfile,
+        run_id: str,
+        filters: ForensicEventFilter | None = None,
+    ) -> ForensicEventsSnapshot:
+        """Decode, normalize, order by `(sequence, timestamp)`, and filter forensic JSONL events."""
+        eff = filters or ForensicEventFilter()
+        log_res = ArchivedLogReader(profile).read_run(run_id)
+        if log_res.source.value == "unavailable" and not log_res.events:
+            return ForensicEventsSnapshot(
+                state="unavailable",
+                run_id=run_id,
+                source=log_res.source.value,
+                malformed_lines=log_res.malformed_lines,
+                diagnostics=tuple(log_res.diagnostics),
+            )
+        normalized = normalize_forensic_events(log_res.events)
+        filtered = filter_forensic_events(normalized, eff)
+        unknown_schemas = tuple(
+            sorted({str(e.schema_version) for e in normalized if str(e.schema_version) != "1"})
+        )
+        return ForensicEventsSnapshot(
+            state="ready" if normalized else "empty",
+            run_id=run_id,
+            source=log_res.source.value,
+            total_decoded=len(normalized),
+            malformed_lines=log_res.malformed_lines,
+            unknown_schema_versions=unknown_schemas,
+            events=filtered,
+            available_severities=tuple(sorted({e.severity for e in normalized if e.severity})),
+            available_codes=tuple(sorted({e.event_code for e in normalized if e.event_code})),
+            available_outcomes=tuple(sorted({e.outcome for e in normalized if e.outcome})),
+            available_stages=tuple(
+                sorted({e.context.stage for e in normalized if e.context.stage})
+            ),
+            available_components=tuple(
+                sorted({e.context.component for e in normalized if e.context.component})
+            ),
+            available_operations=tuple(
+                sorted({e.context.operation for e in normalized if e.context.operation})
+            ),
+            available_providers=tuple(
+                sorted({e.context.provider for e in normalized if e.context.provider})
+            ),
+            available_workers=tuple(
+                sorted({e.context.worker_id for e in normalized if e.context.worker_id})
+            ),
+            available_batches=tuple(
+                sorted({e.context.batch_id for e in normalized if e.context.batch_id})
+            ),
+            available_failure_domains=tuple(
+                sorted(
+                    {
+                        e.error.failure_domain
+                        for e in normalized
+                        if e.error is not None and e.error.failure_domain
+                    }
+                )
+            ),
+            diagnostics=tuple(log_res.diagnostics),
+        )
+
+    @classmethod
+    def operation_tree(cls, profile: PFETLProfile, run_id: str) -> tuple[OperationTreeNode, ...]:
+        """Build explicit `parent_operation_id -> operation_id` tree retaining orphan nodes."""
+        log_res = ArchivedLogReader(profile).read_run(run_id)
+        if not log_res.events:
+            return ()
+        normalized = normalize_forensic_events(log_res.events)
+        return build_operation_tree(normalized)
+
+    @classmethod
+    def forensic_summary(cls, profile: PFETLProfile, run_id: str) -> ForensicSummarySnapshot:
+        """Compute operational forensic summary strictly from emitted JSONL fields."""
+        log_res = ArchivedLogReader(profile).read_run(run_id)
+        normalized = normalize_forensic_events(log_res.events)
+        tree = build_operation_tree(normalized)
+        return build_forensic_summary(
+            run_id=run_id,
+            source=log_res.source.value,
+            events=normalized,
+            malformed_lines=log_res.malformed_lines,
+            tree_nodes=tree,
+        )
+
+    @classmethod
+    def has_retained_payload(cls, profile: PFETLProfile, file_id: str) -> tuple[bool, int]:
+        """Check whether `cp_file_payloads` holds retained bytes without loading them."""
+        cp_reader = ControlPlaneReader(profile)
+        if not cp_reader.is_available():
+            return False, 0
+        return query_payload_availability(cp_reader, file_id)
+
+    @classmethod
+    def source_payload(cls, profile: PFETLProfile, file_id: str) -> SourcePayloadResult:
+        """Fetch raw retained bytes from `cp_file_payloads` only on explicit user action."""
+        cp_reader = ControlPlaneReader(profile)
+        if not cp_reader.is_available():
+            return SourcePayloadResult(
+                file_id=file_id,
+                available=False,
+                diagnostics=("Control Plane SQLite database is unavailable.",),
+            )
+        return query_source_payload_bytes(cp_reader, file_id)

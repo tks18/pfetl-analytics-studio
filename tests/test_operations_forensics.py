@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import sqlite3
+import zlib
 from pathlib import Path
 
 import duckdb
 
 from pfetl_analytics_studio.analytics import (
     ArtifactEventFilter,
+    ForensicEventFilter,
     OperationsAnalytics,
     ProviderRequestFilter,
     RunHistoryFilter,
@@ -20,6 +24,10 @@ from pfetl_analytics_studio.ui import (
     build_ops_artifact_events_figure,
     build_ops_duration_trend_figure,
     build_ops_failure_domains_figure,
+    build_ops_forensic_severity_figure,
+    build_ops_forensic_slowest_ops_figure,
+    build_ops_forensic_stage_figure,
+    build_ops_forensic_workers_figure,
     build_ops_layer_contracts_figure,
     build_ops_provider_attempts_figure,
     build_ops_provider_status_figure,
@@ -376,5 +384,166 @@ def test_phase20_sources_providers_failures_and_snapshot_diff(tmp_path: Path) ->
         build_ops_provider_status_figure(provs.requests),
         build_ops_provider_attempts_figure(provs.requests),
         build_ops_failure_domains_figure(fails.failures),
+    ):
+        assert len(fig["data"]) >= 1
+
+
+def test_phase21_forensic_jsonl_lineage_and_payload_download(tmp_path: Path) -> None:
+    db_path = tmp_path / "ops21.duckdb"
+    cp_path = tmp_path / "cp21.sqlite"
+    _create_meta_db(db_path)
+    _create_cp_db(cp_path)
+
+    raw_bytes = b"date,isin,amount\n2026-11-26,INE001A01036,12500.50\n"
+    events_jsonl = "\n".join(
+        [
+            json.dumps(
+                {
+                    "schema_version": 2,
+                    "event_id": "e2",
+                    "sequence": 20,
+                    "timestamp": "2026-11-26T00:02:42+00:00",
+                    "event_code": "FUTURE_CODE",
+                    "severity": "ERROR",
+                    "outcome": "FAILED",
+                    "message": "Child op failed",
+                    "context": {
+                        "run_id": "run-2",
+                        "stage": "MARKET_SYNC",
+                        "operation": "fetch_nav",
+                        "operation_id": "op-child",
+                        "parent_operation_id": "op-root",
+                        "duration_ms": 420.5,
+                        "rows": 15,
+                        "attempt": 2,
+                        "provider": "Yahoo Finance",
+                        "cache_hit": False,
+                        "worker_id": "w1",
+                    },
+                    "error": {
+                        "exception_type": "TimeoutError",
+                        "exception_message": "Timed out",
+                        "failure_domain": "network",
+                        "remediation_hint": "Retry later",
+                    },
+                }
+            ),
+            "{malformed-jsonl-line",
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event_id": "e1",
+                    "sequence": 10,
+                    "timestamp": "2026-11-26T00:02:40+00:00",
+                    "event_code": "OP_START",
+                    "severity": "INFO",
+                    "outcome": "COMPLETED",
+                    "message": "Root op started",
+                    "context": {
+                        "run_id": "run-2",
+                        "stage": "INITIALIZING",
+                        "operation": "pipeline_run",
+                        "operation_id": "op-root",
+                        "cache_hit": True,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event_id": "e3",
+                    "sequence": 30,
+                    "timestamp": "2026-11-26T00:02:45+00:00",
+                    "event_code": "ORPHAN_EVT",
+                    "severity": "INFO",
+                    "outcome": "COMPLETED",
+                    "message": "Orphan op",
+                    "context": {
+                        "run_id": "run-2",
+                        "stage": "GOLD",
+                        "operation": "orphan_step",
+                        "operation_id": "op-orphan",
+                        "parent_operation_id": "missing-parent",
+                        "rows": 100,
+                    },
+                }
+            ),
+        ]
+    )
+    compressed = zlib.compress(events_jsonl.encode("utf-8"))
+    con = sqlite3.connect(str(cp_path))
+    try:
+        con.execute("UPDATE cp_runs SET execution_log = ? WHERE run_id = 'run-2';", (compressed,))
+        con.executescript(
+            """
+            CREATE TABLE cp_file_payloads (
+                file_id TEXT PRIMARY KEY,
+                file_bytes BLOB
+            );
+            """
+        )
+        con.execute("INSERT INTO cp_file_payloads VALUES ('f1', ?);", (raw_bytes,))
+        con.commit()
+    finally:
+        con.close()
+
+    profile = _make_profile(db_path, cp_path)
+
+    # Sequence ordering preserved & malformed line counted without failing
+    ev_snap = OperationsAnalytics.forensic_events(profile, "run-2")
+    assert ev_snap.state == "ready"
+    assert ev_snap.malformed_lines == 1
+    assert [e.sequence for e in ev_snap.events] == [10, 20, 30]
+    assert ev_snap.unknown_schema_versions == ("2",)
+    assert ev_snap.events[1].error is not None
+    assert ev_snap.events[1].error.failure_domain == "network"
+
+    # Filtered query
+    err_only = OperationsAnalytics.forensic_events(
+        profile, "run-2", ForensicEventFilter(failure_domain="network", search="Timed out")
+    )
+    assert len(err_only.events) == 1
+    assert err_only.events[0].event_id == "e2"
+
+    # Parent -> child linkage + orphan node retention
+    tree = OperationsAnalytics.operation_tree(profile, "run-2")
+    assert len(tree) == 2
+    root_node = next(n for n in tree if n.operation_id == "op-root")
+    orphan_node = next(n for n in tree if n.operation_id == "op-orphan")
+    assert root_node.is_orphan is False
+    assert len(root_node.children) == 1
+    assert root_node.children[0].operation_id == "op-child"
+    assert root_node.duration_ms is None  # never synthesized
+    assert root_node.children[0].duration_ms == 420.5
+    assert orphan_node.is_orphan is True
+
+    # Operational summary uses only emitted fields
+    summary = OperationsAnalytics.forensic_summary(profile, "run-2")
+    assert summary.state == "ready"
+    assert summary.total_events == 3
+    assert summary.malformed_lines == 1
+    assert summary.total_rows_emitted == 115
+    assert summary.total_retries == 1
+    assert summary.cache_hits == 1
+    assert summary.cache_misses == 1
+    assert len(summary.slowest_operations) == 1
+    assert summary.slowest_operations[0].operation_id == "op-child"
+
+    # Retained payload availability & byte-identical download
+    avail, byte_len = OperationsAnalytics.has_retained_payload(profile, "f1")
+    assert avail is True
+    assert byte_len == len(raw_bytes)
+    dl = OperationsAnalytics.source_payload(profile, "f1")
+    assert dl.available is True
+    assert dl.file_bytes == raw_bytes
+    assert hashlib.sha256(dl.file_bytes or b"").hexdigest() == hashlib.sha256(raw_bytes).hexdigest()
+
+    for fig in (
+        build_ops_forensic_severity_figure(summary.severity_counts, summary.outcome_counts),
+        build_ops_forensic_stage_figure(summary.stage_counts, summary.stage_rows),
+        build_ops_forensic_slowest_ops_figure(summary.slowest_operations),
+        build_ops_forensic_workers_figure(
+            summary.worker_counts, summary.provider_counts, summary.cache_hits, summary.cache_misses
+        ),
     ):
         assert len(fig["data"]) >= 1

@@ -383,3 +383,147 @@ def build_ops_failure_domains_figure(failures: Sequence[Any]) -> dict[str, Any]:
         "data": traces,
         "layout": studio_plotly_layout(height=340, barmode="stack", x_axis_type="category"),
     }
+
+
+def build_ops_forensic_severity_figure(
+    severity_counts: dict[str, int],
+    outcome_counts: dict[str, int],
+) -> dict[str, Any]:
+    """Plot forensic event severity and outcome distributions side-by-side."""
+    if not severity_counts and not outcome_counts:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    sev_keys = sorted(severity_counts.keys())
+    out_keys = sorted(outcome_counts.keys())
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": sev_keys,
+                "y": [severity_counts[k] for k in sev_keys],
+                "name": "Severity",
+                "marker": {"color": StudioColor.ACC_HOV.value},
+            },
+            {
+                "type": "bar",
+                "x": out_keys,
+                "y": [outcome_counts[k] for k in out_keys],
+                "name": "Outcome",
+                "marker": {"color": StudioColor.SUCCESS.value},
+            },
+        ],
+        "layout": studio_plotly_layout(
+            height=340,
+            barmode="group",
+            y_ticks=numeric_ticks([0, *severity_counts.values(), *outcome_counts.values()]),
+            x_axis_type="category",
+        ),
+    }
+
+
+def build_ops_forensic_stage_figure(
+    stage_counts: dict[str, int],
+    stage_rows: dict[str, int],
+) -> dict[str, Any]:
+    """Plot forensic event counts and emitted row counts by pipeline stage."""
+    if not stage_counts:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    raw_stages = list(stage_counts.keys())
+    xs = [s.replace("_", " ").title() for s in raw_stages]
+    ev_vals = [stage_counts[s] for s in raw_stages]
+    row_vals = [stage_rows.get(s, 0) for s in raw_stages]
+    layout = studio_plotly_layout(
+        height=340,
+        y_ticks=numeric_ticks([0, *ev_vals]),
+        y2_ticks=numeric_ticks([0, *row_vals]),
+        y2_suffix="",
+        x_axis_type="category",
+    )
+    layout["xaxis"]["tickangle"] = -25
+    layout["margin"]["b"] = 64
+    layout["margin"]["r"] = 56
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": xs,
+                "y": ev_vals,
+                "name": "Events",
+                "marker": {"color": StudioColor.ACC_HOV.value},
+            },
+            {
+                "type": "scatter",
+                "x": xs,
+                "y": row_vals,
+                "name": "Emitted Rows",
+                "mode": "lines+markers",
+                "yaxis": "y2",
+                "line": {"color": StudioColor.WARNING.value, "width": 2.2},
+                "marker": {"size": 5},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_ops_forensic_slowest_ops_figure(slowest_ops: Sequence[Any]) -> dict[str, Any]:
+    """Plot slowest operations by emitted duration formatted in seconds."""
+    if not slowest_ops:
+        return {"data": [], "layout": studio_plotly_layout(height=340, horizontal_bars=True)}
+    top = list(slowest_ops[:10])[::-1]
+    labels = [
+        f"{op.operation or op.operation_id[:12]} ({str(op.stage).replace('_', ' ').title()})"
+        for op in top
+    ]
+    vals = [round(float(op.duration_ms or 0.0) / 1000.0, 2) for op in top]
+    layout = studio_plotly_layout(height=340, horizontal_bars=True)
+    layout["xaxis"]["ticksuffix"] = "s"
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "orientation": "h",
+                "y": labels,
+                "x": vals,
+                "name": "Duration (s)",
+                "hovertemplate": "%{y}: <b>%{x:.2f}s</b><extra></extra>",
+                "marker": {"color": StudioColor.WARNING.value},
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_ops_forensic_workers_figure(
+    worker_counts: dict[str, int],
+    provider_counts: dict[str, int],
+    cache_hits: int,
+    cache_misses: int,
+) -> dict[str, Any]:
+    """Plot worker/provider activity and cache-hit vs miss counts."""
+    labels: list[str] = []
+    vals: list[int] = []
+    for k, v in sorted(worker_counts.items()):
+        labels.append(f"Worker: {k}")
+        vals.append(v)
+    for k, v in sorted(provider_counts.items()):
+        labels.append(f"Provider: {k}")
+        vals.append(v)
+    if cache_hits or cache_misses:
+        labels.extend(["Cache Hits", "Cache Misses"])
+        vals.extend([cache_hits, cache_misses])
+    if not labels:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": vals,
+                "name": "Count",
+                "marker": {"color": StudioColor.RECOVERY.value},
+            }
+        ],
+        "layout": studio_plotly_layout(
+            height=340, y_ticks=numeric_ticks([0, *vals]), x_axis_type="category"
+        ),
+    }
