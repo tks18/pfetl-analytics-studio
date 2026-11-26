@@ -541,3 +541,16 @@ def test_extended_period_presets_comparison_modes_and_filter_catalog(
     assert DEFAULT_METRICS.get("total_assets_book").additive is False
     assert DEFAULT_METRICS.get("attribution_residual").additive is True
     assert DEFAULT_METRICS.get("asset_market_delta").additive is True
+
+    # Phase 18 FIRE non-additive metrics reject SUM aggregation
+    for fire_metric_id in (
+        "fire_coast_today",
+        "fire_lean_today",
+        "fire_months_p50",
+        "fire_runway_p50",
+    ):
+        spec = DEFAULT_METRICS.get(fire_metric_id)
+        assert spec.additive is False
+        assert spec.aggregation == MetricAggregation.LATEST
+        with pytest.raises(ValueError, match="cannot use default aggregation 'sum'"):
+            MetricSpec.model_validate({**spec.model_dump(), "aggregation": MetricAggregation.SUM})
