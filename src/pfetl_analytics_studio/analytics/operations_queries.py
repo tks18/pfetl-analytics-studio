@@ -9,8 +9,14 @@ from typing import Any, cast
 from pfetl_analytics_studio.analytics.operations_models import (
     ArtifactEventFilter,
     ArtifactEventRecord,
+    ForensicContext,
+    ForensicError,
+    ForensicEvent,
+    ForensicEventFilter,
+    ForensicSummarySnapshot,
     LayerContractSummary,
     OperationRunRecord,
+    OperationTreeNode,
     ProviderRequestFilter,
     ProviderRequestRecord,
     RunFailureRecord,
@@ -19,6 +25,7 @@ from pfetl_analytics_studio.analytics.operations_models import (
     SnapshotDiffEntry,
     SnapshotPayloadRecord,
     SourceFileRecord,
+    SourcePayloadResult,
     SourceRegistryFilter,
     TableRowCountRecord,
     WarehouseHealthSnapshot,
@@ -877,4 +884,462 @@ def build_providers_kpis(
             drill_route="/operations",
             available=True,
         ),
+    )
+
+
+def _opt_int(val: Any) -> int | None:
+    if val is None or val == "":
+        return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(val: Any) -> float | None:
+    if val is None or val == "":
+        return None
+    try:
+        return float(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def normalize_forensic_events(raw_events: list[dict[str, Any]]) -> tuple[ForensicEvent, ...]:
+    """Normalize decoded JSONL dicts into `ForensicEvent` sorted by `(sequence, timestamp)`."""
+    normalized: list[ForensicEvent] = []
+    for raw in raw_events:
+        ctx_raw = raw.get("context")
+        ctx_dict: dict[str, Any] = (
+            cast(dict[str, Any], ctx_raw) if isinstance(ctx_raw, dict) else {}
+        )
+        ctx = ForensicContext(
+            run_id=str(ctx_dict.get("run_id") or ""),
+            stage=str(ctx_dict.get("stage") or ""),
+            component=str(ctx_dict.get("component") or ""),
+            operation=str(ctx_dict.get("operation") or ""),
+            operation_id=str(ctx_dict.get("operation_id") or ""),
+            parent_operation_id=str(ctx_dict.get("parent_operation_id") or ""),
+            entity_type=str(ctx_dict.get("entity_type") or ""),
+            entity_id=str(ctx_dict.get("entity_id") or ""),
+            duration_ms=_opt_float(ctx_dict.get("duration_ms")),
+            rows=_opt_int(ctx_dict.get("rows")),
+            attempt=_opt_int(ctx_dict.get("attempt")),
+            provider=str(ctx_dict.get("provider") or ""),
+            cache_hit=ctx_dict["cache_hit"]
+            if isinstance(ctx_dict.get("cache_hit"), bool)
+            else None,
+            worker_id=str(ctx_dict.get("worker_id") or ""),
+            batch_id=str(ctx_dict.get("batch_id") or ""),
+            commit_state=str(ctx_dict.get("commit_state") or ""),
+            settings_fingerprint=str(ctx_dict.get("settings_fingerprint") or ""),
+            rules_fingerprint=str(ctx_dict.get("rules_fingerprint") or ""),
+        )
+        err_raw = raw.get("error")
+        err_obj: ForensicError | None = None
+        if isinstance(err_raw, dict) and err_raw:
+            ed = cast(dict[str, Any], err_raw)
+            cv_raw = ed.get("context_variables")
+            err_obj = ForensicError(
+                exception_type=str(ed.get("exception_type") or ""),
+                exception_message=str(ed.get("exception_message") or ""),
+                failure_domain=str(ed.get("failure_domain") or ""),
+                traceback_summary=str(ed.get("traceback_summary") or ""),
+                retryable=ed["retryable"] if isinstance(ed.get("retryable"), bool) else None,
+                context_variables=cast(dict[str, Any], cv_raw) if isinstance(cv_raw, dict) else {},
+                remediation_hint=str(ed.get("remediation_hint") or ""),
+                failing_stage=str(ed.get("failing_stage") or ""),
+                failing_entity=str(ed.get("failing_entity") or ""),
+            )
+        prog_raw = raw.get("progress")
+        ts_raw = str(raw.get("timestamp") or "")
+        sv_raw = raw.get("schema_version")
+        sv: int | str = sv_raw if isinstance(sv_raw, (int, str)) else 1
+        normalized.append(
+            ForensicEvent(
+                schema_version=sv,
+                event_id=str(raw.get("event_id") or ""),
+                sequence=_opt_int(raw.get("sequence")) or 0,
+                timestamp=_parse_ts(ts_raw),
+                timestamp_raw=ts_raw,
+                event_code=str(raw.get("event_code") or ""),
+                severity=str(raw.get("severity") or ""),
+                presentation_kind=str(raw.get("presentation_kind") or ""),
+                outcome=str(raw.get("outcome") or ""),
+                message=str(raw.get("message") or ""),
+                progress=cast(dict[str, Any], prog_raw) if isinstance(prog_raw, dict) else None,
+                context=ctx,
+                error=err_obj,
+                raw_payload=raw,
+            )
+        )
+    normalized.sort(key=lambda e: (e.sequence, e.timestamp_raw))
+    return tuple(normalized)
+
+
+def filter_forensic_events(
+    events: tuple[ForensicEvent, ...],
+    filters: ForensicEventFilter,
+) -> tuple[ForensicEvent, ...]:
+    """Filter normalized forensic events by context, error, and text search."""
+    q = filters.search.strip().lower() if filters.search else ""
+    out: list[ForensicEvent] = []
+    for ev in events:
+        c = ev.context
+        if filters.severity and ev.severity != filters.severity:
+            continue
+        if filters.event_code and ev.event_code != filters.event_code:
+            continue
+        if filters.outcome and ev.outcome != filters.outcome:
+            continue
+        if filters.stage and c.stage != filters.stage:
+            continue
+        if filters.component and c.component != filters.component:
+            continue
+        if filters.operation and c.operation != filters.operation:
+            continue
+        if filters.entity_type and c.entity_type != filters.entity_type:
+            continue
+        if filters.entity_id and c.entity_id != filters.entity_id:
+            continue
+        if filters.provider and c.provider != filters.provider:
+            continue
+        if filters.worker_id and c.worker_id != filters.worker_id:
+            continue
+        if filters.batch_id and c.batch_id != filters.batch_id:
+            continue
+        if filters.failure_domain and (
+            ev.error is None or ev.error.failure_domain != filters.failure_domain
+        ):
+            continue
+        if q:
+            haystack = " ".join(
+                [
+                    ev.message,
+                    ev.event_code,
+                    c.stage,
+                    c.component,
+                    c.operation,
+                    c.entity_id,
+                    c.provider,
+                    ev.error.exception_message if ev.error else "",
+                ]
+            ).lower()
+            if q not in haystack:
+                continue
+        out.append(ev)
+        if len(out) >= max(1, filters.limit):
+            break
+    return tuple(out)
+
+
+def build_operation_tree(events: tuple[ForensicEvent, ...]) -> tuple[OperationTreeNode, ...]:
+    """Build explicit `parent_operation_id` -> `operation_id` tree retaining orphans at root."""
+    agg: dict[str, dict[str, Any]] = {}
+    for ev in events:
+        op_id = ev.context.operation_id
+        if not op_id:
+            continue
+        entry = agg.setdefault(
+            op_id,
+            {
+                "operation_id": op_id,
+                "parent_operation_id": ev.context.parent_operation_id,
+                "operation": ev.context.operation,
+                "stage": ev.context.stage,
+                "component": ev.context.component,
+                "event_count": 0,
+                "duration_ms": None,
+                "rows": None,
+                "outcome": ev.outcome,
+            },
+        )
+        entry["event_count"] += 1
+        if ev.context.parent_operation_id and not entry["parent_operation_id"]:
+            entry["parent_operation_id"] = ev.context.parent_operation_id
+        if ev.context.operation and not entry["operation"]:
+            entry["operation"] = ev.context.operation
+        if ev.context.duration_ms is not None:
+            entry["duration_ms"] = ev.context.duration_ms
+        if ev.context.rows is not None:
+            entry["rows"] = ev.context.rows
+        if ev.outcome:
+            entry["outcome"] = ev.outcome
+
+    children_map: dict[str, list[str]] = {}
+    roots: list[str] = []
+    for op_id, info in agg.items():
+        pid = str(info["parent_operation_id"] or "")
+        if pid and pid != op_id:
+            children_map.setdefault(pid, []).append(op_id)
+        else:
+            roots.append(op_id)
+
+    # Retain orphan nodes whose parent_operation_id is not present in `agg`
+    orphans = {
+        op_id
+        for op_id, info in agg.items()
+        if info["parent_operation_id"]
+        and info["parent_operation_id"] != op_id
+        and info["parent_operation_id"] not in agg
+    }
+    ordered_roots = roots + sorted(orphans)
+
+    def _build(op_id: str, seen: set[str]) -> OperationTreeNode:
+        info = agg[op_id]
+        next_seen = seen | {op_id}
+        kids = tuple(
+            _build(cid, next_seen) for cid in children_map.get(op_id, []) if cid not in next_seen
+        )
+        return OperationTreeNode(
+            operation_id=op_id,
+            parent_operation_id=str(info["parent_operation_id"] or ""),
+            operation=str(info["operation"] or ""),
+            stage=str(info["stage"] or ""),
+            component=str(info["component"] or ""),
+            event_count=int(info["event_count"]),
+            duration_ms=cast(float | None, info["duration_ms"]),
+            rows=cast(int | None, info["rows"]),
+            outcome=str(info["outcome"] or ""),
+            is_orphan=(op_id in orphans),
+            children=kids,
+        )
+
+    return tuple(_build(rid, set()) for rid in ordered_roots)
+
+
+def build_forensic_summary(
+    run_id: str,
+    source: str,
+    events: tuple[ForensicEvent, ...],
+    malformed_lines: int,
+    tree_nodes: tuple[OperationTreeNode, ...],
+) -> ForensicSummarySnapshot:
+    """Compute operational forensic summaries strictly from emitted fields."""
+    if not events and malformed_lines == 0:
+        return ForensicSummarySnapshot(
+            state="empty" if source != "unavailable" else "unavailable",
+            run_id=run_id,
+            source=source,
+            diagnostics=(f"No forensic events decoded for run '{run_id}'.",),
+        )
+
+    sev_cnt: dict[str, int] = {}
+    out_cnt: dict[str, int] = {}
+    stg_cnt: dict[str, int] = {}
+    stg_rows: dict[str, int] = {}
+    prov_cnt: dict[str, int] = {}
+    work_cnt: dict[str, int] = {}
+    batch_cnt: dict[str, int] = {}
+    fdom_cnt: dict[str, int] = {}
+    unknown_schemas: set[str] = set()
+
+    total_rows = 0
+    total_retries = 0
+    cache_hits = 0
+    cache_misses = 0
+
+    for ev in events:
+        if str(ev.schema_version) != "1":
+            unknown_schemas.add(str(ev.schema_version))
+        if ev.severity:
+            sev_cnt[ev.severity] = sev_cnt.get(ev.severity, 0) + 1
+        if ev.outcome:
+            out_cnt[ev.outcome] = out_cnt.get(ev.outcome, 0) + 1
+        c = ev.context
+        if c.stage:
+            stg_cnt[c.stage] = stg_cnt.get(c.stage, 0) + 1
+        if c.rows is not None:
+            total_rows += c.rows
+            if c.stage:
+                stg_rows[c.stage] = stg_rows.get(c.stage, 0) + c.rows
+        if c.attempt is not None and c.attempt > 1:
+            total_retries += 1
+        if c.cache_hit is True:
+            cache_hits += 1
+        elif c.cache_hit is False:
+            cache_misses += 1
+        if c.provider:
+            prov_cnt[c.provider] = prov_cnt.get(c.provider, 0) + 1
+        if c.worker_id:
+            work_cnt[c.worker_id] = work_cnt.get(c.worker_id, 0) + 1
+        if c.batch_id:
+            batch_cnt[c.batch_id] = batch_cnt.get(c.batch_id, 0) + 1
+        if ev.error is not None and ev.error.failure_domain:
+            fd = ev.error.failure_domain
+            fdom_cnt[fd] = fdom_cnt.get(fd, 0) + 1
+
+    flat_ops: list[OperationTreeNode] = []
+
+    def _collect(nodes: tuple[OperationTreeNode, ...]) -> None:
+        for n in nodes:
+            if n.duration_ms is not None:
+                flat_ops.append(n)
+            if n.children:
+                _collect(n.children)
+
+    _collect(tree_nodes)
+    slowest = tuple(sorted(flat_ops, key=lambda n: n.duration_ms or 0.0, reverse=True)[:10])
+    err_count = sev_cnt.get("ERROR", 0) + sev_cnt.get("CRITICAL", 0)
+
+    kpis = (
+        OverviewKPI(
+            kpi_id="for_total_events",
+            label="Total Forensic Events",
+            value=float(len(events)),
+            format=MetricFormat.INTEGER,
+            subtitle=f"Source: {source}",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_malformed",
+            label="Malformed JSONL Lines",
+            value=float(malformed_lines),
+            format=MetricFormat.INTEGER,
+            subtitle="Skipped cleanly with diagnostics",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_rows",
+            label="Emitted Row Count",
+            value=float(total_rows),
+            format=MetricFormat.INTEGER,
+            subtitle="Sum of emitted context.rows",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_cache",
+            label="Cache Hits / Misses",
+            value=float(cache_hits),
+            format=MetricFormat.INTEGER,
+            subtitle=f"{cache_misses} misses · {total_retries} retries (attempt > 1)",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_ops",
+            label="Root / Orphan Operations",
+            value=float(len(tree_nodes)),
+            format=MetricFormat.INTEGER,
+            subtitle=f"{len(slowest)} ops with emitted duration_ms",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_workers",
+            label="Active Workers",
+            value=float(len(work_cnt)),
+            format=MetricFormat.INTEGER,
+            subtitle=f"{len(prov_cnt)} providers · {len(batch_cnt)} batches",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_stages",
+            label="Observed Pipeline Stages",
+            value=float(len(stg_cnt)),
+            format=MetricFormat.INTEGER,
+            subtitle="Distinct emitted context.stage values",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="for_errors",
+            label="Error / Critical Events",
+            value=float(err_count),
+            format=MetricFormat.INTEGER,
+            subtitle=f"{len(fdom_cnt)} distinct failure domains",
+            source_table="cp_runs.execution_log",
+            drill_route="/operations",
+            available=True,
+        ),
+    )
+
+    return ForensicSummarySnapshot(
+        state="ready",
+        run_id=run_id,
+        source=source,
+        total_events=len(events),
+        malformed_lines=malformed_lines,
+        unknown_schema_versions=tuple(sorted(unknown_schemas)),
+        severity_counts=sev_cnt,
+        outcome_counts=out_cnt,
+        stage_counts=stg_cnt,
+        stage_rows=stg_rows,
+        provider_counts=prov_cnt,
+        worker_counts=work_cnt,
+        batch_counts=batch_cnt,
+        failure_domain_counts=fdom_cnt,
+        total_rows_emitted=total_rows,
+        total_retries=total_retries,
+        cache_hits=cache_hits,
+        cache_misses=cache_misses,
+        slowest_operations=slowest,
+        kpis=kpis,
+    )
+
+
+def query_payload_availability(cp_reader: ControlPlaneReader, file_id: str) -> tuple[bool, int]:
+    """Check whether `cp_file_payloads` holds retained bytes for `file_id` without loading bytes."""
+    if not _cp_table_exists(cp_reader, "cp_file_payloads"):
+        return False, 0
+    row = cp_reader.fetch_one(
+        "SELECT length(file_bytes) AS byte_len FROM cp_file_payloads WHERE file_id = ?;",
+        (file_id,),
+    )
+    if row is None or row.get("byte_len") is None:
+        return False, 0
+    return True, int(row["byte_len"])
+
+
+def query_source_payload_bytes(cp_reader: ControlPlaneReader, file_id: str) -> SourcePayloadResult:
+    """Fetch raw retained bytes from `cp_file_payloads` strictly on explicit user action."""
+    if not _cp_table_exists(cp_reader, "cp_file_payloads"):
+        return SourcePayloadResult(
+            file_id=file_id,
+            available=False,
+            diagnostics=("Table cp_file_payloads is unavailable.",),
+        )
+    name_row = (
+        cp_reader.fetch_one("SELECT file_name FROM cp_file_registry WHERE file_id = ?;", (file_id,))
+        if _cp_table_exists(cp_reader, "cp_file_registry")
+        else None
+    )
+    file_name = (
+        str(name_row["file_name"]) if name_row and name_row.get("file_name") else f"{file_id}.bin"
+    )
+    row = cp_reader.fetch_one(
+        "SELECT file_bytes FROM cp_file_payloads WHERE file_id = ?;",
+        (file_id,),
+    )
+    if row is None or row.get("file_bytes") is None:
+        return SourcePayloadResult(
+            file_id=file_id,
+            file_name=file_name,
+            available=False,
+            diagnostics=(f"No retained payload bytes found for file_id '{file_id}'.",),
+        )
+    raw = row["file_bytes"]
+    if isinstance(raw, memoryview):
+        payload_bytes = raw.tobytes()
+    elif isinstance(raw, (bytes, bytearray)):
+        payload_bytes = bytes(raw)
+    else:
+        payload_bytes = str(raw).encode("utf-8")
+    return SourcePayloadResult(
+        file_id=file_id,
+        file_name=file_name,
+        byte_length=len(payload_bytes),
+        available=True,
+        file_bytes=payload_bytes,
     )
