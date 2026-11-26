@@ -19,6 +19,10 @@ from pfetl_analytics_studio.analytics import (
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.pages import render_domain_workspace
+from pfetl_analytics_studio.pages.investments_evidence import (
+    render_evidence_tab,
+    render_realized_tab,
+)
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     TableColumn,
@@ -195,17 +199,9 @@ def render_investments_page(
             with ui.tab_panel("lots").classes("p-0 pt-3"):
                 _render_lots_tab(context, cache=cache)
             with ui.tab_panel("realized").classes("p-0 pt-3"):
-                empty_state_panel(
-                    "Realized & Reconciliation",
-                    "Realized capital gains, dividend ledger, and broker reconciliation arrive in Phase 16.",
-                    icon="fact_check",
-                )
+                render_realized_tab(context, cache=cache)
             with ui.tab_panel("evidence").classes("p-0 pt-3"):
-                empty_state_panel(
-                    "Market Evidence",
-                    "ISIN price history, benchmark series, and FX rate evidence arrive in Phase 16.",
-                    icon="candlestick_chart",
-                )
+                render_evidence_tab(context, cache=cache)
 
 
 def _render_overview_tab(
@@ -604,33 +600,15 @@ def _render_holdings_table(
             table_box.clear()
             with table_box:
                 bounded_data_table(
-                    title=f"Holdings by ISIN ({len(filtered)})",
+                    title=f"Holdings by ISIN ({len(filtered)} · click any row for detail)",
                     columns=columns,
                     rows=filtered,
                     pagination=15,
+                    on_row_click=lambda row: on_select_isin(str(row.get("isin", ""))),
                 )
 
         search_input.on_value_change(lambda e: _render_filtered_holdings(str(e.value or "")))
         _render_filtered_holdings("")
-        if snapshot.holdings:
-            with ui.row().classes("w-full items-center gap-2 flex-wrap"):
-                isin_options: dict[str, str] = {
-                    h.isin: f"{h.instrument_name or h.isin} ({h.isin})" for h in snapshot.holdings
-                }
-                picker = (
-                    ui.select(
-                        options=isin_options,
-                        value=snapshot.holdings[0].isin,
-                        label="Inspect ISIN",
-                    )
-                    .props("dense outlined dark")
-                    .classes("w-80")
-                )
-                ui.button(
-                    "Open ISIN Detail",
-                    icon="open_in_new",
-                    on_click=lambda: on_select_isin(str(picker.value)),
-                ).props("outline dense")
 
 
 def _render_performance_tab(
@@ -1129,30 +1107,15 @@ def _render_lots_tab(
                 for r in snap.chart_rows
             ]
             bounded_data_table(
-                title=f"Lot Explorer ({snap.total_count} lots)",
+                title=f"Lot Explorer ({snap.total_count} lots · click any row for 88-col detail)",
                 columns=cols,
                 rows=t_rows,
                 pagination=int(state["limit"]),
+                on_row_click=lambda row: _open_lot_detail(
+                    str(row.get("lot_id", "")), snap.closing_date
+                ),
             )
-            with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
-                with ui.row().classes("items-center gap-2"):
-                    lot_opts = {
-                        r.lot_id: f"{r.instrument_name[:28]} ({r.lot_id})" for r in snap.rows
-                    }
-                    lot_picker = (
-                        ui.select(
-                            options=lot_opts,
-                            value=snap.rows[0].lot_id,
-                            label="Inspect Lot (88 Columns)",
-                        )
-                        .props("dense outlined dark")
-                        .classes("w-80")
-                    )
-                    ui.button(
-                        "Inspect Lot Detail",
-                        icon="open_in_new",
-                        on_click=lambda: _open_lot_detail(str(lot_picker.value), snap.closing_date),
-                    ).props("outline dense")
+            with ui.row().classes("w-full items-center justify-end flex-wrap gap-3"):
                 with ui.row().classes("items-center gap-2"):
 
                     def _prev_page() -> None:

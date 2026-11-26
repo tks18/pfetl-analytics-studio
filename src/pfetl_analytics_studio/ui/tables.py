@@ -11,9 +11,9 @@ Does not own
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from nicegui import ui
 
@@ -75,6 +75,7 @@ def bounded_data_table(
     pagination: int = 25,
     title: str | None = None,
     empty_message: str = "No records match the current selection.",
+    on_row_click: Callable[[dict[str, Any]], Any] | None = None,
 ) -> ui.card:
     """Render a bounded, client-paginated dark data table safely without raw HTML injection.
 
@@ -94,6 +95,8 @@ def bounded_data_table(
         Optional card title banner above table.
     empty_message : str, optional
         Message rendered when `rows` is empty.
+    on_row_click : Callable[[dict[str, Any]], Any] | None, optional
+        Optional callback invoked with the clicked row dictionary.
 
     Returns
     -------
@@ -130,11 +133,24 @@ def bounded_data_table(
                         "text-xs"
                     ).style(f"color: {StudioColor.WARNING}")
 
-        ui.table(
-            columns=col_dicts,
-            rows=bounded_rows,
-            row_key=resolved_key,
-            pagination=pagination,
-        ).classes("studio-table w-full").props("flat dense bordered dark")
+        tbl = (
+            ui.table(
+                columns=col_dicts,
+                rows=bounded_rows,
+                row_key=resolved_key,
+                pagination=pagination,
+            )
+            .classes("studio-table w-full")
+            .props("flat dense bordered dark")
+        )
+        if on_row_click is not None:
+            tbl.classes("cursor-pointer")
+
+            def _handle_row_click(e: Any) -> None:
+                raw_args = cast(list[Any], getattr(e, "args", []))
+                if len(raw_args) > 1 and isinstance(raw_args[1], dict):
+                    on_row_click(dict(cast(dict[str, Any], raw_args[1])))
+
+            tbl.on("rowClick", _handle_row_click)
 
     return card
