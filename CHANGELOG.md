@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.23](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.22...0.1.23) (2026-11-26)
+
+
+### Features 🔥
+
+* **analytics:** add Phase 20 operations models and queries ([d9aa1c4](https://github.com/tks18/pfetl-analytics-studio/commit/d9aa1c49f5e494ed995125a2a64307adee440ac0))
+* **ui:** add Sources, Providers, Failures, and Diff tabs ([cdb0a8b](https://github.com/tks18/pfetl-analytics-studio/commit/cdb0a8bda4412f593e4c7e6e73f0958d34cd6ccc))
+
+
+### Tests 🧪
+
+* **operations:** add Phase 20 forensic and snapshot diff tests ([9429eef](https://github.com/tks18/pfetl-analytics-studio/commit/9429eef28c82611b570c8f2778e05948ac2a2e8d))
+
 ### [0.1.22](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.21...0.1.22) (2026-11-26)
 
 
