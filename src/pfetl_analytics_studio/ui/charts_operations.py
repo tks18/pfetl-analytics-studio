@@ -239,3 +239,147 @@ def build_ops_table_row_counts_figure(
         ],
         "layout": studio_plotly_layout(height=340, horizontal_bars=True),
     }
+
+
+def build_ops_source_categories_figure(category_counts: dict[str, int]) -> dict[str, Any]:
+    """Plot registered source file counts by `file_category`."""
+    if not category_counts:
+        return {"data": [], "layout": studio_plotly_layout(height=340, horizontal_bars=True)}
+    sorted_items = sorted(category_counts.items(), key=lambda kv: kv[1])[-12:]
+    cats = [k for k, _ in sorted_items]
+    vals = [v for _, v in sorted_items]
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "orientation": "h",
+                "y": cats,
+                "x": vals,
+                "name": "Files",
+                "marker": {"color": StudioColor.ACC_HOV.value},
+            }
+        ],
+        "layout": studio_plotly_layout(height=340, horizontal_bars=True),
+    }
+
+
+def build_ops_artifact_events_figure(events: Sequence[Any]) -> dict[str, Any]:
+    """Plot artifact run events stacked by `event_type` and `convergence_result`."""
+    if not events:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    ev_types = sorted({str(e.event_type or "UNKNOWN") for e in events})
+    convs = sorted({str(e.convergence_result or "UNKNOWN") for e in events})
+    counts = Counter(
+        (str(e.event_type or "UNKNOWN"), str(e.convergence_result or "UNKNOWN")) for e in events
+    )
+    traces: list[dict[str, Any]] = []
+    for idx, cv in enumerate(convs):
+        traces.append(
+            {
+                "type": "bar",
+                "x": ev_types,
+                "y": [counts.get((et, cv), 0) for et in ev_types],
+                "name": cv,
+                "marker": {"color": CHART_SERIES_COLORS[idx % len(CHART_SERIES_COLORS)]},
+            }
+        )
+    return {
+        "data": traces,
+        "layout": studio_plotly_layout(height=340, barmode="stack", x_axis_type="category"),
+    }
+
+
+def build_ops_source_freshness_timeline_figure(files: Sequence[Any]) -> dict[str, Any]:
+    """Plot distribution of `sync_status` across registered source files."""
+    if not files:
+        return {"data": [], "layout": studio_plotly_layout(height=340)}
+    counts = Counter(str(f.sync_status or "UNKNOWN") for f in files)
+    labels = list(counts.keys())
+    vals = [counts[k] for k in labels]
+    return {
+        "data": [
+            {
+                "type": "pie",
+                "labels": labels,
+                "values": vals,
+                "hole": 0.55,
+                "marker": {"colors": list(CHART_SERIES_COLORS[: len(labels)])},
+                "textinfo": "label+value",
+            }
+        ],
+        "layout": studio_plotly_layout(height=340),
+    }
+
+
+def build_ops_provider_status_figure(requests: Sequence[Any]) -> dict[str, Any]:
+    """Plot external provider requests grouped by `provider` and `status`."""
+    if not requests:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    provs = sorted({str(r.provider or "UNKNOWN") for r in requests})
+    statuses = sorted({str(r.status or "UNKNOWN") for r in requests})
+    counts = Counter((str(r.provider or "UNKNOWN"), str(r.status or "UNKNOWN")) for r in requests)
+    traces: list[dict[str, Any]] = []
+    for idx, st in enumerate(statuses):
+        traces.append(
+            {
+                "type": "bar",
+                "x": provs,
+                "y": [counts.get((pr, st), 0) for pr in provs],
+                "name": st,
+                "marker": {"color": CHART_SERIES_COLORS[idx % len(CHART_SERIES_COLORS)]},
+            }
+        )
+    return {
+        "data": traces,
+        "layout": studio_plotly_layout(height=340, barmode="stack", x_axis_type="category"),
+    }
+
+
+def build_ops_provider_attempts_figure(requests: Sequence[Any]) -> dict[str, Any]:
+    """Plot histogram/bar of request `attempt_count` across provider requests."""
+    if not requests:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    counts = Counter(int(r.attempt_count) for r in requests)
+    keys = sorted(counts.keys())
+    xs = [f"{k} attempts" if k != 1 else "1 attempt" for k in keys]
+    ys = [counts[k] for k in keys]
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": xs,
+                "y": ys,
+                "name": "Requests",
+                "marker": {"color": StudioColor.SUCCESS.value},
+            }
+        ],
+        "layout": studio_plotly_layout(
+            height=340, y_ticks=numeric_ticks([0, *ys]), x_axis_type="category"
+        ),
+    }
+
+
+def build_ops_failure_domains_figure(failures: Sequence[Any]) -> dict[str, Any]:
+    """Plot recorded run failures grouped by `failure_domain` and `stage`."""
+    if not failures:
+        return {"data": [], "layout": studio_plotly_layout(height=340, x_axis_type="category")}
+    domains = sorted({str(f.failure_domain or "UNKNOWN") for f in failures})
+    stages = sorted({str(f.stage or "UNKNOWN") for f in failures})
+    counts = Counter(
+        (str(f.failure_domain or "UNKNOWN"), str(f.stage or "UNKNOWN")) for f in failures
+    )
+    traces: list[dict[str, Any]] = []
+    for idx, sg in enumerate(stages):
+        traces.append(
+            {
+                "type": "bar",
+                "x": domains,
+                "y": [counts.get((dm, sg), 0) for dm in domains],
+                "name": sg,
+                "marker": {"color": CHART_SERIES_COLORS[idx % len(CHART_SERIES_COLORS)]},
+            }
+        )
+    return {
+        "data": traces,
+        "layout": studio_plotly_layout(height=340, barmode="stack", x_axis_type="category"),
+    }
