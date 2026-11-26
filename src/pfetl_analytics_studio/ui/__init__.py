@@ -100,6 +100,17 @@ from pfetl_analytics_studio.ui.charts_investments_evidence import (
     build_inv_recon_adjustments_figure,
     build_inv_recon_qty_bridge_figure,
 )
+from pfetl_analytics_studio.ui.charts_tax import (
+    build_tax_completeness_figure,
+    build_tax_composition_donut_figure,
+    build_tax_events_timeline_figure,
+    build_tax_fy_readiness_figure,
+    build_tax_fy_trend_figure,
+    build_tax_head_breakdown_figure,
+    build_tax_indicative_exposure_figure,
+    build_tax_recon_bridge_figure,
+    build_tax_source_type_figure,
+)
 from pfetl_analytics_studio.ui.charts_transactions import (
     build_tx_account_breakdown_figure,
     build_tx_daily_activity_figure,
@@ -213,6 +224,15 @@ __all__ = [
     "build_net_worth_attribution_figure",
     "build_passive_income_engine_figure",
     "build_portfolio_return_figure",
+    "build_tax_completeness_figure",
+    "build_tax_composition_donut_figure",
+    "build_tax_events_timeline_figure",
+    "build_tax_fy_readiness_figure",
+    "build_tax_fy_trend_figure",
+    "build_tax_head_breakdown_figure",
+    "build_tax_indicative_exposure_figure",
+    "build_tax_recon_bridge_figure",
+    "build_tax_source_type_figure",
     "build_treemap_figure",
     "build_tx_account_breakdown_figure",
     "build_tx_daily_activity_figure",
