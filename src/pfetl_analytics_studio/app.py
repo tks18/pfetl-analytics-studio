@@ -945,6 +945,13 @@ def create_app(profile: PFETLProfile | None = None) -> None:
                     initial_tab=ctx.active_tabs.get("fire", "trajectory"),
                     on_tab_change=lambda tab_id: session.set_active_tab("fire", tab_id),
                 )
+            elif route.route_id == "operations":
+                render_operations_page(
+                    ctx,
+                    cache=session.cache,
+                    initial_tab=ctx.active_tabs.get("operations", "runs"),
+                    on_tab_change=lambda tab_id: session.set_active_tab("operations", tab_id),
+                )
             else:
                 renderer = _PAGE_RENDERERS[route.route_id]
                 renderer(ctx)

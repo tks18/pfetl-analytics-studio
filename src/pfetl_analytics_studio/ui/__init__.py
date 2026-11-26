@@ -115,6 +115,14 @@ from pfetl_analytics_studio.ui.charts_investments_evidence import (
     build_inv_recon_adjustments_figure,
     build_inv_recon_qty_bridge_figure,
 )
+from pfetl_analytics_studio.ui.charts_operations import (
+    build_ops_duration_trend_figure,
+    build_ops_layer_contracts_figure,
+    build_ops_status_breakdown_figure,
+    build_ops_sync_outcomes_figure,
+    build_ops_table_row_counts_figure,
+    build_ops_version_timeline_figure,
+)
 from pfetl_analytics_studio.ui.charts_tax import (
     build_tax_completeness_figure,
     build_tax_composition_donut_figure,
@@ -250,6 +258,12 @@ __all__ = [
     "build_lot_holding_type_split_figure",
     "build_lot_pre_vs_after_tax_figure",
     "build_net_worth_attribution_figure",
+    "build_ops_duration_trend_figure",
+    "build_ops_layer_contracts_figure",
+    "build_ops_status_breakdown_figure",
+    "build_ops_sync_outcomes_figure",
+    "build_ops_table_row_counts_figure",
+    "build_ops_version_timeline_figure",
     "build_passive_income_engine_figure",
     "build_portfolio_return_figure",
     "build_tax_completeness_figure",
