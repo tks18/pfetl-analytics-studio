@@ -367,3 +367,118 @@ def test_lot_explorer_filtering_pagination_and_detail(tmp_path: Path) -> None:
     )
     assert missing.state == "empty"
     assert date(2026, 10, 31) in missing.nearest_dates
+
+
+def test_realized_lineage_reconciliation_and_market_evidence(tmp_path: Path) -> None:
+    from pfetl_analytics_studio.analytics import RealizedEventFilter
+
+    db_path = tmp_path / "inv_p16.duckdb"
+    _create_investment_db(db_path)
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE silver.fact_investment_purchases (
+                "Purchase_ID" VARCHAR, "Date" DATE, "ISIN" VARCHAR, "Quantity" DOUBLE, "Price" DOUBLE, "Value" DOUBLE
+            );
+            INSERT INTO silver.fact_investment_purchases VALUES ('P1', DATE '2024-01-01', 'INE001', 10.0, 6000.0, 60000.0);
+
+            CREATE TABLE silver.fact_investment_sales (
+                "Sale_ID" VARCHAR, "Date" DATE, "ISIN" VARCHAR, "Quantity" DOUBLE, "Sell_Price" DOUBLE, "Sell_Value" DOUBLE
+            );
+            INSERT INTO silver.fact_investment_sales VALUES ('S1', DATE '2026-10-15', 'INE001', 4.0, 8000.0, 32000.0);
+
+            CREATE TABLE silver.fact_investment_lot_analytics (
+                "Lot_ID" VARCHAR, "Closing_Date" DATE, "ISIN" VARCHAR
+            );
+            INSERT INTO silver.fact_investment_lot_analytics VALUES ('L1', DATE '2026-10-31', 'INE001');
+
+            CREATE TABLE silver.fact_investment_realized_events (
+                "Realized_Event_ID" VARCHAR, "Sale_ID" VARCHAR, "Lot_ID" VARCHAR, "Purchase_ID" VARCHAR,
+                "ISIN" VARCHAR, "Acquisition_Date" DATE, "Disposal_Date" DATE, "FY" VARCHAR,
+                "Quantity_Disposed" DOUBLE, "Acquisition_Price" DOUBLE, "Disposed_Cost_Basis" DOUBLE,
+                "Sale_Price" DOUBLE, "Sale_Proceeds" DOUBLE, "Realized_Gain_Loss" DOUBLE,
+                "Holding_Type" VARCHAR, "Tax_Type" VARCHAR, "Tax_Subtype" VARCHAR,
+                "Currency_ID" VARCHAR, "Asset_PnL" DOUBLE, "Forex_PnL" DOUBLE,
+                "Applied_Rate" DOUBLE, "Estimated_Tax" DOUBLE
+            );
+            INSERT INTO silver.fact_investment_realized_events VALUES
+                ('RE1', 'S1', 'L1', 'P1', 'INE001', DATE '2024-01-01', DATE '2026-10-15', '2026-27', 4.0, 6000.0, 24000.0, 8000.0, 32000.0, 8000.0, 'LTCG', 'EQUITY', 'LISTED', 'INR_INR', 8000.0, 0.0, 0.125, 1000.0),
+                ('RE2', 'S2', 'L_MISS', 'P_MISS', 'INE002', DATE '2026-01-01', DATE '2026-10-20', '2026-27', 2.0, 2000.0, 4000.0, 1800.0, 3600.0, -400.0, 'STCG', 'EQUITY', 'LISTED', 'INR_INR', -400.0, 0.0, 0.20, 0.0);
+
+            CREATE TABLE silver.fact_investment_reconciliation_events (
+                "Reconciliation_Group_ID" VARCHAR, "Reconciliation_Event_ID" VARCHAR, "Run_ID" VARCHAR,
+                "ISIN" VARCHAR, "Reconciliation_Date" DATE, "Lot_ID" VARCHAR, "Purchase_ID" VARCHAR,
+                "Adjustment_Type" VARCHAR, "Reason" VARCHAR,
+                "Broker_Quantity" DOUBLE, "Reconstructed_Quantity" DOUBLE, "Quantity_Adjustment" DOUBLE,
+                "Broker_Cost_Basis" DOUBLE, "Reconstructed_Cost_Basis" DOUBLE, "Cost_Basis_Adjustment" DOUBLE,
+                "Original_Unit_Cost" DOUBLE, "Adjusted_Unit_Cost" DOUBLE
+            );
+            INSERT INTO silver.fact_investment_reconciliation_events VALUES
+                ('RG1', 'REC1', 'R1', 'INE001', DATE '2026-10-31', 'L1', 'P1', 'COST_BASIS_ADJUSTMENT', 'Broker mismatch', 10.0, 10.0, 0.0, 60500.0, 60000.0, 500.0, 6000.0, 6050.0);
+
+            CREATE TABLE silver.fact_investment_market_data (
+                "Date" DATE, "ISIN" VARCHAR, "Quantity" DOUBLE, "Closing_Price" DOUBLE, "Buy_Price" DOUBLE,
+                "Closing_Value" DOUBLE, "Buy_Value" DOUBLE, "FX_Rate" DOUBLE,
+                "Data_Provider" VARCHAR, "Extraction_Time" VARCHAR, "Is_Closure_Gap" BOOLEAN, "Is_Imputed" BOOLEAN
+            );
+            INSERT INTO silver.fact_investment_market_data VALUES
+                (DATE '2026-10-01', 'INE001', 10.0, 3400.0, 3000.0, 34000.0, 30000.0, 1.0, 'yfinance', '2026-10-01T18:00:00Z', FALSE, FALSE),
+                (DATE '2026-10-02', 'INE001', 10.0, 3400.0, 3000.0, 34000.0, 30000.0, 1.0, 'yfinance', '2026-10-02T18:00:00Z', TRUE, TRUE);
+
+            CREATE TABLE silver.fact_investment_benchmark_data (
+                "Date" DATE, "ID" VARCHAR, "Benchmark_Name" VARCHAR, "yF_Ticker" VARCHAR,
+                "Close" DOUBLE, "Data_Provider" VARCHAR, "Extraction_Time" VARCHAR, "Is_Closure_Gap" BOOLEAN, "Is_Imputed" BOOLEAN
+            );
+            INSERT INTO silver.fact_investment_benchmark_data VALUES
+                (DATE '2026-10-01', 'BM1', 'NIFTY 50', '^NSEI', 25000.0, 'yfinance', '2026-10-01T18:00:00Z', FALSE, FALSE);
+
+            CREATE TABLE silver.fact_currency_fx_rates (
+                "Date" DATE, "Currency_ID" VARCHAR, "Currency_Code" VARCHAR, "Target_Currency_Code" VARCHAR,
+                "yF_Ticker" VARCHAR, "FX_Rate" DOUBLE, "Data_Provider" VARCHAR, "Extraction_Time" VARCHAR,
+                "Is_Closure_Gap" BOOLEAN, "Is_Imputed" BOOLEAN
+            );
+            INSERT INTO silver.fact_currency_fx_rates VALUES
+                (DATE '2026-10-01', 'INR_USD', 'USD', 'INR', 'INR=X', 84.10, 'yfinance', '2026-10-01T18:00:00Z', FALSE, FALSE);
+            """
+        )
+    finally:
+        con.close()
+
+    profile = _make_profile(db_path)
+    period = _make_period()
+    prov = _make_provenance()
+
+    snap = InvestmentAnalytics.realized_and_reconciliation(
+        profile, RealizedEventFilter(), run_id=prov.run_id, provenance=prov, cache=QueryCache()
+    )
+    assert snap.state == "ready"
+    assert len(snap.realized_rows) == 2
+    assert len(snap.reconciliation_groups) == 1
+    assert snap.reconciliation_groups[0].cost_basis_adjustment == 500.0
+
+    ok_trace = InvestmentAnalytics.trace_lineage(profile, "RE1")
+    assert ok_trace is not None
+    assert ok_trace.missing_links == ()
+    assert ok_trace.sale_record is not None and ok_trace.purchase_record is not None
+
+    broken_trace = InvestmentAnalytics.trace_lineage(profile, "RE2")
+    assert broken_trace is not None
+    assert "Purchase_ID:P_MISS" in broken_trace.missing_links
+
+    ev = InvestmentAnalytics.market_evidence(
+        profile,
+        period,
+        isin="INE001",
+        benchmark_id="BM1",
+        currency_id="INR_USD",
+        run_id=prov.run_id,
+        provenance=prov,
+        cache=QueryCache(),
+    )
+    assert ev.state == "ready"
+    assert len(ev.market_points) == 2
+    assert ev.market_points[1].is_imputed is True
+    assert ev.market_points[1].is_closure_gap is True
+    assert len(ev.benchmark_points) == 1
+    assert len(ev.fx_points) == 1
