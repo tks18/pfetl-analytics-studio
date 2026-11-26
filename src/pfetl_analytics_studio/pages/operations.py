@@ -11,8 +11,11 @@ from nicegui import ui
 
 from pfetl_analytics_studio.analytics import (
     ArtifactEventFilter,
+    ForensicEvent,
+    ForensicEventFilter,
     OperationRunRecord,
     OperationsAnalytics,
+    OperationTreeNode,
     OverviewKPI,
     ProviderRequestFilter,
     RunFailureRecord,
@@ -32,6 +35,10 @@ from pfetl_analytics_studio.ui import (
     build_ops_artifact_events_figure,
     build_ops_duration_trend_figure,
     build_ops_failure_domains_figure,
+    build_ops_forensic_severity_figure,
+    build_ops_forensic_slowest_ops_figure,
+    build_ops_forensic_stage_figure,
+    build_ops_forensic_workers_figure,
     build_ops_layer_contracts_figure,
     build_ops_provider_attempts_figure,
     build_ops_provider_status_figure,
@@ -256,14 +263,39 @@ def _open_run_drawer(
 
 
 def _open_file_events_drawer(file_rec: SourceFileRecord, profile: PFETLProfile) -> None:
-    """Show independent freshness timestamps & verbatim artifact events for one file."""
+    """Show independent freshness timestamps, artifact events, and retained payload download."""
     ev_snap = OperationsAnalytics.artifact_events(
         profile, ArtifactEventFilter(file_id=file_rec.file_id, limit=100)
     )
+    has_payload, byte_len = OperationsAnalytics.has_retained_payload(profile, file_rec.file_id)
+
+    def _download_evidence() -> None:
+        res = OperationsAnalytics.source_payload(profile, file_rec.file_id)
+        if not res.available or res.file_bytes is None:
+            ui.notify(
+                res.diagnostics[0] if res.diagnostics else "Retained payload unavailable.",
+                type="warning",
+            )
+            return
+        ui.download(res.file_bytes, filename=res.file_name or f"{file_rec.file_id}.bin")
+
     with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
-        with ui.row().classes("w-full items-center justify-between"):
+        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
             ui.label(f"Artifact Lineage: {file_rec.file_name}").classes("text-h6 font-semibold")
-            status_badge(file_rec.sync_status or "UNKNOWN", tone=BadgeTone.INFO)
+            with ui.row().classes("items-center gap-2"):
+                status_badge(file_rec.sync_status or "UNKNOWN", tone=BadgeTone.INFO)
+                if has_payload:
+                    status_badge(
+                        f"Retained Payload Available ({_fmt_bytes(byte_len)})",
+                        tone=BadgeTone.INFO,
+                    )
+                    ui.button(
+                        "Download Evidence",
+                        icon="download",
+                        on_click=_download_evidence,
+                    ).props("dense outline color=primary")
+                else:
+                    status_badge("No Retained Payload", tone=BadgeTone.NEUTRAL)
 
         with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
             for lbl, val in (
@@ -790,16 +822,340 @@ def _render_providers_tab(
     _draw()
 
 
-def _render_phase21_placeholder(title: str, description: str, sources: tuple[str, ...]) -> None:
-    with ui.card().classes("studio-card w-full p-6 gap-3 rounded-lg"):
-        with ui.row().classes("items-center gap-2"):
-            ui.icon("construction", size="22px").style("color: var(--studio-accent);")
-            ui.label(title).classes("text-subtitle1 font-semibold")
-            status_badge("Phase 21", tone=BadgeTone.NEUTRAL)
-        ui.label(description).classes("text-body2").style("color: var(--studio-text-muted);")
-        with ui.row().classes("items-center gap-2 flex-wrap"):
-            for src in sources:
-                status_badge(src, tone=BadgeTone.INFO)
+def _open_forensic_event_drawer(ev: ForensicEvent) -> None:
+    """Open detailed drawer for a single ForensicEvent with context, error & raw JSON."""
+    with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
+        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+            with ui.row().classes("items-center gap-2"):
+                ui.icon("troubleshoot", size="22px").style("color: var(--studio-accent);")
+                ui.label(f"Seq #{ev.sequence} · {ev.event_code}").classes("text-h6 font-semibold")
+            with ui.row().classes("items-center gap-2"):
+                status_badge(ev.severity or "INFO", tone=BadgeTone.INFO)
+                status_badge(ev.outcome or "—", tone=BadgeTone.NEUTRAL)
+
+        ui.label(ev.message or "—").classes("text-body2 font-medium")
+
+        c = ev.context
+        ctx_items = [
+            ("Timestamp", ev.timestamp_raw or "—"),
+            ("Stage", c.stage or "—"),
+            ("Component", c.component or "—"),
+            ("Operation", c.operation or "—"),
+            ("Operation ID", c.operation_id or "—"),
+            ("Parent Op ID", c.parent_operation_id or "—"),
+            (
+                "Entity",
+                f"{c.entity_type}: {c.entity_id}" if (c.entity_type or c.entity_id) else "—",
+            ),
+            ("Duration (ms)", f"{c.duration_ms:.2f} ms" if c.duration_ms is not None else "—"),
+            (
+                "Rows / Attempt",
+                f"{c.rows if c.rows is not None else '—'} / {c.attempt if c.attempt is not None else '—'}",
+            ),
+            (
+                "Provider / Cache",
+                f"{c.provider or '—'} / {c.cache_hit if c.cache_hit is not None else '—'}",
+            ),
+            ("Worker / Batch", f"{c.worker_id or '—'} / {c.batch_id or '—'}"),
+            ("Schema Ver", str(ev.schema_version)),
+        ]
+        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
+            for lbl, val in ctx_items:
+                with (
+                    ui.column()
+                    .classes("gap-0 p-2 rounded")
+                    .style(
+                        "background: rgba(15, 23, 42, 0.55); border: 1px solid rgba(148, 163, 184, 0.12);"
+                    )
+                ):
+                    ui.label(lbl).classes("text-caption").style("color: var(--studio-text-muted);")
+                    ui.label(val).classes("text-caption font-mono break-all")
+
+        if ev.error is not None:
+            err = ev.error
+            with (
+                ui.card()
+                .classes("w-full p-3 gap-2")
+                .style(
+                    "background: rgba(239, 68, 68, 0.08); border: 1px solid rgba(239, 68, 68, 0.35);"
+                )
+            ):
+                with ui.row().classes("items-center justify-between"):
+                    ui.label(f"Error: {err.exception_type}").classes("text-subtitle2 font-semibold")
+                    status_badge(err.failure_domain or "UNKNOWN", tone=BadgeTone.WARNING)
+                ui.label(err.exception_message or "—").classes("text-caption font-mono")
+                if err.remediation_hint:
+                    ui.label(f"Remediation: {err.remediation_hint}").classes("text-caption").style(
+                        "color: #FDE68A;"
+                    )
+                if err.traceback_summary:
+                    with ui.expansion("Traceback Summary (Local Only)", value=False).classes(
+                        "w-full"
+                    ):
+                        ui.code(err.traceback_summary, language="text").classes(
+                            "w-full text-caption"
+                        )
+
+        with ui.expansion("Raw Event JSON", icon="code", value=False).classes("w-full"):
+            ui.code(json.dumps(ev.raw_payload, indent=2, default=str), language="json").classes(
+                "w-full text-caption"
+            )
+
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Close", on_click=dlg.close).props("flat color=primary")
+    dlg.open()
+
+
+def _tree_nodes_to_quasar(nodes: tuple[OperationTreeNode, ...]) -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for n in nodes:
+        dur = f" · {n.duration_ms:.1f}ms" if n.duration_ms is not None else ""
+        rows = f" · {n.rows} rows" if n.rows is not None else ""
+        orphan = " [ORPHAN]" if n.is_orphan else ""
+        lbl = f"{n.operation or n.operation_id} ({n.stage or '—'}{dur}{rows}) · {n.outcome or '—'}{orphan}"
+        out.append(
+            {
+                "id": n.operation_id,
+                "label": lbl,
+                "children": _tree_nodes_to_quasar(n.children),
+            }
+        )
+    return out
+
+
+def _render_forensics_tab(
+    container: ui.tab_panel,
+    profile: PFETLProfile,
+    cache: QueryCache | None,
+) -> None:
+    runs_snap = OperationsAnalytics.run_history(profile, RunHistoryFilter(limit=50), cache=cache)
+    default_run = runs_snap.runs[0].run_id if runs_snap.runs else ""
+    state: dict[str, Any] = {
+        "run_id": default_run,
+        "severity": None,
+        "event_code": None,
+        "outcome": None,
+        "stage": None,
+        "component": None,
+        "operation": None,
+        "provider": None,
+        "worker_id": None,
+        "batch_id": None,
+        "failure_domain": None,
+        "search": "",
+    }
+
+    def _draw() -> None:
+        container.clear()
+        with container:
+            run_id = str(state["run_id"] or "")
+            if not run_id:
+                empty_state_panel("No Runs Available", "No PFETL runs found to inspect logs.")
+                return
+
+            try:
+                summary = OperationsAnalytics.forensic_summary(profile, run_id)
+                ev_snap = OperationsAnalytics.forensic_events(
+                    profile,
+                    run_id,
+                    ForensicEventFilter(
+                        severity=state["severity"],
+                        event_code=state["event_code"],
+                        outcome=state["outcome"],
+                        stage=state["stage"],
+                        component=state["component"],
+                        operation=state["operation"],
+                        provider=state["provider"],
+                        worker_id=state["worker_id"],
+                        batch_id=state["batch_id"],
+                        failure_domain=state["failure_domain"],
+                        search=state["search"] or None,
+                        limit=500,
+                    ),
+                )
+                tree = OperationsAnalytics.operation_tree(profile, run_id)
+            except Exception as exc:
+                error_state_panel("Unable to decode forensic logs", str(exc))
+                return
+
+            def _set(key: str, val: Any) -> None:
+                state[key] = str(val) or None
+                _draw()
+
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2 mb-2"):
+                run_opts = {
+                    r.run_id: f"{r.run_id[:12]}… ({r.status} · {r.started_at_raw[:16]})"
+                    for r in runs_snap.runs
+                } or {run_id: run_id}
+                ui.select(
+                    options=run_opts,
+                    value=run_id,
+                    label="Target Run",
+                    on_change=lambda e: _set("run_id", e.value),
+                ).props("dense outlined dark").classes("w-80")
+                with ui.row().classes("items-center gap-2"):
+                    status_badge(f"Log Source: {ev_snap.source}", tone=BadgeTone.INFO)
+                    if ev_snap.malformed_lines > 0:
+                        status_badge(
+                            f"Malformed Lines: {ev_snap.malformed_lines}",
+                            tone=BadgeTone.WARNING,
+                        )
+                    if ev_snap.unknown_schema_versions:
+                        status_badge(
+                            f"Unknown Schema: {', '.join(ev_snap.unknown_schema_versions)}",
+                            tone=BadgeTone.WARNING,
+                        )
+
+            if ev_snap.state == "unavailable":
+                empty_state_panel(
+                    "Forensic Logs Unavailable",
+                    ev_snap.diagnostics[0]
+                    if ev_snap.diagnostics
+                    else f"No execution_log or fallback JSONL found for run '{run_id}'.",
+                )
+                return
+
+            _render_kpi_grid(summary.kpis)
+
+            with ui.grid().classes("w-full grid-cols-1 lg:grid-cols-2 gap-4 my-4"):
+                chart_panel(
+                    title="Severity & Outcome Breakdown",
+                    subtitle="Normalized event counts by severity and outcome",
+                    figure=build_ops_forensic_severity_figure(
+                        summary.severity_counts, summary.outcome_counts
+                    ),
+                    source_caption="Source: cp_runs.execution_log",
+                )
+                chart_panel(
+                    title="Pipeline Stage Activity & Emitted Rows",
+                    subtitle="Event count (bars) and emitted context.rows (line)",
+                    figure=build_ops_forensic_stage_figure(
+                        summary.stage_counts, summary.stage_rows
+                    ),
+                    source_caption="Source: cp_runs.execution_log",
+                )
+                chart_panel(
+                    title="Slowest Operations (Duration in Seconds)",
+                    subtitle="Only operations with emitted duration_ms converted to seconds (never synthesized)",
+                    figure=build_ops_forensic_slowest_ops_figure(summary.slowest_operations),
+                    source_caption="Source: cp_runs.execution_log",
+                )
+                chart_panel(
+                    title="Worker, Provider & Cache Activity",
+                    subtitle="Emitted worker_id, provider, and cache_hit counters",
+                    figure=build_ops_forensic_workers_figure(
+                        summary.worker_counts,
+                        summary.provider_counts,
+                        summary.cache_hits,
+                        summary.cache_misses,
+                    ),
+                    source_caption="Source: cp_runs.execution_log",
+                )
+
+            if tree:
+                with ui.expansion(
+                    "Operation Lineage Tree (parent_operation_id → operation_id)",
+                    icon="account_tree",
+                    value=False,
+                ).classes("w-full studio-card p-3 rounded-lg mb-3"):
+                    ui.tree(_tree_nodes_to_quasar(tree), label_key="label", node_key="id").classes(
+                        "w-full"
+                    )
+
+            with ui.row().classes("w-full items-center gap-2 flex-wrap mb-3"):
+                for key, lbl, opts in (
+                    ("severity", "Severity", ev_snap.available_severities),
+                    ("outcome", "Outcome", ev_snap.available_outcomes),
+                    ("stage", "Stage", ev_snap.available_stages),
+                    ("event_code", "Event Code", ev_snap.available_codes),
+                    ("component", "Component", ev_snap.available_components),
+                    ("operation", "Operation", ev_snap.available_operations),
+                    ("provider", "Provider", ev_snap.available_providers),
+                    ("worker_id", "Worker", ev_snap.available_workers),
+                    ("batch_id", "Batch", ev_snap.available_batches),
+                    ("failure_domain", "Failure Domain", ev_snap.available_failure_domains),
+                ):
+                    if opts:
+                        ui.select(
+                            options={"": f"All {lbl}", **{o: o for o in opts}},
+                            value=state[key] or "",
+                            label=lbl,
+                            on_change=lambda e, k=key: _set(k, e.value),
+                        ).props("dense outlined dark").classes("w-40")
+                ui.input(
+                    label="Search message / entity / error",
+                    value=state["search"],
+                    on_change=lambda e: _set("search", e.value),
+                ).props("dense outlined dark clearable").classes("w-64")
+
+            if ev_snap.events:
+                ev_map = {e.event_id or str(e.sequence): e for e in ev_snap.events}
+                with ui.row().classes("w-full items-center gap-3 flex-wrap mb-2"):
+                    ev_sel = (
+                        ui.select(
+                            options={
+                                (
+                                    e.event_id or str(e.sequence)
+                                ): f"#{e.sequence} · {e.severity} · {e.event_code}"
+                                for e in ev_snap.events[:150]
+                            },
+                            value=ev_snap.events[0].event_id or str(ev_snap.events[0].sequence),
+                            label="Inspect Forensic Event",
+                        )
+                        .props("dense outlined dark")
+                        .classes("w-96")
+                    )
+                    ui.button(
+                        "Open Event Detail",
+                        icon="open_in_new",
+                        on_click=lambda: (
+                            _open_forensic_event_drawer(ev_map[str(ev_sel.value)])
+                            if str(ev_sel.value) in ev_map
+                            else None
+                        ),
+                    ).props("outline color=primary")
+
+                t_cols = [
+                    TableColumn(name="sequence", label="Seq", field="sequence", align="right"),
+                    TableColumn(name="timestamp", label="Timestamp", field="timestamp"),
+                    TableColumn(name="severity", label="Severity", field="severity"),
+                    TableColumn(name="event_code", label="Event Code", field="event_code"),
+                    TableColumn(name="stage", label="Stage", field="stage"),
+                    TableColumn(name="outcome", label="Outcome", field="outcome"),
+                    TableColumn(
+                        name="duration_ms", label="Dur (ms)", field="duration_ms", align="right"
+                    ),
+                    TableColumn(name="rows", label="Rows", field="rows", align="right"),
+                    TableColumn(name="message", label="Message", field="message"),
+                ]
+                t_rows = [
+                    {
+                        "sequence": e.sequence,
+                        "timestamp": e.timestamp_raw[11:23]
+                        if len(e.timestamp_raw) >= 23
+                        else e.timestamp_raw,
+                        "severity": e.severity,
+                        "event_code": e.event_code,
+                        "stage": e.context.stage or "—",
+                        "outcome": e.outcome or "—",
+                        "duration_ms": f"{e.context.duration_ms:.1f}"
+                        if e.context.duration_ms is not None
+                        else "—",
+                        "rows": e.context.rows if e.context.rows is not None else "—",
+                        "message": e.message[:140],
+                    }
+                    for e in ev_snap.events
+                ]
+                bounded_data_table(
+                    columns=t_cols,
+                    rows=t_rows,
+                    row_key="sequence",
+                    title=f"Forensic Event Timeline ({len(ev_snap.events)} of {ev_snap.total_decoded} decoded)",
+                )
+            else:
+                empty_state_panel("No Matching Events", "Adjust forensic filters to view events.")
+
+    _draw()
 
 
 def render_operations_page(
@@ -862,13 +1218,7 @@ def render_operations_page(
 
         _render_sources_tab(p_sources, profile, cache)
         _render_providers_tab(p_providers, profile, cache)
-
-        with p_forensics:
-            _render_phase21_placeholder(
-                "Forensics & Evidence Download",
-                "Decompressed execution_log JSONL viewer and archived run trace explorer will be wired in Phase 21.",
-                ("cp_runs.execution_log", "logs_directory JSONL", "cp_file_payloads"),
-            )
+        _render_forensics_tab(p_forensics, profile, cache)
 
         def _render_runs() -> None:
             p_runs.clear()
