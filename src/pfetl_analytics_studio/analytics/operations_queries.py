@@ -2,14 +2,24 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
-from typing import Any
+import json
+from datetime import UTC, date, datetime
+from typing import Any, cast
 
 from pfetl_analytics_studio.analytics.operations_models import (
+    ArtifactEventFilter,
+    ArtifactEventRecord,
     LayerContractSummary,
     OperationRunRecord,
+    ProviderRequestFilter,
+    ProviderRequestRecord,
+    RunFailureRecord,
     RunHistoryFilter,
     RunSyncSummary,
+    SnapshotDiffEntry,
+    SnapshotPayloadRecord,
+    SourceFileRecord,
+    SourceRegistryFilter,
     TableRowCountRecord,
     WarehouseHealthSnapshot,
 )
@@ -388,5 +398,483 @@ def build_operations_kpis(
             source_table="meta.m_Table_Row_Counts",
             drill_route="/operations",
             available=warehouse.generated_at is not None,
+        ),
+    )
+
+
+def _parse_date(val: Any) -> date | None:
+    if val is None:
+        return None
+    if isinstance(val, date) and not isinstance(val, datetime):
+        return val
+    dt = _parse_ts(val)
+    return dt.date() if dt is not None else None
+
+
+def query_source_registry(
+    cp_reader: ControlPlaneReader,
+    filters: SourceRegistryFilter,
+) -> tuple[
+    tuple[SourceFileRecord, ...],
+    int,
+    tuple[str, ...],
+    tuple[str, ...],
+    dict[str, int],
+]:
+    """Query `cp_file_registry` with independent freshness fields."""
+    if not _cp_table_exists(cp_reader, "cp_file_registry"):
+        return (), 0, (), (), {}
+
+    where: list[str] = []
+    params: list[Any] = []
+    if filters.category:
+        where.append("file_category = ?")
+        params.append(filters.category)
+    if filters.sync_status:
+        where.append("sync_status = ?")
+        params.append(filters.sync_status)
+    if filters.search:
+        where.append("(LOWER(file_name) LIKE ? OR LOWER(relative_path) LIKE ?)")
+        pat = f"%{filters.search.strip().lower()}%"
+        params.extend([pat, pat])
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    cnt_row = cp_reader.fetch_one(
+        f"SELECT COUNT(*) AS cnt FROM cp_file_registry {where_sql};", params
+    )
+    total_count = int(cnt_row["cnt"]) if cnt_row else 0
+
+    limit_val = max(1, min(int(filters.limit), 500))
+    rows = cp_reader.fetch_all(
+        f"""
+        SELECT
+            file_id, file_name, relative_path, file_category, file_type,
+            file_hash, file_size_bytes, sync_status,
+            first_seen_run_id, first_seen_at,
+            last_seen_run_id, last_seen_at,
+            last_changed_run_id, last_changed_at,
+            last_synced_run_id, last_synced_at
+        FROM cp_file_registry
+        {where_sql}
+        ORDER BY COALESCE(last_synced_at, last_seen_at, first_seen_at) DESC, file_name ASC
+        LIMIT ?;
+        """,
+        [*params, limit_val],
+    )
+    records = tuple(
+        SourceFileRecord(
+            file_id=str(r.get("file_id") or ""),
+            file_name=str(r.get("file_name") or ""),
+            relative_path=str(r.get("relative_path") or ""),
+            file_category=str(r.get("file_category") or ""),
+            file_type=str(r.get("file_type") or ""),
+            file_hash=str(r.get("file_hash") or ""),
+            file_size_bytes=int(r.get("file_size_bytes") or 0),
+            sync_status=str(r.get("sync_status") or ""),
+            first_seen_run_id=str(r.get("first_seen_run_id") or ""),
+            first_seen_at=_parse_ts(r.get("first_seen_at")),
+            last_seen_run_id=str(r.get("last_seen_run_id") or ""),
+            last_seen_at=_parse_ts(r.get("last_seen_at")),
+            last_changed_run_id=str(r.get("last_changed_run_id") or ""),
+            last_changed_at=_parse_ts(r.get("last_changed_at")),
+            last_synced_run_id=str(r.get("last_synced_run_id") or ""),
+            last_synced_at=_parse_ts(r.get("last_synced_at")),
+        )
+        for r in rows
+    )
+    cats = tuple(
+        str(x["file_category"])
+        for x in cp_reader.fetch_all(
+            "SELECT DISTINCT file_category FROM cp_file_registry WHERE file_category IS NOT NULL ORDER BY file_category;"
+        )
+    )
+    statuses = tuple(
+        str(x["sync_status"])
+        for x in cp_reader.fetch_all(
+            "SELECT DISTINCT sync_status FROM cp_file_registry WHERE sync_status IS NOT NULL ORDER BY sync_status;"
+        )
+    )
+    cat_counts = {
+        str(x["file_category"]): int(x["cnt"])
+        for x in cp_reader.fetch_all(
+            "SELECT file_category, COUNT(*) AS cnt FROM cp_file_registry GROUP BY file_category ORDER BY cnt DESC;"
+        )
+    }
+    return records, total_count, cats, statuses, cat_counts
+
+
+def query_artifact_events(
+    cp_reader: ControlPlaneReader,
+    filters: ArtifactEventFilter,
+) -> tuple[tuple[ArtifactEventRecord, ...], tuple[str, ...], tuple[str, ...]]:
+    """Query `cp_artifact_run_events` verbatim."""
+    if not _cp_table_exists(cp_reader, "cp_artifact_run_events"):
+        return (), (), ()
+
+    where: list[str] = []
+    params: list[Any] = []
+    if filters.run_id:
+        where.append("run_id = ?")
+        params.append(filters.run_id)
+    if filters.file_id:
+        where.append("file_id = ?")
+        params.append(filters.file_id)
+    if filters.event_type:
+        where.append("event_type = ?")
+        params.append(filters.event_type)
+    if filters.convergence_result:
+        where.append("convergence_result = ?")
+        params.append(filters.convergence_result)
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    limit_val = max(1, min(int(filters.limit), 500))
+    rows = cp_reader.fetch_all(
+        f"""
+        SELECT
+            event_id, run_id, file_id, event_type, event_at, observed_path,
+            content_hash, previous_status, new_status, event_reason,
+            affected_table, detecting_run_id, replay_run_id, convergence_result
+        FROM cp_artifact_run_events
+        {where_sql}
+        ORDER BY event_at DESC, rowid DESC
+        LIMIT ?;
+        """,
+        [*params, limit_val],
+    )
+    events = tuple(
+        ArtifactEventRecord(
+            event_id=str(r.get("event_id") or ""),
+            run_id=str(r.get("run_id") or ""),
+            file_id=str(r.get("file_id") or ""),
+            event_type=str(r.get("event_type") or ""),
+            event_at=_parse_ts(r.get("event_at")),
+            event_at_raw=str(r.get("event_at") or ""),
+            observed_path=str(r.get("observed_path") or ""),
+            content_hash=str(r.get("content_hash") or ""),
+            previous_status=str(r["previous_status"])
+            if r.get("previous_status") is not None
+            else None,
+            new_status=str(r.get("new_status") or ""),
+            event_reason=str(r.get("event_reason") or ""),
+            affected_table=str(r.get("affected_table") or ""),
+            detecting_run_id=str(r.get("detecting_run_id") or ""),
+            replay_run_id=str(r["replay_run_id"]) if r.get("replay_run_id") is not None else None,
+            convergence_result=str(r.get("convergence_result") or ""),
+        )
+        for r in rows
+    )
+    ev_types = tuple(
+        str(x["event_type"])
+        for x in cp_reader.fetch_all(
+            "SELECT DISTINCT event_type FROM cp_artifact_run_events WHERE event_type IS NOT NULL ORDER BY event_type;"
+        )
+    )
+    conv_types = tuple(
+        str(x["convergence_result"])
+        for x in cp_reader.fetch_all(
+            "SELECT DISTINCT convergence_result FROM cp_artifact_run_events WHERE convergence_result IS NOT NULL ORDER BY convergence_result;"
+        )
+    )
+    return events, ev_types, conv_types
+
+
+def query_provider_requests(
+    cp_reader: ControlPlaneReader,
+    filters: ProviderRequestFilter,
+) -> tuple[tuple[ProviderRequestRecord, ...], tuple[str, ...], tuple[str, ...]]:
+    """Query `cp_external_provider_requests`."""
+    if not _cp_table_exists(cp_reader, "cp_external_provider_requests"):
+        return (), (), ()
+
+    where: list[str] = []
+    params: list[Any] = []
+    if filters.run_id:
+        where.append("run_id = ?")
+        params.append(filters.run_id)
+    if filters.provider:
+        where.append("provider = ?")
+        params.append(filters.provider)
+    if filters.status:
+        where.append("status = ?")
+        params.append(filters.status)
+
+    where_sql = f"WHERE {' AND '.join(where)}" if where else ""
+    limit_val = max(1, min(int(filters.limit), 500))
+    rows = cp_reader.fetch_all(
+        f"""
+        SELECT
+            request_id, run_id, provider, entity, requested_start, requested_end,
+            attempt_count, status, failure_class, final_error, created_at
+        FROM cp_external_provider_requests
+        {where_sql}
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ?;
+        """,
+        [*params, limit_val],
+    )
+    reqs = tuple(
+        ProviderRequestRecord(
+            request_id=str(r.get("request_id") or ""),
+            run_id=str(r.get("run_id") or ""),
+            provider=str(r.get("provider") or ""),
+            entity=str(r.get("entity") or ""),
+            requested_start=_parse_date(r.get("requested_start")),
+            requested_end=_parse_date(r.get("requested_end")),
+            attempt_count=int(r.get("attempt_count") or 0),
+            status=str(r.get("status") or ""),
+            failure_class=str(r["failure_class"]) if r.get("failure_class") is not None else None,
+            final_error=str(r["final_error"]) if r.get("final_error") is not None else None,
+            created_at=_parse_ts(r.get("created_at")),
+            created_at_raw=str(r.get("created_at") or ""),
+        )
+        for r in rows
+    )
+    provs = tuple(
+        str(x["provider"])
+        for x in cp_reader.fetch_all(
+            "SELECT DISTINCT provider FROM cp_external_provider_requests WHERE provider IS NOT NULL ORDER BY provider;"
+        )
+    )
+    statuses = tuple(
+        str(x["status"])
+        for x in cp_reader.fetch_all(
+            "SELECT DISTINCT status FROM cp_external_provider_requests WHERE status IS NOT NULL ORDER BY status;"
+        )
+    )
+    return reqs, provs, statuses
+
+
+def query_run_failures(
+    cp_reader: ControlPlaneReader,
+    *,
+    run_id: str | None = None,
+    limit: int = 200,
+) -> tuple[RunFailureRecord, ...]:
+    """Query `cp_run_failures`."""
+    if not _cp_table_exists(cp_reader, "cp_run_failures"):
+        return ()
+    where_sql = "WHERE run_id = ?" if run_id else ""
+    params: list[Any] = [run_id] if run_id else []
+    params.append(max(1, min(int(limit), 500)))
+    rows = cp_reader.fetch_all(
+        f"""
+        SELECT
+            id, run_id, failed_isin, stage, error_type, error_message,
+            traceback_log, failure_domain, created_at
+        FROM cp_run_failures
+        {where_sql}
+        ORDER BY created_at DESC, id DESC
+        LIMIT ?;
+        """,
+        params,
+    )
+    return tuple(
+        RunFailureRecord(
+            id=int(r.get("id") or 0),
+            run_id=str(r.get("run_id") or ""),
+            failed_isin=str(r["failed_isin"]) if r.get("failed_isin") is not None else None,
+            stage=str(r.get("stage") or ""),
+            error_type=str(r.get("error_type") or ""),
+            error_message=str(r.get("error_message") or ""),
+            traceback_log=str(r["traceback_log"]) if r.get("traceback_log") is not None else None,
+            failure_domain=str(r.get("failure_domain") or ""),
+            created_at=_parse_ts(r.get("created_at")),
+            created_at_raw=str(r.get("created_at") or ""),
+        )
+        for r in rows
+    )
+
+
+def query_snapshot_payload(
+    cp_reader: ControlPlaneReader,
+    run_id: str,
+    kind: str,
+) -> SnapshotPayloadRecord | None:
+    """Load canonical settings or rules snapshot payload for a specific `run_id`."""
+    if not _cp_table_exists(cp_reader, "cp_runs"):
+        return None
+    col = "settings_snapshot_id" if kind == "settings" else "rules_snapshot_id"
+    snap_table = "cp_settings_snapshots" if kind == "settings" else "cp_rules_snapshots"
+    if not _cp_table_exists(cp_reader, snap_table):
+        return None
+    run_row = cp_reader.fetch_one(
+        f"SELECT {col} AS snap_id FROM cp_runs WHERE run_id = ?;", (run_id,)
+    )
+    if run_row is None or not run_row.get("snap_id"):
+        return None
+    snap_id = str(run_row["snap_id"])
+    snap_row = cp_reader.fetch_one(
+        f"SELECT snapshot_id, content_hash, canonical_payload, created_at FROM {snap_table} WHERE snapshot_id = ?;",
+        (snap_id,),
+    )
+    if snap_row is None:
+        return None
+    raw = str(snap_row.get("canonical_payload") or "")
+    parsed: dict[str, Any] | None = None
+    warning: str | None = None
+    try:
+        loaded = json.loads(raw)
+        if isinstance(loaded, dict):
+            parsed = cast(dict[str, Any], loaded)
+        else:
+            warning = f"Expected JSON object, got {type(loaded).__name__}."
+    except json.JSONDecodeError as exc:
+        warning = f"Malformed JSON payload: {exc.msg} (line {exc.lineno}, col {exc.colno})."
+    return SnapshotPayloadRecord(
+        snapshot_id=snap_id,
+        kind="settings" if kind == "settings" else "rules",
+        content_hash=str(snap_row.get("content_hash") or ""),
+        canonical_payload_raw=raw,
+        parsed_payload=parsed,
+        parse_warning=warning,
+        created_at=str(snap_row.get("created_at") or ""),
+    )
+
+
+def compute_structural_json_diff(
+    payload_a: dict[str, Any],
+    payload_b: dict[str, Any],
+    *,
+    prefix: str = "",
+) -> tuple[SnapshotDiffEntry, ...]:
+    """Compute deterministic sorted structural JSON diff between two canonical dicts."""
+    entries: list[SnapshotDiffEntry] = []
+    all_keys = sorted(set(payload_a.keys()) | set(payload_b.keys()))
+    for k in all_keys:
+        path = f"{prefix}.{k}" if prefix else str(k)
+        in_a = k in payload_a
+        in_b = k in payload_b
+        if not in_a:
+            entries.append(
+                SnapshotDiffEntry(
+                    path=path, change_type="added", value_a=None, value_b=payload_b[k]
+                )
+            )
+        elif not in_b:
+            entries.append(
+                SnapshotDiffEntry(
+                    path=path, change_type="removed", value_a=payload_a[k], value_b=None
+                )
+            )
+        else:
+            va = payload_a[k]
+            vb = payload_b[k]
+            if isinstance(va, dict) and isinstance(vb, dict):
+                entries.extend(
+                    compute_structural_json_diff(
+                        cast(dict[str, Any], va), cast(dict[str, Any], vb), prefix=path
+                    )
+                )
+            elif va != vb:
+                entries.append(
+                    SnapshotDiffEntry(path=path, change_type="changed", value_a=va, value_b=vb)
+                )
+    return tuple(entries)
+
+
+def build_sources_kpis(
+    files: tuple[SourceFileRecord, ...],
+    total_count: int,
+    cat_counts: dict[str, int],
+    event_count: int,
+) -> tuple[OverviewKPI, ...]:
+    """Build 4 KPIs for Sources & Artifacts tab."""
+    total_bytes = sum(f.file_size_bytes for f in files)
+    synced_cnt = sum(1 for f in files if f.sync_status.upper() == "SYNCED")
+    removed_cnt = sum(1 for f in files if f.sync_status.upper() == "REMOVED")
+    return (
+        OverviewKPI(
+            kpi_id="ops_src_files",
+            label="Registered Source Files",
+            value=float(total_count),
+            format=MetricFormat.INTEGER,
+            subtitle=f"Showing {len(files)} across {len(cat_counts)} categories",
+            source_table="cp_file_registry",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="ops_src_size",
+            label="Vault Size (Filtered MB)",
+            value=total_bytes / (1024.0 * 1024.0),
+            format=MetricFormat.NUMBER,
+            unit_suffix=" MB",
+            subtitle=f"{total_bytes:,} bytes across filtered artifacts",
+            source_table="cp_file_registry",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="ops_src_synced",
+            label="Synced vs Removed",
+            value=float(synced_cnt),
+            format=MetricFormat.INTEGER,
+            subtitle=f"{removed_cnt} tombstoned / removed in view",
+            source_table="cp_file_registry",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="ops_src_events",
+            label="Artifact Run Events",
+            value=float(event_count),
+            format=MetricFormat.INTEGER,
+            subtitle="Lifecycle transitions loaded from cp_artifact_run_events",
+            source_table="cp_artifact_run_events",
+            drill_route="/operations",
+            available=True,
+        ),
+    )
+
+
+def build_providers_kpis(
+    reqs: tuple[ProviderRequestRecord, ...],
+    failures: tuple[RunFailureRecord, ...],
+) -> tuple[OverviewKPI, ...]:
+    """Build 4 KPIs for Providers & Failures tab."""
+    total_reqs = len(reqs)
+    cached_cnt = sum(1 for r in reqs if r.status.upper() == "CACHED")
+    cache_rate = (cached_cnt / total_reqs) if total_reqs else None
+    total_attempts = sum(r.attempt_count for r in reqs)
+    return (
+        OverviewKPI(
+            kpi_id="ops_prov_reqs",
+            label="External Provider Requests",
+            value=float(total_reqs),
+            format=MetricFormat.INTEGER,
+            subtitle="Filtered records from cp_external_provider_requests",
+            source_table="cp_external_provider_requests",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="ops_prov_cache_hit",
+            label="Cache Hit Rate %",
+            value=cache_rate,
+            format=MetricFormat.PERCENT,
+            subtitle=f"{cached_cnt} cached of {total_reqs} requests",
+            source_table="cp_external_provider_requests",
+            drill_route="/operations",
+            available=cache_rate is not None,
+        ),
+        OverviewKPI(
+            kpi_id="ops_prov_attempts",
+            label="Network Fetch Attempts",
+            value=float(total_attempts),
+            format=MetricFormat.INTEGER,
+            subtitle="Cumulative attempt_count across filtered requests",
+            source_table="cp_external_provider_requests",
+            drill_route="/operations",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="ops_run_failures",
+            label="Recorded Run Failures",
+            value=float(len(failures)),
+            format=MetricFormat.INTEGER,
+            subtitle="Diagnostic rows in cp_run_failures",
+            source_table="cp_run_failures",
+            drill_route="/operations",
+            available=True,
         ),
     )
