@@ -913,3 +913,244 @@ def build_inv_perf_risk_return_quadrant_figure(
         ],
         "layout": layout,
     }
+
+
+def build_lot_holding_type_split_figure(
+    summary: Any,
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build LTCG vs STCG Market Value bar chart."""
+    ltcg = float(getattr(summary, "ltcg_value", 0.0) or 0.0)
+    stcg = float(getattr(summary, "stcg_value", 0.0) or 0.0)
+    if ltcg == 0.0 and stcg == 0.0:
+        return None
+    labels = ["LTCG", "STCG"]
+    vals = [ltcg, stcg]
+    counts = [int(getattr(summary, "ltcg_lots", 0)), int(getattr(summary, "stcg_lots", 0))]
+    y_ticks = currency_ticks(vals, currency_id, include_zero=True)
+    layout = studio_plotly_layout(height=340, y_ticks=y_ticks, x_axis_type="category")
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": vals,
+                "marker": {"color": ["#34D399", "#38BDF8"]},
+                "hovertemplate": "%{x}<br>Market Value: %{customdata[0]} (%{customdata[1]} lots)<extra></extra>",
+                "customdata": [
+                    [format_currency(v, currency_id), str(c)]
+                    for v, c in zip(vals, counts, strict=True)
+                ],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_lot_harvest_rec_figure(
+    chart_rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build Market Value grouped by Harvest_Recommendation."""
+    if not chart_rows:
+        return None
+    buckets: dict[str, float] = {}
+    for r in chart_rows:
+        rec = str(getattr(r, "harvest_recommendation", "HOLD") or "HOLD")
+        buckets[rec] = buckets.get(rec, 0.0) + float(getattr(r, "close_value", 0.0) or 0.0)
+    labels = list(buckets.keys())
+    vals = [buckets[k] for k in labels]
+    x_ticks = currency_ticks(vals, currency_id, include_zero=True)
+    layout = studio_plotly_layout(height=340, horizontal_bars=True, x_currency_ticks=x_ticks)
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": vals,
+                "orientation": "h",
+                "marker": {"color": ["#38BDF8", "#F87171", "#FBBF24", "#34D399"][: len(labels)]},
+                "hovertemplate": "%{y}<br>Market Value: %{customdata}<extra></extra>",
+                "customdata": [format_currency(v, currency_id) for v in vals],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_lot_days_to_ltcg_figure(
+    chart_rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build STCG lots maturing toward LTCG bucketed by Days_To_LTCG."""
+    stcg = [
+        r
+        for r in chart_rows
+        if str(getattr(r, "holding_type", "")) == "STCG"
+        and getattr(r, "days_to_ltcg", None) is not None
+    ]
+    if not stcg:
+        return None
+    bins = {"0-30d": 0.0, "31-90d": 0.0, "91-180d": 0.0, "181d+": 0.0}
+    for r in stcg:
+        d = int(getattr(r, "days_to_ltcg", 0) or 0)
+        val = float(getattr(r, "close_value", 0.0) or 0.0)
+        if d <= 30:
+            bins["0-30d"] += val
+        elif d <= 90:
+            bins["31-90d"] += val
+        elif d <= 180:
+            bins["91-180d"] += val
+        else:
+            bins["181d+"] += val
+    labels = list(bins.keys())
+    vals = list(bins.values())
+    y_ticks = currency_ticks(vals, currency_id, include_zero=True)
+    layout = studio_plotly_layout(height=340, y_ticks=y_ticks, x_axis_type="category")
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": vals,
+                "marker": {"color": "#A78BFA"},
+                "hovertemplate": "%{x}<br>STCG Value: %{customdata}<extra></extra>",
+                "customdata": [format_currency(v, currency_id) for v in vals],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_lot_alpha_scatter_figure(
+    chart_rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build Lot Age_Days vs Lot_Alpha bubble chart."""
+    pts = [
+        r
+        for r in chart_rows
+        if getattr(r, "age_days", None) is not None and getattr(r, "xirr", None) is not None
+    ]
+    if not pts:
+        return None
+    x_vals = [float(getattr(r, "age_days", 0) or 0) for r in pts]
+    y_vals = [_pct(getattr(r, "xirr", 0.0)) for r in pts]
+    vals = [max(float(getattr(r, "close_value", 0.0) or 0.0), 1.0) for r in pts]
+    max_v = max(vals)
+    sizes = [max(8.0, min(30.0, (v / max_v) * 30.0)) for v in vals]
+    colors = [
+        "#34D399" if str(getattr(r, "holding_type", "")) == "LTCG" else "#38BDF8" for r in pts
+    ]
+    names = [str(getattr(r, "instrument_name", "") or getattr(r, "lot_id", ""))[:26] for r in pts]
+    layout = studio_plotly_layout(
+        height=340,
+        y_ticks=numeric_ticks(y_vals, suffix="%"),
+        x_currency_ticks=numeric_ticks(x_vals, suffix="d"),
+        x_axis_type="linear",
+    )
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "scatter",
+                "mode": "markers",
+                "x": x_vals,
+                "y": y_vals,
+                "marker": {"size": sizes, "color": colors, "opacity": 0.8},
+                "hovertemplate": "%{customdata[0]}<br>Age: %{x:.0f}d | XIRR: %{y:.2f}%<br>Value: %{customdata[1]}<extra></extra>",
+                "customdata": [
+                    [n, format_currency(v, currency_id)] for n, v in zip(names, vals, strict=True)
+                ],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_lot_pre_vs_after_tax_figure(
+    chart_rows: Sequence[Any],
+    currency_id: str,
+    *,
+    limit: int = 10,
+) -> dict[str, Any] | None:
+    """Build grouped bars comparing Pre-Tax P/L vs After-Tax P/L on top lots."""
+    pts = [r for r in chart_rows if getattr(r, "after_tax_pl", None) is not None][:limit]
+    if not pts:
+        return None
+    pts = list(reversed(pts))
+    labels = [str(getattr(r, "instrument_name", "") or getattr(r, "lot_id", ""))[:26] for r in pts]
+    pre = [float(getattr(r, "unrealized_pl", 0.0) or 0.0) for r in pts]
+    post = [float(getattr(r, "after_tax_pl", 0.0) or 0.0) for r in pts]
+    x_ticks = currency_ticks([*pre, *post], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340, barmode="group", horizontal_bars=True, x_currency_ticks=x_ticks
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": pre,
+                "name": "Pre-Tax P/L",
+                "orientation": "h",
+                "marker": {"color": "#38BDF8"},
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": post,
+                "name": "After-Tax P/L",
+                "orientation": "h",
+                "marker": {"color": "#34D399"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_lot_gain_loss_by_class_figure(
+    chart_rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build Gain vs Loss P/L grouped by Instrument Class."""
+    if not chart_rows:
+        return None
+    gains: dict[str, float] = {}
+    losses: dict[str, float] = {}
+    for r in chart_rows:
+        cls = str(getattr(r, "instrument_class", "Unclassified") or "Unclassified")
+        pl = float(getattr(r, "unrealized_pl", 0.0) or 0.0)
+        if pl >= 0:
+            gains[cls] = gains.get(cls, 0.0) + pl
+        else:
+            losses[cls] = losses.get(cls, 0.0) + pl
+    classes = sorted(set(gains.keys()) | set(losses.keys()))
+    g_vals = [gains.get(c, 0.0) for c in classes]
+    l_vals = [losses.get(c, 0.0) for c in classes]
+    y_ticks = currency_ticks([*g_vals, *l_vals], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340, barmode="relative", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": classes,
+                "y": g_vals,
+                "name": "Unrealized Gain",
+                "marker": {"color": "#34D399"},
+            },
+            {
+                "type": "bar",
+                "x": classes,
+                "y": l_vals,
+                "name": "Unrealized Loss",
+                "marker": {"color": "#F87171"},
+            },
+        ],
+        "layout": layout,
+    }

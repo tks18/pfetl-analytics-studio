@@ -13,6 +13,7 @@ from pfetl_analytics_studio.analytics import (
     InvestmentAnalytics,
     InvestmentHoldingRow,
     InvestmentPortfolioSnapshot,
+    LotFilter,
     OverviewKPI,
 )
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
@@ -41,6 +42,12 @@ from pfetl_analytics_studio.ui import (
     build_inv_pnl_decomposition_figure,
     build_inv_risk_return_scatter_figure,
     build_inv_tax_harvest_figure,
+    build_lot_alpha_scatter_figure,
+    build_lot_days_to_ltcg_figure,
+    build_lot_gain_loss_by_class_figure,
+    build_lot_harvest_rec_figure,
+    build_lot_holding_type_split_figure,
+    build_lot_pre_vs_after_tax_figure,
     chart_panel,
     empty_state_panel,
     error_state_panel,
@@ -186,11 +193,7 @@ def render_investments_page(
             with ui.tab_panel("performance").classes("p-0 pt-3"):
                 _render_performance_tab(context, cache=cache)
             with ui.tab_panel("lots").classes("p-0 pt-3"):
-                empty_state_panel(
-                    "Lot Explorer",
-                    "FIFO/LIFO lot-level cost basis, holding period, and tax-lot drilldown arrive in Phase 15.",
-                    icon="inventory_2",
-                )
+                _render_lots_tab(context, cache=cache)
             with ui.tab_panel("realized").classes("p-0 pt-3"):
                 empty_state_panel(
                     "Realized & Reconciliation",
@@ -852,3 +855,335 @@ def _render_isin_alpha_leaderboard(rows: tuple[Any, ...], currency_id: str) -> N
 
         search.on_value_change(lambda e: _render_filtered(str(e.value or "")))
         _render_filtered("")
+
+
+def _render_lots_tab(
+    context: AppContext,
+    *,
+    cache: QueryCache | None = None,
+) -> None:
+    """Render the Phase 15 Investment Lot Explorer sub-tab."""
+    profile = context.profile
+    if profile is None:
+        return
+
+    state: dict[str, Any] = {
+        "search": "",
+        "holding_type": "ALL",
+        "harvest_rec": "ALL",
+        "gain_state": "all",
+        "max_days": "ALL",
+        "offset": 0,
+        "limit": 25,
+    }
+
+    with ui.element("div").classes("studio-filter-bar w-full mb-3"):
+        with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+            search_in = (
+                ui.input(placeholder="Search Lot ID, ISIN, or Instrument...")
+                .props("dense outlined dark clearable")
+                .classes("w-64")
+            )
+            holding_sel = (
+                ui.select(
+                    options={"ALL": "All Holding Types", "LTCG": "LTCG", "STCG": "STCG"},
+                    value="ALL",
+                    label="Holding Type",
+                )
+                .props("dense outlined dark")
+                .classes("w-44")
+            )
+            harvest_sel = (
+                ui.select(
+                    options={
+                        "ALL": "All Harvest Flags",
+                        "HARVEST_LOSS": "Harvest Loss",
+                        "WAIT_FOR_LTCG": "Wait for LTCG",
+                        "HARVEST_LTCG_EXEMPT": "Harvest LTCG Exempt",
+                        "HOLD": "Hold",
+                    },
+                    value="ALL",
+                    label="Harvest Recommendation",
+                )
+                .props("dense outlined dark")
+                .classes("w-48")
+            )
+            gain_sel = (
+                ui.select(
+                    options={"all": "All P/L", "gain": "Gains Only", "loss": "Losses Only"},
+                    value="all",
+                    label="Gain / Loss",
+                )
+                .props("dense outlined dark")
+                .classes("w-36")
+            )
+            days_sel = (
+                ui.select(
+                    options={
+                        "ALL": "Any Days to LTCG",
+                        "30": "≤ 30 Days",
+                        "90": "≤ 90 Days",
+                        "180": "≤ 180 Days",
+                    },
+                    value="ALL",
+                    label="Maturing to LTCG",
+                )
+                .props("dense outlined dark")
+                .classes("w-44")
+            )
+
+    drawer_box = ui.column().classes("w-full")
+    lots_container = ui.column().classes("w-full gap-4")
+
+    def _open_lot_detail(lot_id: str, closing_dt: Any) -> None:
+        detail = InvestmentAnalytics.lot_detail(
+            profile,
+            lot_id,
+            closing_dt,
+            catalog_snapshot=context.catalog_snapshot,
+        )
+        drawer_box.clear()
+        with drawer_box:
+            with (
+                ui.dialog() as dlg,
+                ui.card()
+                .classes("w-full max-w-4xl p-5")
+                .style(
+                    "background: #0F172A; border: 1px solid rgba(148, 163, 184, 0.25); color: #F8FAFC; max-height: 85vh; overflow-y: auto;"
+                ),
+            ):
+                if detail is None:
+                    ui.label(f"Lot {lot_id} not found").classes("text-subtitle1 font-semibold")
+                    ui.button("Close", on_click=dlg.close).props("flat")
+                else:
+                    with ui.row().classes("w-full items-center justify-between mb-3"):
+                        with ui.column().classes("gap-0"):
+                            ui.label(detail.instrument_name or detail.isin).classes(
+                                "text-h6 font-semibold"
+                            ).style("color: var(--studio-text-primary);")
+                            ui.label(
+                                f"Lot: {detail.lot_id} · ISIN: {detail.isin} · Close: {detail.closing_date.isoformat()}"
+                            ).classes("text-caption").style("color: var(--studio-text-muted);")
+                        with ui.row().classes("items-center gap-2"):
+                            raw_toggle = ui.switch("Raw Source Fields", value=False).props("dense")
+                            ui.button(icon="close", on_click=dlg.close).props("flat round dense")
+
+                    sections_box = ui.column().classes("w-full gap-3")
+
+                    def _render_sections(show_raw: bool = False) -> None:
+                        sections_box.clear()
+                        with sections_box:
+                            if show_raw:
+                                raw_cols = [
+                                    TableColumn(
+                                        name="col", label="Source Column", field="col", align="left"
+                                    ),
+                                    TableColumn(
+                                        name="val", label="Raw Value", field="val", align="left"
+                                    ),
+                                ]
+                                raw_rows = [
+                                    {"col": k, "val": str(v) if v is not None else "—"}
+                                    for k, v in detail.raw_columns.items()
+                                ]
+                                bounded_data_table(
+                                    title=f"All Source Columns ({len(raw_rows)})",
+                                    columns=raw_cols,
+                                    rows=raw_rows,
+                                    pagination=20,
+                                )
+                            else:
+                                for sec in detail.sections:
+                                    with (
+                                        ui.card()
+                                        .classes("w-full p-3")
+                                        .style(
+                                            "background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(148, 163, 184, 0.16);"
+                                        )
+                                    ):
+                                        ui.label(sec.title.upper()).classes(
+                                            "text-caption font-semibold tracking-wider mb-2"
+                                        ).style("color: var(--studio-accent);")
+                                        with ui.grid(columns=3).classes("w-full gap-2"):
+                                            for lbl, _raw_name, val in sec.fields:
+                                                disp = (
+                                                    f"{val:,.4f}"
+                                                    if isinstance(val, float)
+                                                    else (str(val) if val is not None else "—")
+                                                )
+                                                _detail_stat(lbl, disp)
+
+                    raw_toggle.on_value_change(lambda e: _render_sections(bool(e.value)))
+                    _render_sections(False)
+            dlg.open()
+
+    def _build_filter() -> LotFilter:
+        max_d = int(state["max_days"]) if state["max_days"] != "ALL" else None
+        return LotFilter(
+            holding_type=None if state["holding_type"] == "ALL" else str(state["holding_type"]),
+            harvest_recommendation=None
+            if state["harvest_rec"] == "ALL"
+            else str(state["harvest_rec"]),
+            can_harvest_loss=True if state["harvest_rec"] == "HARVEST_LOSS" else None,
+            days_to_ltcg_max=max_d,
+            gain_state=state["gain_state"],
+            search=str(state["search"]).strip() or None,
+        )
+
+    def _render_lots_body() -> None:
+        lots_container.clear()
+        lf = _build_filter()
+        try:
+            snap = InvestmentAnalytics.lot_rows(
+                profile,
+                lf,
+                context.period_context,
+                limit=int(state["limit"]),
+                offset=int(state["offset"]),
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                cache=cache,
+            )
+        except Exception as exc:
+            with lots_container:
+                error_state_panel("Unable to load investment lots", str(exc))
+            return
+
+        if snap.state != "ready" or not snap.rows:
+            msg = "No lots matched the active filter criteria."
+            if snap.nearest_dates:
+                msg += f" Nearest available dates: {', '.join(d.isoformat() for d in snap.nearest_dates)}."
+            with lots_container:
+                empty_state_panel("No lots found", msg, icon="inventory_2")
+            return
+
+        currency_id = snap.currency_id or "INR_INR"
+        with lots_container:
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2 mb-1"):
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    if snap.closing_date is not None:
+                        status_badge(
+                            f"As of: {snap.closing_date.isoformat()}",
+                            tone=BadgeTone.INFO,
+                        )
+                    status_badge(f"Matching Lots: {snap.total_count}", tone=BadgeTone.NEUTRAL)
+
+            _render_kpi_grid(snap.kpis, currency_id)
+
+            with ui.element("div").classes("studio-chart-grid w-full"):
+                _render_chart_card(
+                    "LTCG vs STCG Market Value",
+                    build_lot_holding_type_split_figure(snap.summary, currency_id),
+                )
+                _render_chart_card(
+                    "Lots by Harvest Recommendation",
+                    build_lot_harvest_rec_figure(snap.chart_rows, currency_id),
+                )
+                _render_chart_card(
+                    "STCG Lots Maturing to LTCG",
+                    build_lot_days_to_ltcg_figure(snap.chart_rows, currency_id),
+                )
+                _render_chart_card(
+                    "Lot Age vs XIRR %",
+                    build_lot_alpha_scatter_figure(snap.chart_rows, currency_id),
+                )
+                _render_chart_card(
+                    "Pre-Tax vs After-Tax P/L (Top 10 Lots)",
+                    build_lot_pre_vs_after_tax_figure(snap.chart_rows, currency_id),
+                )
+                _render_chart_card(
+                    "Lot Gain vs Loss by Asset Class",
+                    build_lot_gain_loss_by_class_figure(snap.chart_rows, currency_id),
+                )
+
+            cols = [
+                TableColumn(name="lot_id", label="Lot ID", field="lot_id", align="left"),
+                TableColumn(name="inst", label="Instrument", field="inst", align="left"),
+                TableColumn(name="buy_dt", label="Buy Date", field="buy_dt", align="left"),
+                TableColumn(name="qty", label="Qty", field="qty", align="right"),
+                TableColumn(name="buy_val", label="Cost", field="buy_val", align="right"),
+                TableColumn(name="close_val", label="Value", field="close_val", align="right"),
+                TableColumn(name="pl", label="P/L", field="pl", align="right"),
+                TableColumn(name="xirr", label="XIRR", field="xirr", align="right"),
+                TableColumn(name="hold", label="Type", field="hold", align="left"),
+                TableColumn(name="d_ltcg", label="Days LTCG", field="d_ltcg", align="right"),
+                TableColumn(name="tax", label="Tax If Sold", field="tax", align="right"),
+                TableColumn(name="rec", label="Harvest", field="rec", align="left"),
+            ]
+            t_rows = [
+                {
+                    "lot_id": r.lot_id,
+                    "inst": r.instrument_name[:30],
+                    "buy_dt": r.buy_date.isoformat() if r.buy_date else "—",
+                    "qty": f"{r.quantity:,.2f}",
+                    "buy_val": format_currency(r.buy_value, currency_id),
+                    "close_val": format_currency(r.close_value, currency_id),
+                    "pl": format_currency(r.unrealized_pl, currency_id),
+                    "xirr": format_percent(r.xirr) if r.xirr is not None else "—",
+                    "hold": r.holding_type,
+                    "d_ltcg": str(r.days_to_ltcg) if r.days_to_ltcg is not None else "—",
+                    "tax": format_currency(r.tax_if_sold, currency_id),
+                    "rec": r.harvest_recommendation,
+                }
+                for r in snap.chart_rows
+            ]
+            bounded_data_table(
+                title=f"Lot Explorer ({snap.total_count} lots)",
+                columns=cols,
+                rows=t_rows,
+                pagination=int(state["limit"]),
+            )
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
+                with ui.row().classes("items-center gap-2"):
+                    lot_opts = {
+                        r.lot_id: f"{r.instrument_name[:28]} ({r.lot_id})" for r in snap.rows
+                    }
+                    lot_picker = (
+                        ui.select(
+                            options=lot_opts,
+                            value=snap.rows[0].lot_id,
+                            label="Inspect Lot (88 Columns)",
+                        )
+                        .props("dense outlined dark")
+                        .classes("w-80")
+                    )
+                    ui.button(
+                        "Inspect Lot Detail",
+                        icon="open_in_new",
+                        on_click=lambda: _open_lot_detail(str(lot_picker.value), snap.closing_date),
+                    ).props("outline dense")
+                with ui.row().classes("items-center gap-2"):
+
+                    def _prev_page() -> None:
+                        state["offset"] = max(0, int(state["offset"]) - int(state["limit"]))
+                        _render_lots_body()
+
+                    def _next_page() -> None:
+                        state["offset"] = int(state["offset"]) + int(state["limit"])
+                        _render_lots_body()
+
+                    ui.button(
+                        "Prev Page",
+                        icon="chevron_left",
+                        on_click=_prev_page,
+                    ).props("outline dense").set_enabled(int(state["offset"]) > 0)
+                    ui.button(
+                        "Next Page",
+                        icon="chevron_right",
+                        on_click=_next_page,
+                    ).props("outline dense").set_enabled(
+                        int(state["offset"]) + int(state["limit"]) < snap.total_count
+                    )
+
+    def _reset_and_render(key: str, val: Any) -> None:
+        state[key] = val
+        state["offset"] = 0
+        _render_lots_body()
+
+    search_in.on_value_change(lambda e: _reset_and_render("search", e.value or ""))
+    holding_sel.on_value_change(lambda e: _reset_and_render("holding_type", e.value))
+    harvest_sel.on_value_change(lambda e: _reset_and_render("harvest_rec", e.value))
+    gain_sel.on_value_change(lambda e: _reset_and_render("gain_state", e.value))
+    days_sel.on_value_change(lambda e: _reset_and_render("max_days", e.value))
+    _render_lots_body()
