@@ -269,3 +269,101 @@ def test_performance_history_fx_and_concentration(tmp_path: Path) -> None:
     assert len(snap.kpis) == 12
     assert len(snap.fx_country_rows) == 2
     assert len(snap.fx_currency_rows) == 2
+
+
+def test_lot_explorer_filtering_pagination_and_detail(tmp_path: Path) -> None:
+    from pfetl_analytics_studio.analytics import LotFilter
+
+    db_path = tmp_path / "inv_lots.duckdb"
+    _create_investment_db(db_path)
+    con = duckdb.connect(str(db_path))
+    try:
+        con.execute(
+            """
+            CREATE TABLE silver.fact_investment_lot_analytics (
+                "Lot_ID" VARCHAR,
+                "Closing_Date" DATE,
+                "ISIN" VARCHAR,
+                "CURRENCY_ID" VARCHAR,
+                "Buy_Date" DATE,
+                "BENCHMARK_ID" VARCHAR,
+                "Quantity" DOUBLE,
+                "Buy_Value" DOUBLE,
+                "Close_Value" DOUBLE,
+                "P/L" DOUBLE,
+                "Absolute_Return" DOUBLE,
+                "XIRR" DOUBLE,
+                "BM_XIRR" DOUBLE,
+                "Lot_Alpha" DOUBLE,
+                "Holding_Type" VARCHAR,
+                "Age_Days" BIGINT,
+                "Days_To_LTCG" BIGINT,
+                "LTCG_Tax_If_Sold" DOUBLE,
+                "STCG_Tax_If_Sold" DOUBLE,
+                "After_Tax_PL" DOUBLE,
+                "Can_Harvest_Loss" BOOLEAN,
+                "Harvest_Recommendation" VARCHAR,
+                "Is_Lagging_Benchmark" BIGINT
+            );
+            INSERT INTO silver.fact_investment_lot_analytics VALUES
+                ('L1', DATE '2026-10-31', 'INE001', 'INR_INR', DATE '2024-01-01', 'BM1', 10.0, 60000.0, 75000.0, 15000.0, 0.25, 0.18, 0.12, 0.06, 'LTCG', 1034, 0, 1500.0, 0.0, 13500.0, FALSE, 'HOLD', 0),
+                ('L2', DATE '2026-10-31', 'INE002', 'INR_INR', DATE '2026-09-01', 'BM1', 20.0, 40000.0, 35000.0, -5000.0, -0.125, -0.25, 0.12, -0.37, 'STCG', 60, 305, 0.0, 0.0, -5000.0, TRUE, 'HARVEST_LOSS', 1),
+                ('L3', DATE '2026-10-31', 'INE002', 'INR_INR', DATE '2025-12-01', 'BM1', 5.0, 10000.0, 12000.0, 2000.0, 0.20, 0.22, 0.12, 0.10, 'STCG', 334, 31, 0.0, 400.0, 1600.0, FALSE, 'WAIT_FOR_LTCG', 0);
+            """
+        )
+    finally:
+        con.close()
+
+    profile = _make_profile(db_path)
+    period = _make_period()
+    prov = _make_provenance()
+
+    page1 = InvestmentAnalytics.lot_rows(
+        profile,
+        LotFilter(),
+        period,
+        limit=2,
+        offset=0,
+        run_id=prov.run_id,
+        provenance=prov,
+        cache=QueryCache(),
+    )
+    assert page1.state == "ready"
+    assert page1.total_count == 3
+    assert len(page1.rows) == 2
+    assert len(page1.kpis) == 9
+
+    harvest = InvestmentAnalytics.lot_rows(
+        profile,
+        LotFilter(can_harvest_loss=True),
+        period,
+        run_id=prov.run_id,
+        provenance=prov,
+    )
+    assert harvest.total_count == 1
+    assert harvest.rows[0].lot_id == "L2"
+
+    maturing = InvestmentAnalytics.lot_rows(
+        profile,
+        LotFilter(holding_type="STCG", days_to_ltcg_max=45),
+        period,
+        run_id=prov.run_id,
+        provenance=prov,
+    )
+    assert maturing.total_count == 1
+    assert maturing.rows[0].lot_id == "L3"
+
+    detail = InvestmentAnalytics.lot_detail(profile, "L1", date(2026, 10, 31))
+    assert detail is not None
+    assert len(detail.sections) == 9
+    assert detail.raw_columns["Lot_ID"] == "L1"
+
+    missing = InvestmentAnalytics.lot_rows(
+        profile,
+        LotFilter(closing_date=date(2026, 10, 15)),
+        period,
+        run_id=prov.run_id,
+        provenance=prov,
+    )
+    assert missing.state == "empty"
+    assert date(2026, 10, 31) in missing.nearest_dates
