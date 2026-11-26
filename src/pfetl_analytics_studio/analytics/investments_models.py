@@ -314,3 +314,188 @@ class LotDetailSnapshot(BaseModel):
     isin: str
     sections: tuple[LotDetailSection, ...] = ()
     raw_columns: dict[str, Any] = {}
+
+
+class RealizedEventFilter(BaseModel):
+    """Filter specification for `silver.fact_investment_realized_events`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    fy: str | None = None
+    holding_type: str | None = None
+    isin: str | None = None
+    gain_state: Literal["all", "gain", "loss"] = "all"
+    search: str | None = None
+
+
+class RealizedEventRow(BaseModel):
+    """Canonical FIFO realized event from `silver.fact_investment_realized_events`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    realized_event_id: str
+    sale_id: str
+    lot_id: str
+    purchase_id: str
+    isin: str
+    instrument_name: str
+    currency_id: str = "INR_INR"
+    acquisition_date: date | None = None
+    disposal_date: date | None = None
+    fy: str = ""
+    quantity_disposed: float = 0.0
+    acquisition_price: float = 0.0
+    disposed_cost_basis: float = 0.0
+    sale_price: float = 0.0
+    sale_proceeds: float = 0.0
+    realized_gain_loss: float = 0.0
+    holding_type: str = "STCG"
+    tax_type: str = ""
+    tax_subtype: str = ""
+    asset_pnl: float | None = None
+    forex_pnl: float | None = None
+    applied_rate: float | None = None
+    estimated_tax: float = 0.0
+
+
+class ReconciliationEventRow(BaseModel):
+    """Single reconciliation event from `silver.fact_investment_reconciliation_events`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    reconciliation_group_id: str
+    reconciliation_event_id: str
+    run_id: str = ""
+    isin: str
+    instrument_name: str
+    reconciliation_date: date | None = None
+    lot_id: str = ""
+    purchase_id: str = ""
+    adjustment_type: str = ""
+    reason: str = ""
+    broker_quantity: float = 0.0
+    reconstructed_quantity: float = 0.0
+    quantity_adjustment: float = 0.0
+    broker_cost_basis: float = 0.0
+    reconstructed_cost_basis: float = 0.0
+    cost_basis_adjustment: float = 0.0
+    original_unit_cost: float | None = None
+    adjusted_unit_cost: float | None = None
+
+
+class ReconciliationGroupRow(BaseModel):
+    """Grouped reconciliation summary keyed by `Reconciliation_Group_ID`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    reconciliation_group_id: str
+    isin: str
+    instrument_name: str
+    adjustment_type: str
+    reason: str
+    event_count: int = 0
+    broker_quantity: float = 0.0
+    reconstructed_quantity: float = 0.0
+    quantity_adjustment: float = 0.0
+    broker_cost_basis: float = 0.0
+    reconstructed_cost_basis: float = 0.0
+    cost_basis_adjustment: float = 0.0
+
+
+class RealizedReconciliationSnapshot(BaseModel):
+    """Combined Phase 16 Realized & Reconciliation workspace snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    kpis: tuple[OverviewKPI, ...] = ()
+    realized_rows: tuple[RealizedEventRow, ...] = ()
+    reconciliation_rows: tuple[ReconciliationEventRow, ...] = ()
+    reconciliation_groups: tuple[ReconciliationGroupRow, ...] = ()
+    available_fys: tuple[str, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+class TradeLineageTrace(BaseModel):
+    """Exact ID-linked trace: Realized Event -> Sale -> Lot -> Purchase."""
+
+    model_config = ConfigDict(frozen=True)
+
+    realized_event: RealizedEventRow
+    sale_record: dict[str, Any] | None = None
+    lot_record: dict[str, Any] | None = None
+    purchase_record: dict[str, Any] | None = None
+    missing_links: tuple[str, ...] = ()
+
+
+class MarketObservationPoint(BaseModel):
+    """Single instrument market data observation with provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    obs_date: date
+    isin: str
+    quantity: float = 0.0
+    closing_price: float = 0.0
+    buy_price: float = 0.0
+    closing_value: float = 0.0
+    buy_value: float = 0.0
+    fx_rate: float | None = None
+    data_provider: str = ""
+    extraction_time: str = ""
+    is_closure_gap: bool = False
+    is_imputed: bool = False
+
+
+class BenchmarkObservationPoint(BaseModel):
+    """Single benchmark close observation with provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    obs_date: date
+    benchmark_id: str
+    benchmark_name: str
+    yf_ticker: str = ""
+    close: float = 0.0
+    data_provider: str = ""
+    extraction_time: str = ""
+    is_closure_gap: bool = False
+    is_imputed: bool = False
+
+
+class FxObservationPoint(BaseModel):
+    """Single FX rate observation with provenance."""
+
+    model_config = ConfigDict(frozen=True)
+
+    obs_date: date
+    currency_id: str
+    currency_code: str = ""
+    target_currency_code: str = ""
+    yf_ticker: str = ""
+    fx_rate: float = 1.0
+    data_provider: str = ""
+    extraction_time: str = ""
+    is_closure_gap: bool = False
+    is_imputed: bool = False
+
+
+class MarketEvidenceSnapshot(BaseModel):
+    """Phase 16 Market, Benchmark & FX Evidence snapshot."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    selected_isin: str = ""
+    selected_benchmark_id: str = ""
+    selected_currency_id: str = ""
+    available_isins: tuple[tuple[str, str], ...] = ()
+    available_benchmarks: tuple[tuple[str, str], ...] = ()
+    available_currencies: tuple[str, ...] = ()
+    kpis: tuple[OverviewKPI, ...] = ()
+    market_points: tuple[MarketObservationPoint, ...] = ()
+    benchmark_points: tuple[BenchmarkObservationPoint, ...] = ()
+    fx_points: tuple[FxObservationPoint, ...] = ()
+    diagnostics: tuple[str, ...] = ()

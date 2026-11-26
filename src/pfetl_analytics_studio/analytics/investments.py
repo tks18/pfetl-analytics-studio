@@ -15,6 +15,13 @@ from __future__ import annotations
 
 from datetime import date
 
+from pfetl_analytics_studio.analytics.investments_evidence_queries import (
+    build_realized_recon_kpis,
+    query_market_evidence,
+    query_realized_events,
+    query_reconciliation_events,
+    query_trace_lineage,
+)
 from pfetl_analytics_studio.analytics.investments_models import (
     AllocationDimension,
     AllocationSnapshot,
@@ -24,6 +31,10 @@ from pfetl_analytics_studio.analytics.investments_models import (
     LotDetailSnapshot,
     LotFilter,
     LotPageSnapshot,
+    MarketEvidenceSnapshot,
+    RealizedEventFilter,
+    RealizedReconciliationSnapshot,
+    TradeLineageTrace,
 )
 from pfetl_analytics_studio.analytics.investments_queries import (
     build_investment_kpis,
@@ -548,3 +559,178 @@ class InvestmentAnalytics:
                 return query_lot_detail(session_reader, lot_id, closing_date)
             finally:
                 reset_catalog_snapshot(tok)
+
+    @classmethod
+    def realized_and_reconciliation(
+        cls,
+        profile: PFETLProfile,
+        realized_filter: RealizedEventFilter | None = None,
+        *,
+        recon_search: str | None = None,
+        run_id: str | None = None,
+        provenance: RunProvenance | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        cache: QueryCache | None = None,
+    ) -> RealizedReconciliationSnapshot:
+        """Return FIFO realized events and broker reconciliation evidence."""
+        currency_id = OverviewService.resolve_currency_id(profile, provenance)
+        _, has_success = OverviewService.load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=None,
+        )
+        if not has_success:
+            return RealizedReconciliationSnapshot(
+                state="no_run",
+                currency_id=currency_id,
+                diagnostics=("No completed PFETL run found in Control Plane.",),
+            )
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() == WarehouseState.LOCKED:
+            return RealizedReconciliationSnapshot(
+                state="locked",
+                currency_id=currency_id,
+                diagnostics=("PFETL pipeline.lock is active on DuckDB.",),
+            )
+        rf = realized_filter or RealizedEventFilter()
+        active_run_id = run_id or (provenance.run_id if provenance else "unknown")
+
+        def _execute() -> RealizedReconciliationSnapshot:
+            with duck_reader.session() as session_reader:
+                tok = use_catalog_snapshot(catalog_snapshot)
+                try:
+                    realized_rows, avail_fys = query_realized_events(session_reader, rf)
+                    recon_groups, recon_events = query_reconciliation_events(
+                        session_reader, recon_search
+                    )
+                finally:
+                    reset_catalog_snapshot(tok)
+            kpis = build_realized_recon_kpis(realized_rows, recon_groups, recon_events)
+            return RealizedReconciliationSnapshot(
+                state="ready" if (realized_rows or recon_events) else "empty",
+                currency_id=currency_id,
+                kpis=kpis,
+                realized_rows=realized_rows,
+                reconciliation_rows=recon_events,
+                reconciliation_groups=recon_groups,
+                available_fys=avail_fys,
+            )
+
+        if cache is None:
+            return _execute()
+        key = build_cache_key(
+            "inv_realized_recon",
+            profile.profile_id,
+            active_run_id,
+            None,
+            None,
+            {"filter": rf.model_dump(mode="json"), "recon_search": recon_search or ""},
+        )
+        cached = cache.get(key)
+        if isinstance(cached, RealizedReconciliationSnapshot):
+            return cached
+        snap = _execute()
+        cache.set(key, snap)
+        return snap
+
+    @classmethod
+    def trace_lineage(
+        cls,
+        profile: PFETLProfile,
+        realized_event_id: str,
+        *,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ) -> TradeLineageTrace | None:
+        """Trace exact IDs: Realized Event -> Sale -> Lot -> Purchase."""
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() != WarehouseState.AVAILABLE:
+            return None
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                return query_trace_lineage(session_reader, realized_event_id)
+            finally:
+                reset_catalog_snapshot(tok)
+
+    @classmethod
+    def market_evidence(
+        cls,
+        profile: PFETLProfile,
+        period_context: PeriodContext | None,
+        *,
+        isin: str | None = None,
+        benchmark_id: str | None = None,
+        currency_id: str | None = None,
+        run_id: str | None = None,
+        provenance: RunProvenance | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        cache: QueryCache | None = None,
+    ) -> MarketEvidenceSnapshot:
+        """Return Market, Benchmark & FX observations with provenance markers."""
+        base_cur = OverviewService.resolve_currency_id(profile, provenance)
+        _, has_success = OverviewService.load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=None,
+        )
+        if not has_success:
+            return MarketEvidenceSnapshot(
+                state="no_run",
+                currency_id=base_cur,
+                diagnostics=("No completed PFETL run found in Control Plane.",),
+            )
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() == WarehouseState.LOCKED:
+            return MarketEvidenceSnapshot(
+                state="locked",
+                currency_id=base_cur,
+                diagnostics=("PFETL pipeline.lock is active on DuckDB.",),
+            )
+        if period_context is None or period_context.is_empty:
+            return MarketEvidenceSnapshot(
+                state="empty",
+                currency_id=base_cur,
+                diagnostics=("No active period selected.",),
+            )
+        assert period_context.start_date is not None and period_context.end_date is not None
+        active_run_id = run_id or (provenance.run_id if provenance else "unknown")
+
+        def _execute() -> MarketEvidenceSnapshot:
+            assert period_context.start_date is not None and period_context.end_date is not None
+            with duck_reader.session() as session_reader:
+                tok = use_catalog_snapshot(catalog_snapshot)
+                try:
+                    snap = query_market_evidence(
+                        session_reader,
+                        isin=isin,
+                        benchmark_id=benchmark_id,
+                        currency_id=currency_id,
+                        start_date=period_context.start_date,
+                        end_date=period_context.end_date,
+                    )
+                finally:
+                    reset_catalog_snapshot(tok)
+            return snap.model_copy(update={"currency_id": base_cur})
+
+        if cache is None:
+            return _execute()
+        key = build_cache_key(
+            "inv_market_evidence",
+            profile.profile_id,
+            active_run_id,
+            period_context,
+            None,
+            {
+                "isin": isin or "",
+                "benchmark_id": benchmark_id or "",
+                "currency_id": currency_id or "",
+            },
+        )
+        cached = cache.get(key)
+        if isinstance(cached, MarketEvidenceSnapshot):
+            return cached
+        snap = _execute()
+        cache.set(key, snap)
+        return snap
