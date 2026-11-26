@@ -13,12 +13,17 @@ Does not own
 
 from __future__ import annotations
 
+from datetime import date
+
 from pfetl_analytics_studio.analytics.investments_models import (
     AllocationDimension,
     AllocationSnapshot,
     InstrumentDetailSnapshot,
     InvestmentPerformanceSnapshot,
     InvestmentPortfolioSnapshot,
+    LotDetailSnapshot,
+    LotFilter,
+    LotPageSnapshot,
 )
 from pfetl_analytics_studio.analytics.investments_queries import (
     build_investment_kpis,
@@ -26,9 +31,13 @@ from pfetl_analytics_studio.analytics.investments_queries import (
     query_allocation,
     query_fx_exposure,
     query_instrument_detail,
+    query_lot_detail,
+    query_lot_rows,
+    query_lot_summary_and_kpis,
     query_portfolio_header,
     query_portfolio_holdings,
     query_portfolio_performance_history,
+    resolve_lot_closing_date,
 )
 from pfetl_analytics_studio.analytics.overview import OverviewService
 from pfetl_analytics_studio.analytics.overview_models import as_date, as_float
@@ -407,3 +416,135 @@ class InvestmentAnalytics:
         if cache is not None:
             cache.set(key, snap)
         return snap
+
+    @classmethod
+    def lot_rows(
+        cls,
+        profile: PFETLProfile,
+        lot_filter: LotFilter,
+        period_context: PeriodContext | None = None,
+        *,
+        limit: int = 25,
+        offset: int = 0,
+        run_id: str | None = None,
+        provenance: RunProvenance | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        cache: QueryCache | None = None,
+    ) -> LotPageSnapshot:
+        """Return paginated `silver.fact_investment_lot_analytics` rows and KPIs."""
+        currency_id = OverviewService.resolve_currency_id(profile, provenance)
+        _, has_success = OverviewService.load_run_health(
+            profile,
+            run_id=run_id,
+            provenance=provenance,
+            compatibility=None,
+        )
+        if not has_success:
+            return LotPageSnapshot(
+                state="no_run",
+                currency_id=currency_id,
+                diagnostics=("No completed PFETL run found in Control Plane.",),
+            )
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() == WarehouseState.LOCKED:
+            return LotPageSnapshot(
+                state="locked",
+                currency_id=currency_id,
+                diagnostics=("PFETL pipeline.lock is active on DuckDB.",),
+            )
+        end_bound = period_context.end_date if period_context else None
+        active_run_id = run_id or (provenance.run_id if provenance else "unknown")
+
+        def _execute() -> LotPageSnapshot:
+            with duck_reader.session() as session_reader:
+                tok = use_catalog_snapshot(catalog_snapshot)
+                try:
+                    resolved_dt, nearest = resolve_lot_closing_date(
+                        session_reader, lot_filter.closing_date, end_bound
+                    )
+                    if resolved_dt is None:
+                        return LotPageSnapshot(
+                            state="empty",
+                            currency_id=currency_id,
+                            nearest_dates=nearest,
+                            diagnostics=("No lot snapshots exist for the requested closing date.",),
+                        )
+                    prior_summary = None
+                    comp = period_context.comparison if period_context else None
+                    if comp is not None and not comp.is_empty and comp.end_date is not None:
+                        prior_dt, _ = resolve_lot_closing_date(session_reader, None, comp.end_date)
+                        if prior_dt is not None:
+                            prior_summary, _ = query_lot_summary_and_kpis(
+                                session_reader, lot_filter, prior_dt
+                            )
+                    summary, kpis = query_lot_summary_and_kpis(
+                        session_reader, lot_filter, resolved_dt, prior_summary=prior_summary
+                    )
+                    total, rows = query_lot_rows(
+                        session_reader,
+                        lot_filter,
+                        resolved_dt,
+                        limit=limit,
+                        offset=offset,
+                    )
+                    _, chart_rows = query_lot_rows(
+                        session_reader,
+                        lot_filter,
+                        resolved_dt,
+                        limit=500,
+                        offset=0,
+                    )
+                finally:
+                    reset_catalog_snapshot(tok)
+
+            return LotPageSnapshot(
+                state="ready" if total > 0 else "empty",
+                currency_id=currency_id,
+                closing_date=resolved_dt,
+                total_count=total,
+                kpis=kpis,
+                summary=summary,
+                rows=rows,
+                chart_rows=chart_rows,
+            )
+
+        if cache is None:
+            return _execute()
+        key = build_cache_key(
+            "inv_lots",
+            profile.profile_id,
+            active_run_id,
+            period_context,
+            None,
+            {
+                "filter": lot_filter.model_dump(mode="json"),
+                "limit": limit,
+                "offset": offset,
+            },
+        )
+        cached = cache.get(key)
+        if isinstance(cached, LotPageSnapshot):
+            return cached
+        snap = _execute()
+        cache.set(key, snap)
+        return snap
+
+    @classmethod
+    def lot_detail(
+        cls,
+        profile: PFETLProfile,
+        lot_id: str,
+        closing_date: date,
+        *,
+        catalog_snapshot: CatalogSnapshot | None = None,
+    ) -> LotDetailSnapshot | None:
+        """Fetch all 88 columns for one `(Lot_ID, Closing_Date)` snapshot."""
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() != WarehouseState.AVAILABLE:
+            return None
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                return query_lot_detail(session_reader, lot_id, closing_date)
+            finally:
+                reset_catalog_snapshot(tok)

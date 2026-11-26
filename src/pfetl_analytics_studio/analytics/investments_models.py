@@ -203,3 +203,114 @@ class InvestmentPerformanceSnapshot(BaseModel):
     fx_country_rows: tuple[FxExposureRow, ...] = ()
     fx_currency_rows: tuple[FxExposureRow, ...] = ()
     diagnostics: tuple[str, ...] = ()
+
+
+class LotFilter(BaseModel):
+    """Query-side filter specification for `silver.fact_investment_lot_analytics`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    closing_date: date | None = None
+    isin: str | None = None
+    instrument_class: str | None = None
+    instrument_type: str | None = None
+    instrument_subtype: str | None = None
+    currency_id: str | None = None
+    holding_type: str | None = None
+    can_harvest_loss: bool | None = None
+    harvest_recommendation: str | None = None
+    days_to_ltcg_min: int | None = None
+    days_to_ltcg_max: int | None = None
+    gain_state: Literal["all", "gain", "loss"] = "all"
+    search: str | None = None
+
+
+class LotSummaryRow(BaseModel):
+    """Curated lot summary projection from `silver.fact_investment_lot_analytics`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    lot_id: str
+    closing_date: date
+    isin: str
+    instrument_name: str
+    instrument_class: str = "Unclassified"
+    currency_id: str = "INR_INR"
+    benchmark_name: str = "—"
+    buy_date: date | None = None
+    quantity: float = 0.0
+    buy_value: float = 0.0
+    close_value: float = 0.0
+    unrealized_pl: float = 0.0
+    absolute_return: float | None = None
+    xirr: float | None = None
+    bm_xirr: float | None = None
+    lot_alpha: float | None = None
+    holding_type: str = "STCG"
+    age_days: int | None = None
+    days_to_ltcg: int | None = None
+    tax_if_sold: float = 0.0
+    after_tax_pl: float | None = None
+    can_harvest_loss: bool = False
+    harvest_recommendation: str = "HOLD"
+    is_lagging_benchmark: bool = False
+
+
+class LotKpiSummary(BaseModel):
+    """Aggregate lot-level counts and valuations for the active LotFilter."""
+
+    model_config = ConfigDict(frozen=True)
+
+    total_lots: int = 0
+    total_buy_value: float = 0.0
+    total_close_value: float = 0.0
+    total_unrealized_pl: float = 0.0
+    ltcg_lots: int = 0
+    stcg_lots: int = 0
+    ltcg_value: float = 0.0
+    stcg_value: float = 0.0
+    harvest_loss_lots: int = 0
+    harvest_loss_value: float = 0.0
+    total_tax_if_sold: float = 0.0
+    lagging_lots: int = 0
+    maturing_30d_lots: int = 0
+    maturing_90d_lots: int = 0
+
+
+class LotPageSnapshot(BaseModel):
+    """Paginated Lot Explorer snapshot returned by `InvestmentAnalytics.lot_rows`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    state: Literal["ready", "no_run", "locked", "empty"]
+    currency_id: str = "INR_INR"
+    closing_date: date | None = None
+    nearest_dates: tuple[date, ...] = ()
+    total_count: int = 0
+    kpis: tuple[OverviewKPI, ...] = ()
+    summary: LotKpiSummary = LotKpiSummary()
+    rows: tuple[LotSummaryRow, ...] = ()
+    chart_rows: tuple[LotSummaryRow, ...] = ()
+    diagnostics: tuple[str, ...] = ()
+
+
+class LotDetailSection(BaseModel):
+    """Grouped section of canonical columns for the Lot Detail Drawer."""
+
+    model_config = ConfigDict(frozen=True)
+
+    title: str
+    fields: tuple[tuple[str, str, Any], ...] = ()
+
+
+class LotDetailSnapshot(BaseModel):
+    """Full 88-column lot detail grouped into 9 audit sections + raw columns."""
+
+    model_config = ConfigDict(frozen=True)
+
+    lot_id: str
+    closing_date: date
+    instrument_name: str
+    isin: str
+    sections: tuple[LotDetailSection, ...] = ()
+    raw_columns: dict[str, Any] = {}

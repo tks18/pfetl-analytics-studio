@@ -23,6 +23,11 @@ from pfetl_analytics_studio.analytics.investments_models import (
     FxExposureRow,
     InstrumentDetailSnapshot,
     InvestmentHoldingRow,
+    LotDetailSection,
+    LotDetailSnapshot,
+    LotFilter,
+    LotKpiSummary,
+    LotSummaryRow,
     PerformanceHistoryPoint,
 )
 from pfetl_analytics_studio.analytics.overview_models import (
@@ -902,4 +907,575 @@ def build_performance_kpis(
                 ),
             ),
         ),
+    )
+
+
+def resolve_lot_closing_date(
+    duck_reader: DuckDBQueryPort,
+    requested_date: date | None,
+    end_date: date | None = None,
+) -> tuple[date | None, tuple[date, ...]]:
+    """Resolve exact lot Closing_Date or return nearest available dates."""
+    if not table_exists(duck_reader, "silver", "fact_investment_lot_analytics"):
+        return None, ()
+    if requested_date is not None:
+        exact = duck_reader.fetch_one(
+            'SELECT MAX("Closing_Date") AS dt FROM silver.fact_investment_lot_analytics WHERE "Closing_Date" = ?;',
+            (requested_date,),
+        )
+        if exact and exact.get("dt") is not None:
+            return as_date(exact["dt"]), ()
+        before = duck_reader.fetch_one(
+            'SELECT MAX("Closing_Date") AS dt FROM silver.fact_investment_lot_analytics WHERE "Closing_Date" < ?;',
+            (requested_date,),
+        )
+        after = duck_reader.fetch_one(
+            'SELECT MIN("Closing_Date") AS dt FROM silver.fact_investment_lot_analytics WHERE "Closing_Date" > ?;',
+            (requested_date,),
+        )
+        nearest = tuple(
+            dt
+            for dt in (
+                as_date(before["dt"]) if before else None,
+                as_date(after["dt"]) if after else None,
+            )
+            if dt is not None
+        )
+        return None, nearest
+
+    bound = end_date or date(2099, 12, 31)
+    latest = duck_reader.fetch_one(
+        'SELECT MAX("Closing_Date") AS dt FROM silver.fact_investment_lot_analytics WHERE "Closing_Date" <= ?;',
+        (bound,),
+    )
+    dt = as_date(latest["dt"]) if latest else None
+    if dt is None:
+        fallback = duck_reader.fetch_one(
+            'SELECT MAX("Closing_Date") AS dt FROM silver.fact_investment_lot_analytics;'
+        )
+        dt = as_date(fallback["dt"]) if fallback else None
+    return dt, ()
+
+
+def _build_lot_where_clause(
+    lot_filter: LotFilter,
+    closing_date: date,
+) -> tuple[str, list[Any]]:
+    clauses: list[str] = ['f."Closing_Date" = ?']
+    params: list[Any] = [closing_date]
+
+    if lot_filter.isin:
+        clauses.append('f."ISIN" = ?')
+        params.append(lot_filter.isin.strip())
+    if lot_filter.instrument_class:
+        clauses.append("COALESCE(im.\"INSTRUMENT_CLASS\", 'Unclassified') = ?")
+        params.append(lot_filter.instrument_class)
+    if lot_filter.instrument_type:
+        clauses.append("COALESCE(im.\"INSTRUMENT_TYPE\", 'Unclassified') = ?")
+        params.append(lot_filter.instrument_type)
+    if lot_filter.instrument_subtype:
+        clauses.append("COALESCE(im.\"INSTRUMENT_SUBTYPE\", 'Unclassified') = ?")
+        params.append(lot_filter.instrument_subtype)
+    if lot_filter.currency_id:
+        clauses.append('f."CURRENCY_ID" = ?')
+        params.append(lot_filter.currency_id)
+    if lot_filter.holding_type:
+        clauses.append('f."Holding_Type" = ?')
+        params.append(lot_filter.holding_type)
+    if lot_filter.can_harvest_loss is not None:
+        clauses.append('COALESCE(f."Can_Harvest_Loss", FALSE) = ?')
+        params.append(lot_filter.can_harvest_loss)
+    if lot_filter.harvest_recommendation:
+        clauses.append('f."Harvest_Recommendation" = ?')
+        params.append(lot_filter.harvest_recommendation)
+    if lot_filter.days_to_ltcg_min is not None:
+        clauses.append('f."Days_To_LTCG" >= ?')
+        params.append(lot_filter.days_to_ltcg_min)
+    if lot_filter.days_to_ltcg_max is not None:
+        clauses.append('f."Days_To_LTCG" <= ?')
+        params.append(lot_filter.days_to_ltcg_max)
+    if lot_filter.gain_state == "gain":
+        clauses.append('COALESCE(f."P/L", 0.0) > 0')
+    elif lot_filter.gain_state == "loss":
+        clauses.append('COALESCE(f."P/L", 0.0) < 0')
+    if lot_filter.search and lot_filter.search.strip():
+        pat = f"%{lot_filter.search.strip().lower()}%"
+        clauses.append(
+            '(LOWER(f."Lot_ID") LIKE ? OR LOWER(f."ISIN") LIKE ? '
+            "OR LOWER(COALESCE(im.\"INSTRUMENT_NAME\", '')) LIKE ?)"
+        )
+        params.extend([pat, pat, pat])
+
+    return " AND ".join(clauses), params
+
+
+def _lot_from_clause(duck_reader: DuckDBQueryPort) -> str:
+    has_im = table_exists(duck_reader, "silver", "dim_instrument_master")
+    sql = "FROM silver.fact_investment_lot_analytics f "
+    if has_im:
+        sql += 'LEFT JOIN silver.dim_instrument_master im ON f."ISIN" = im."ISIN" '
+    return sql
+
+
+def query_lot_summary_and_kpis(
+    duck_reader: DuckDBQueryPort,
+    lot_filter: LotFilter,
+    closing_date: date,
+    *,
+    prior_summary: LotKpiSummary | None = None,
+) -> tuple[LotKpiSummary, tuple[OverviewKPI, ...]]:
+    """Compute aggregate lot KPIs for the active `LotFilter`."""
+    where_sql, params = _build_lot_where_clause(lot_filter, closing_date)
+    has_im = table_exists(duck_reader, "silver", "dim_instrument_master")
+    from_sql = "FROM silver.fact_investment_lot_analytics f " + (
+        'LEFT JOIN silver.dim_instrument_master im ON f."ISIN" = im."ISIN" ' if has_im else ""
+    )
+    row = (
+        duck_reader.fetch_one(
+            f"""
+            SELECT
+                COUNT(*) AS total_lots,
+                COALESCE(SUM(f."Buy_Value"), 0.0) AS total_buy,
+                COALESCE(SUM(f."Close_Value"), 0.0) AS total_close,
+                COALESCE(SUM(f."P/L"), 0.0) AS total_pl,
+                SUM(CASE WHEN f."Holding_Type" = 'LTCG' THEN 1 ELSE 0 END) AS ltcg_lots,
+                SUM(CASE WHEN f."Holding_Type" = 'STCG' THEN 1 ELSE 0 END) AS stcg_lots,
+                COALESCE(SUM(CASE WHEN f."Holding_Type" = 'LTCG' THEN f."Close_Value" ELSE 0.0 END), 0.0) AS ltcg_val,
+                COALESCE(SUM(CASE WHEN f."Holding_Type" = 'STCG' THEN f."Close_Value" ELSE 0.0 END), 0.0) AS stcg_val,
+                SUM(CASE WHEN COALESCE(f."Can_Harvest_Loss", FALSE) THEN 1 ELSE 0 END) AS harvest_lots,
+                COALESCE(SUM(CASE WHEN COALESCE(f."Can_Harvest_Loss", FALSE) THEN ABS(COALESCE(f."P/L", 0.0)) ELSE 0.0 END), 0.0) AS harvest_val,
+                COALESCE(SUM(COALESCE(f."LTCG_Tax_If_Sold", 0.0) + COALESCE(f."STCG_Tax_If_Sold", 0.0)), 0.0) AS tax_if_sold,
+                SUM(CASE WHEN COALESCE(f."Is_Lagging_Benchmark", 0) = 1 THEN 1 ELSE 0 END) AS lagging_lots,
+                SUM(CASE WHEN f."Holding_Type" = 'STCG' AND f."Days_To_LTCG" BETWEEN 0 AND 30 THEN 1 ELSE 0 END) AS mat_30,
+                SUM(CASE WHEN f."Holding_Type" = 'STCG' AND f."Days_To_LTCG" BETWEEN 0 AND 90 THEN 1 ELSE 0 END) AS mat_90
+            {from_sql}
+            WHERE {where_sql};
+            """,
+            params,
+        )
+        or {}
+    )
+    summary = LotKpiSummary(
+        total_lots=int(row.get("total_lots") or 0),
+        total_buy_value=float(row.get("total_buy") or 0.0),
+        total_close_value=float(row.get("total_close") or 0.0),
+        total_unrealized_pl=float(row.get("total_pl") or 0.0),
+        ltcg_lots=int(row.get("ltcg_lots") or 0),
+        stcg_lots=int(row.get("stcg_lots") or 0),
+        ltcg_value=float(row.get("ltcg_val") or 0.0),
+        stcg_value=float(row.get("stcg_val") or 0.0),
+        harvest_loss_lots=int(row.get("harvest_lots") or 0),
+        harvest_loss_value=float(row.get("harvest_val") or 0.0),
+        total_tax_if_sold=float(row.get("tax_if_sold") or 0.0),
+        lagging_lots=int(row.get("lagging_lots") or 0),
+        maturing_30d_lots=int(row.get("mat_30") or 0),
+        maturing_90d_lots=int(row.get("mat_90") or 0),
+    )
+    gain_pct = (
+        (summary.total_unrealized_pl / summary.total_buy_value)
+        if summary.total_buy_value > 0
+        else None
+    )
+    kpis = (
+        OverviewKPI(
+            kpi_id="lot_total_count",
+            label="Active Lots",
+            value=float(summary.total_lots),
+            format=MetricFormat.INTEGER,
+            delta_value=(
+                float(summary.total_lots - prior_summary.total_lots)
+                if prior_summary is not None
+                else None
+            ),
+            delta_format=MetricFormat.INTEGER,
+            delta_label="vs Prior",
+            subtitle="Lots matching active filter",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+            breakups=(
+                OverviewBreakupItem(
+                    label="LTCG", value=float(summary.ltcg_lots), format=MetricFormat.INTEGER
+                ),
+                OverviewBreakupItem(
+                    label="STCG", value=float(summary.stcg_lots), format=MetricFormat.INTEGER
+                ),
+            ),
+        ),
+        OverviewKPI(
+            kpi_id="lot_buy_value",
+            label="Lot Cost Basis",
+            value=summary.total_buy_value,
+            format=MetricFormat.CURRENCY,
+            subtitle="Total acquisition cost across filtered lots",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="lot_close_value",
+            label="Lot Market Value",
+            value=summary.total_close_value,
+            format=MetricFormat.CURRENCY,
+            delta_value=gain_pct,
+            delta_format=MetricFormat.PERCENT,
+            delta_label="Gain %",
+            subtitle="Mark-to-market value across filtered lots",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="lot_unrealized_pl",
+            label="Lot Unrealized P&L",
+            value=summary.total_unrealized_pl,
+            format=MetricFormat.CURRENCY,
+            subtitle="Aggregate P/L across filtered lots",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="lot_ltcg_value",
+            label="LTCG Market Value",
+            value=summary.ltcg_value,
+            format=MetricFormat.CURRENCY,
+            subtitle="Long-term eligible lot valuation",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+            breakups=(OverviewBreakupItem(label="STCG Val", value=summary.stcg_value),),
+        ),
+        OverviewKPI(
+            kpi_id="lot_tax_if_sold",
+            label="Est. Tax If Sold",
+            value=summary.total_tax_if_sold,
+            format=MetricFormat.CURRENCY,
+            subtitle="Core LTCG + STCG tax liability if liquidated",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+        ),
+        OverviewKPI(
+            kpi_id="lot_harvest_loss",
+            label="Harvestable Loss Lots",
+            value=float(summary.harvest_loss_lots),
+            format=MetricFormat.INTEGER,
+            subtitle="Lots flagged Can_Harvest_Loss = True",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+            breakups=(OverviewBreakupItem(label="Loss Val", value=summary.harvest_loss_value),),
+        ),
+        OverviewKPI(
+            kpi_id="lot_maturing_90d",
+            label="Maturing to LTCG (≤90d)",
+            value=float(summary.maturing_90d_lots),
+            format=MetricFormat.INTEGER,
+            subtitle="STCG lots crossing LTCG threshold in 90 days",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+            breakups=(
+                OverviewBreakupItem(
+                    label="≤30d",
+                    value=float(summary.maturing_30d_lots),
+                    format=MetricFormat.INTEGER,
+                ),
+            ),
+        ),
+        OverviewKPI(
+            kpi_id="lot_lagging",
+            label="Benchmark Lagging Lots",
+            value=float(summary.lagging_lots),
+            format=MetricFormat.INTEGER,
+            subtitle="Lots trailing their assigned benchmark",
+            source_table="silver.fact_investment_lot_analytics",
+            as_of_date=closing_date,
+            drill_route="/investments",
+            available=True,
+        ),
+    )
+    return summary, kpis
+
+
+def query_lot_rows(
+    duck_reader: DuckDBQueryPort,
+    lot_filter: LotFilter,
+    closing_date: date,
+    *,
+    limit: int = 25,
+    offset: int = 0,
+) -> tuple[int, tuple[LotSummaryRow, ...]]:
+    """Query paginated `silver.fact_investment_lot_analytics` summary rows."""
+    where_sql, params = _build_lot_where_clause(lot_filter, closing_date)
+    from_sql = _lot_from_clause(duck_reader)
+    has_im = table_exists(duck_reader, "silver", "dim_instrument_master")
+
+    inst_name_expr = 'COALESCE(im."INSTRUMENT_NAME", f."ISIN")' if has_im else 'f."ISIN"'
+    inst_cls_expr = (
+        "COALESCE(im.\"INSTRUMENT_CLASS\", 'Unclassified')" if has_im else "'Unclassified'"
+    )
+    bm_name_expr = "COALESCE(f.\"BENCHMARK_ID\", '—')"
+
+    cnt_row = duck_reader.fetch_one(
+        f"SELECT COUNT(*) AS cnt {from_sql} WHERE {where_sql};",
+        params,
+    )
+    total = int(cnt_row["cnt"]) if cnt_row and cnt_row.get("cnt") is not None else 0
+
+    rows = duck_reader.fetch_all(
+        f"""
+        SELECT
+            f."Lot_ID" AS lot_id,
+            f."Closing_Date" AS closing_date,
+            f."ISIN" AS isin,
+            {inst_name_expr} AS inst_name,
+            {inst_cls_expr} AS inst_class,
+            f."CURRENCY_ID" AS currency_id,
+            {bm_name_expr} AS bm_name,
+            f."Buy_Date" AS buy_date,
+            f."Quantity" AS qty,
+            f."Buy_Value" AS buy_val,
+            f."Close_Value" AS close_val,
+            f."P/L" AS pl,
+            f."Absolute_Return" AS abs_ret,
+            f."XIRR" AS xirr,
+            f."BM_XIRR" AS bm_xirr,
+            f."Lot_Alpha" AS lot_alpha,
+            f."Holding_Type" AS holding_type,
+            f."Age_Days" AS age_days,
+            f."Days_To_LTCG" AS days_to_ltcg,
+            COALESCE(f."LTCG_Tax_If_Sold", 0.0) + COALESCE(f."STCG_Tax_If_Sold", 0.0) AS tax_if_sold,
+            f."After_Tax_PL" AS after_tax_pl,
+            COALESCE(f."Can_Harvest_Loss", FALSE) AS can_harvest,
+            COALESCE(f."Harvest_Recommendation", 'HOLD') AS harvest_rec,
+            COALESCE(f."Is_Lagging_Benchmark", 0) AS is_lagging
+        {from_sql}
+        WHERE {where_sql}
+        ORDER BY COALESCE(f."Close_Value", 0.0) DESC, f."Buy_Date" ASC
+        LIMIT ? OFFSET ?;
+        """,
+        [*params, limit, offset],
+    )
+    result: list[LotSummaryRow] = []
+    for r in rows:
+        dt = as_date(r.get("closing_date")) or closing_date
+        result.append(
+            LotSummaryRow(
+                lot_id=str(r.get("lot_id") or ""),
+                closing_date=dt,
+                isin=str(r.get("isin") or ""),
+                instrument_name=str(r.get("inst_name") or ""),
+                instrument_class=str(r.get("inst_class") or "Unclassified"),
+                currency_id=str(r.get("currency_id") or "INR_INR"),
+                benchmark_name=str(r.get("bm_name") or "—"),
+                buy_date=as_date(r.get("buy_date")),
+                quantity=as_float(r.get("qty")) or 0.0,
+                buy_value=as_float(r.get("buy_val")) or 0.0,
+                close_value=as_float(r.get("close_val")) or 0.0,
+                unrealized_pl=as_float(r.get("pl")) or 0.0,
+                absolute_return=as_float(r.get("abs_ret")),
+                xirr=as_float(r.get("xirr")),
+                bm_xirr=as_float(r.get("bm_xirr")),
+                lot_alpha=as_float(r.get("lot_alpha")),
+                holding_type=str(r.get("holding_type") or "STCG"),
+                age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+                days_to_ltcg=int(r["days_to_ltcg"]) if r.get("days_to_ltcg") is not None else None,
+                tax_if_sold=as_float(r.get("tax_if_sold")) or 0.0,
+                after_tax_pl=as_float(r.get("after_tax_pl")),
+                can_harvest_loss=bool(r.get("can_harvest")),
+                harvest_recommendation=str(r.get("harvest_rec") or "HOLD"),
+                is_lagging_benchmark=bool(int(r.get("is_lagging") or 0)),
+            )
+        )
+    return total, tuple(result)
+
+
+_LOT_DETAIL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
+    (
+        "Identity",
+        (
+            "Lot_ID",
+            "Closing_Date",
+            "ISIN",
+            "CURRENCY_ID",
+            "Buy_Date",
+            "Purchase_ID",
+            "Lot_Source_Type",
+            "BENCHMARK_ID",
+            "TAX_TYPE",
+            "TAX_SUBTYPE",
+        ),
+    ),
+    (
+        "Cost & Market",
+        (
+            "Quantity",
+            "Execution_Residual",
+            "Buy_Price",
+            "Market_Price",
+            "Buy_Value",
+            "Close_Value",
+            "P/L",
+            "Absolute_Return",
+        ),
+    ),
+    (
+        "Local / Base / FX",
+        (
+            "Buy_Value_Local",
+            "Close_Value_Local",
+            "Blended_FX_Buy_Rate",
+            "Buy_Price_Local",
+            "Market_Price_Local",
+            "FX_Rate_Buy",
+            "FX_Rate_Snap",
+            "Currency_Appreciation_Pct",
+            "Absolute_Return_Local",
+            "Asset_PnL",
+            "Forex_PnL",
+            "Forex_Contribution_Pct",
+            "Asset_Return_Pct",
+            "Forex_Return_Pct",
+        ),
+    ),
+    (
+        "Performance",
+        (
+            "Lot_CAGR",
+            "Lot_CAGR_Status",
+            "Lot_CAGR_Local",
+            "CAGR",
+            "CAGR_Status",
+            "XIRR",
+            "XIRR_Status",
+            "XIRR_Local",
+            "FX_XIRR_Impact",
+            "After_Tax_XIRR",
+        ),
+    ),
+    (
+        "Benchmark / Alpha",
+        (
+            "BM_Buy_Price",
+            "BM_Market_Price",
+            "Lot_BM_Return",
+            "Lot_BM_CAGR",
+            "Lot_BM_CAGR_Status",
+            "Lot_BM_CAGR_Local",
+            "BM_CAGR",
+            "BM_CAGR_Status",
+            "BM_XIRR",
+            "BM_XIRR_Local",
+            "Active_Return",
+            "Active_Return_Local",
+            "Lot_Alpha",
+            "Is_Lagging_Benchmark",
+        ),
+    ),
+    (
+        "Risk / Weight",
+        (
+            "Max_Drawdown",
+            "Lot_Weight",
+            "Portfolio_Weight",
+            "Outperforming_Lot_Ratio",
+            "Dietz_Day_Weight",
+        ),
+    ),
+    (
+        "Holding / Tax",
+        (
+            "Age_Days",
+            "LTCG_Threshold_Days",
+            "Days_To_LTCG",
+            "Holding_Type",
+            "Tax_Rate",
+            "Unrealized_LTCG",
+            "Unrealized_STCG",
+            "Unrealized_Gain",
+            "Unrealized_LTCL",
+            "Unrealized_STCL",
+            "Unrealized_Loss",
+            "LTCG_Tax_If_Sold",
+            "STCG_Tax_If_Sold",
+            "After_Tax_PL",
+            "After_Tax_Close_Value",
+            "Equity_LTCG_Exemption",
+            "Stepup_Eligible",
+        ),
+    ),
+    (
+        "FY Realized",
+        (
+            "FY",
+            "FY_Realized_LTCG",
+            "FY_Realized_STCG",
+            "FY_Realized_Gain",
+            "FY_Realized_LTCL",
+            "FY_Realized_STCL",
+            "FY_Realized_Loss",
+            "FY_Realized_Net_PnL",
+        ),
+    ),
+    (
+        "Harvesting",
+        (
+            "Can_Harvest_Loss",
+            "Harvest_Recommendation",
+        ),
+    ),
+)
+
+
+def query_lot_detail(
+    duck_reader: DuckDBQueryPort,
+    lot_id: str,
+    closing_date: date,
+) -> LotDetailSnapshot | None:
+    """Select all 88 columns for `(Lot_ID, Closing_Date)` grouped into 9 sections."""
+    if not table_exists(duck_reader, "silver", "fact_investment_lot_analytics"):
+        return None
+    row = duck_reader.fetch_one(
+        """
+        SELECT *
+        FROM silver.fact_investment_lot_analytics
+        WHERE "Lot_ID" = ? AND "Closing_Date" = ?
+        LIMIT 1;
+        """,
+        (lot_id, closing_date),
+    )
+    if row is None:
+        return None
+    isin = str(row.get("ISIN") or "")
+    inst_name = isin
+    if isin and table_exists(duck_reader, "silver", "dim_instrument_master"):
+        m = duck_reader.fetch_one(
+            'SELECT "INSTRUMENT_NAME" FROM silver.dim_instrument_master WHERE "ISIN" = ? LIMIT 1;',
+            (isin,),
+        )
+        if m and m.get("INSTRUMENT_NAME"):
+            inst_name = str(m["INSTRUMENT_NAME"])
+
+    sections: list[LotDetailSection] = []
+    for title, cols in _LOT_DETAIL_GROUPS:
+        fields = tuple((col.replace("_", " "), col, row.get(col)) for col in cols if col in row)
+        sections.append(LotDetailSection(title=title, fields=fields))
+
+    return LotDetailSnapshot(
+        lot_id=lot_id,
+        closing_date=closing_date,
+        instrument_name=inst_name,
+        isin=isin,
+        sections=tuple(sections),
+        raw_columns=dict(row),
     )
