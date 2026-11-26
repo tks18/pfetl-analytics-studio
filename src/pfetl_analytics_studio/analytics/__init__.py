@@ -75,6 +75,16 @@ from pfetl_analytics_studio.analytics.investments_models import (
     ReconciliationGroupRow,
     TradeLineageTrace,
 )
+from pfetl_analytics_studio.analytics.operations import OperationsAnalytics
+from pfetl_analytics_studio.analytics.operations_models import (
+    LayerContractSummary,
+    OperationRunRecord,
+    OperationsSnapshot,
+    RunHistoryFilter,
+    RunSyncSummary,
+    TableRowCountRecord,
+    WarehouseHealthSnapshot,
+)
 from pfetl_analytics_studio.analytics.overview import (
     AssetClassPoint,
     CashflowPoint,
@@ -162,6 +172,7 @@ __all__ = [
     "InvestmentHoldingRow",
     "InvestmentPerformanceSnapshot",
     "InvestmentPortfolioSnapshot",
+    "LayerContractSummary",
     "LotDetailSection",
     "LotDetailSnapshot",
     "LotFilter",
@@ -173,6 +184,9 @@ __all__ = [
     "PerformanceHistoryPoint",
     "NetWorthAttributionSnapshot",
     "NetWorthPoint",
+    "OperationRunRecord",
+    "OperationsAnalytics",
+    "OperationsSnapshot",
     "OverviewBreakupItem",
     "OverviewKPI",
     "OverviewRunHealth",
@@ -184,6 +198,8 @@ __all__ = [
     "RealizedReconciliationSnapshot",
     "ReconciliationEventRow",
     "ReconciliationGroupRow",
+    "RunHistoryFilter",
+    "RunSyncSummary",
     "SimulationHistorySnapshot",
     "SimulationRunRecord",
     "TaxAnalytics",
@@ -197,6 +213,7 @@ __all__ = [
     "TaxIncomeBreakdownSnapshot",
     "TaxReconciliationRow",
     "TaxReconciliationSnapshot",
+    "TableRowCountRecord",
     "TradeLineageTrace",
     "TransferTransactionPage",
     "TransferTransactionRow",
@@ -206,4 +223,5 @@ __all__ = [
     "WealthAssetRow",
     "WealthMonthlyPoint",
     "WealthSummarySnapshot",
+    "WarehouseHealthSnapshot",
 ]
