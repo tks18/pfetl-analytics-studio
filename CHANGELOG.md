@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.21](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.20...0.1.21) (2026-11-26)
+
+
+### Features 🔥
+
+* **analytics:** add Phase 18 FireAnalytics models and queries ([bd3930e](https://github.com/tks18/pfetl-analytics-studio/commit/bd3930e05b270b605dc7386df34ca9ad325b39b2))
+* **semantic:** register non-additive FIRE semantic metrics ([8ba5f6e](https://github.com/tks18/pfetl-analytics-studio/commit/8ba5f6e5ee02a0ff2ff671fb790d936b62ee6371))
+* **ui:** add 8 FIRE charts and 3-tab FIRE workspace page ([37cd7d4](https://github.com/tks18/pfetl-analytics-studio/commit/37cd7d4da5e8f5a3372f3181bb1f9d0a6d61100b))
+
+
+### Tests 🧪
+
+* **analytics:** add Phase 18 FIRE analytics and semantic tests ([e5558f1](https://github.com/tks18/pfetl-analytics-studio/commit/e5558f1ea3a4c83595c4c71dd855c2a79f55b3c7))
+
 ### [0.1.20](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.19...0.1.20) (2026-11-26)
 
 
