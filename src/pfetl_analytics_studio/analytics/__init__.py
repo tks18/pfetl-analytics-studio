@@ -81,6 +81,19 @@ from pfetl_analytics_studio.analytics.overview import (
     OverviewSnapshot,
     PortfolioPoint,
 )
+from pfetl_analytics_studio.analytics.tax import TaxAnalytics
+from pfetl_analytics_studio.analytics.tax_models import (
+    TaxEventFilter,
+    TaxEventRow,
+    TaxEventsSnapshot,
+    TaxFYParameters,
+    TaxFYSummarySnapshot,
+    TaxHarvestingSnapshot,
+    TaxIncomeBreakdownRow,
+    TaxIncomeBreakdownSnapshot,
+    TaxReconciliationRow,
+    TaxReconciliationSnapshot,
+)
 from pfetl_analytics_studio.analytics.wealth import WealthAnalytics
 from pfetl_analytics_studio.analytics.wealth_models import (
     AssetBreakdownSnapshot,
@@ -161,6 +174,17 @@ __all__ = [
     "RealizedReconciliationSnapshot",
     "ReconciliationEventRow",
     "ReconciliationGroupRow",
+    "TaxAnalytics",
+    "TaxEventFilter",
+    "TaxEventRow",
+    "TaxEventsSnapshot",
+    "TaxFYParameters",
+    "TaxFYSummarySnapshot",
+    "TaxHarvestingSnapshot",
+    "TaxIncomeBreakdownRow",
+    "TaxIncomeBreakdownSnapshot",
+    "TaxReconciliationRow",
+    "TaxReconciliationSnapshot",
     "TradeLineageTrace",
     "TransferTransactionPage",
     "TransferTransactionRow",
