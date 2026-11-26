@@ -7,12 +7,24 @@ from pathlib import Path
 
 import duckdb
 
-from pfetl_analytics_studio.analytics import OperationsAnalytics, RunHistoryFilter
+from pfetl_analytics_studio.analytics import (
+    ArtifactEventFilter,
+    OperationsAnalytics,
+    ProviderRequestFilter,
+    RunHistoryFilter,
+    SourceRegistryFilter,
+)
 from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.ui import (
+    build_ops_artifact_events_figure,
     build_ops_duration_trend_figure,
+    build_ops_failure_domains_figure,
     build_ops_layer_contracts_figure,
+    build_ops_provider_attempts_figure,
+    build_ops_provider_status_figure,
+    build_ops_source_categories_figure,
+    build_ops_source_freshness_timeline_figure,
     build_ops_status_breakdown_figure,
     build_ops_sync_outcomes_figure,
     build_ops_table_row_counts_figure,
@@ -66,6 +78,116 @@ def _create_cp_db(cp_path: Path) -> None:
             INSERT INTO cp_run_sync_summaries VALUES
                 ('run-2', 10, 8, 1, 0, 1, 'COMPLETE', '2026-11-26T00:02:41'),
                 ('run-1', 5, 2, 0, 3, 0, 'FAILED', '2026-11-25T20:00:05');
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE cp_file_registry (
+                file_id TEXT PRIMARY KEY,
+                file_name TEXT,
+                relative_path TEXT,
+                file_category TEXT,
+                file_type TEXT,
+                file_hash TEXT,
+                file_size_bytes BIGINT,
+                sync_status TEXT,
+                first_seen_run_id TEXT,
+                first_seen_at TIMESTAMP,
+                last_seen_run_id TEXT,
+                last_seen_at TIMESTAMP,
+                last_changed_run_id TEXT,
+                last_changed_at TIMESTAMP,
+                last_synced_run_id TEXT,
+                last_synced_at TIMESTAMP
+            );
+            INSERT INTO cp_file_registry VALUES
+                ('f1', 'mf.csv', 'in/mf.csv', 'mf_holdings', 'csv', 'h1', 4096, 'SYNCED', 'run-1', '2026-11-25T20:00:00', 'run-2', '2026-11-26T00:02:40', 'run-1', '2026-11-25T20:00:01', 'run-2', '2026-11-26T00:02:41');
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE cp_artifact_run_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                file_id TEXT,
+                event_type TEXT,
+                event_at TIMESTAMP,
+                observed_path TEXT,
+                content_hash TEXT,
+                previous_status TEXT,
+                new_status TEXT,
+                event_reason TEXT,
+                affected_table TEXT,
+                detecting_run_id TEXT,
+                replay_run_id TEXT,
+                convergence_result TEXT
+            );
+            INSERT INTO cp_artifact_run_events VALUES
+                ('e1', 'run-2', 'f1', 'SYNCED', '2026-11-26T00:02:41', 'in/mf.csv', 'h1', 'PENDING_BRONZE', 'SYNCED', 'Loaded into Bronze', 'bronze.mf', 'run-2', 'run-2', 'CONVERGED');
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE cp_external_provider_requests (
+                request_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                provider TEXT,
+                entity TEXT,
+                requested_start DATE,
+                requested_end DATE,
+                attempt_count INTEGER,
+                status TEXT,
+                failure_class TEXT,
+                final_error TEXT,
+                created_at TIMESTAMP
+            );
+            INSERT INTO cp_external_provider_requests VALUES
+                ('pr1', 'run-2', 'Yahoo Finance', '^NDX', '2026-11-20', '2026-11-26', 0, 'CACHED', NULL, NULL, '2026-11-26T00:02:42'),
+                ('pr2', 'run-1', 'Yahoo Finance', 'BAD.NS', '2026-11-20', '2026-11-25', 3, 'FAILED', 'HTTP_404', 'Not found', '2026-11-25T20:00:10');
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE cp_run_failures (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT,
+                failed_isin TEXT,
+                stage TEXT,
+                error_type TEXT,
+                error_message TEXT,
+                traceback_log TEXT,
+                failure_domain TEXT,
+                created_at TIMESTAMP
+            );
+            INSERT INTO cp_run_failures VALUES
+                (1, 'run-1', 'INE001A01036', 'market_sync', 'ValueError', 'Price missing', 'Traceback line 1', 'market_data', '2026-11-25T20:00:15');
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE cp_settings_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                content_hash TEXT,
+                canonical_payload TEXT,
+                created_at TIMESTAMP
+            );
+            INSERT INTO cp_settings_snapshots VALUES
+                ('set-1', 'sh1', '{"performance":{"workers":2}}', '2026-11-25T20:00:00'),
+                ('set-2', 'sh2', '{"performance":{"workers":4},"new_flag":true}', '2026-11-26T00:02:39'),
+                ('set-3', 'sh3', '{malformed-json', '2026-11-26T10:00:00');
+            """
+        )
+        con.executescript(
+            """
+            CREATE TABLE cp_rules_snapshots (
+                snapshot_id TEXT PRIMARY KEY,
+                content_hash TEXT,
+                canonical_payload TEXT,
+                created_at TIMESTAMP
+            );
+            INSERT INTO cp_rules_snapshots VALUES
+                ('rul-1', 'rh1', '{"fire":{"swr":0.04}}', '2026-11-25T20:00:00'),
+                ('rul-2', 'rh2', '{"fire":{"swr":0.035}}', '2026-11-26T00:02:39');
             """
         )
         con.commit()
@@ -180,4 +302,79 @@ def test_operations_run_sync_and_warehouse_health(tmp_path: Path) -> None:
         build_ops_table_row_counts_figure(wh.tables),
     ]
     for fig in figs:
+        assert len(fig["data"]) >= 1
+
+
+def test_phase20_sources_providers_failures_and_snapshot_diff(tmp_path: Path) -> None:
+    db_path = tmp_path / "ops20.duckdb"
+    cp_path = tmp_path / "cp20.sqlite"
+    _create_meta_db(db_path)
+    _create_cp_db(cp_path)
+    profile = _make_profile(db_path, cp_path)
+    cache = QueryCache()
+
+    src = OperationsAnalytics.source_registry(
+        profile, SourceRegistryFilter(category="mf_holdings"), cache=cache
+    )
+    assert src.state == "ready"
+    assert len(src.files) == 1
+    f1 = src.files[0]
+    assert (
+        f1.last_seen_at is not None
+        and f1.last_changed_at is not None
+        and f1.last_synced_at is not None
+    )
+    assert f1.last_seen_at != f1.last_changed_at
+
+    evs = OperationsAnalytics.artifact_events(
+        profile, ArtifactEventFilter(file_id="f1"), cache=cache
+    )
+    assert evs.state == "ready"
+    assert evs.events[0].event_reason == "Loaded into Bronze"
+    assert evs.events[0].convergence_result == "CONVERGED"
+
+    provs = OperationsAnalytics.provider_requests(
+        profile, ProviderRequestFilter(provider="Yahoo Finance"), cache=cache
+    )
+    assert provs.state == "ready"
+    assert len(provs.requests) == 2
+    assert any(r.attempt_count == 3 and r.failure_class == "HTTP_404" for r in provs.requests)
+
+    fails = OperationsAnalytics.run_failures(profile, run_id="run-1", cache=cache)
+    assert fails.state == "ready"
+    assert fails.failures[0].failure_domain == "market_data"
+    assert fails.failures[0].stage == "market_sync"
+    assert fails.failures[0].traceback_log == "Traceback line 1"
+
+    # Deterministic structural diff
+    diff_rules = OperationsAnalytics.snapshot_diff(
+        profile, "run-1", "run-2", kind="rules", cache=cache
+    )
+    assert diff_rules.state == "ready"
+    assert len(diff_rules.diffs) == 1
+    assert diff_rules.diffs[0].path == "fire.swr"
+    assert diff_rules.diffs[0].change_type == "changed"
+    assert diff_rules.diffs[0].value_a == 0.04
+    assert diff_rules.diffs[0].value_b == 0.035
+
+    diff_set = OperationsAnalytics.snapshot_diff(
+        profile, "run-1", "run-2", kind="settings", cache=cache
+    )
+    assert diff_set.state == "ready"
+    assert [d.path for d in diff_set.diffs] == ["new_flag", "performance.workers"]
+
+    # Malformed JSON preserves raw text + parse warning
+    bad = OperationsAnalytics.snapshot_diff(profile, "run-2", "run-3", kind="settings", cache=cache)
+    assert bad.state == "parse_error"
+    assert bad.parse_warning_b is not None
+    assert bad.raw_text_b == "{malformed-json"
+
+    for fig in (
+        build_ops_source_categories_figure(src.category_counts),
+        build_ops_artifact_events_figure(evs.events),
+        build_ops_source_freshness_timeline_figure(src.files),
+        build_ops_provider_status_figure(provs.requests),
+        build_ops_provider_attempts_figure(provs.requests),
+        build_ops_failure_domains_figure(fails.failures),
+    ):
         assert len(fig["data"]) >= 1

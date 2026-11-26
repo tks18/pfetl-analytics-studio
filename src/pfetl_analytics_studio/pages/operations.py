@@ -1,28 +1,42 @@
-"""Operations page module — runs, sync health, warehouse freshness & forensic placeholders."""
+"""Operations page module — runs, sync health, sources/artifacts, providers/failures & snapshot diffs."""
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
+from datetime import datetime
 from typing import Any
 
 from nicegui import ui
 
 from pfetl_analytics_studio.analytics import (
+    ArtifactEventFilter,
     OperationRunRecord,
     OperationsAnalytics,
     OverviewKPI,
+    ProviderRequestFilter,
+    RunFailureRecord,
     RunHistoryFilter,
+    SourceFileRecord,
+    SourceRegistryFilter,
     WarehouseHealthSnapshot,
 )
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.pages import render_domain_workspace
+from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     TableColumn,
     bounded_data_table,
+    build_ops_artifact_events_figure,
     build_ops_duration_trend_figure,
+    build_ops_failure_domains_figure,
     build_ops_layer_contracts_figure,
+    build_ops_provider_attempts_figure,
+    build_ops_provider_status_figure,
+    build_ops_source_categories_figure,
+    build_ops_source_freshness_timeline_figure,
     build_ops_status_breakdown_figure,
     build_ops_sync_outcomes_figure,
     build_ops_table_row_counts_figure,
@@ -57,6 +71,20 @@ def _fmt_duration(run: OperationRunRecord) -> str:
     return "—"
 
 
+def _fmt_ts(dt: datetime | None) -> str:
+    if dt is None:
+        return "—"
+    return dt.strftime("%Y-%m-%d %H:%M")
+
+
+def _fmt_bytes(n: int) -> str:
+    if n >= 1024 * 1024:
+        return f"{n / (1024 * 1024):.2f} MB"
+    if n >= 1024:
+        return f"{n / 1024:.1f} KB"
+    return f"{n} B"
+
+
 def _render_kpi_grid(kpis: tuple[OverviewKPI, ...]) -> None:
     with ui.grid().classes("w-full grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3"):
         for kpi in kpis:
@@ -87,13 +115,22 @@ def _render_kpi_grid(kpis: tuple[OverviewKPI, ...]) -> None:
             )
 
 
-def _open_run_drawer(run: OperationRunRecord) -> None:
-    """Open modal run-detail drawer linking snapshots, sync counts, and Phase 20 forensics."""
-    with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-2xl p-5 gap-4"):
+def _open_run_drawer(
+    run: OperationRunRecord,
+    all_runs: tuple[OperationRunRecord, ...],
+    profile: PFETLProfile,
+    cache: QueryCache | None,
+) -> None:
+    """Open modal run-detail drawer with snapshot viewer & diff to previous successful run."""
+    prev_success = next(
+        (r for r in all_runs if r.run_id != run.run_id and r.status.upper() == "SUCCESS"),
+        None,
+    )
+    with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
         with ui.row().classes("w-full items-center justify-between"):
             with ui.row().classes("items-center gap-2"):
                 ui.icon("fact_check", size="22px").style("color: var(--studio-accent);")
-                ui.label("Run Detail & Provenance").classes("text-h6 font-semibold")
+                ui.label("Run Detail & Snapshot Provenance").classes("text-h6 font-semibold")
             status_badge(run.status or "UNKNOWN", tone=BadgeTone.INFO)
 
         fields: list[tuple[str, str]] = [
@@ -106,11 +143,11 @@ def _open_run_drawer(run: OperationRunRecord) -> None:
             ("Core Version", run.application_version or "—"),
             ("Schema Version", run.schema_version or "—"),
             ("Execution Log", "Available (BLOB)" if run.has_execution_log else "Missing"),
-            ("Settings Snapshot", run.settings_snapshot_id or "—"),
-            ("Rules Snapshot", run.rules_snapshot_id or "—"),
+            ("Settings Snapshot", _short_id(run.settings_snapshot_id)),
+            ("Rules Snapshot", _short_id(run.rules_snapshot_id)),
             ("Sync Status", run.sync.sync_status if run.sync else "No Sync Summary"),
         ]
-        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-2 gap-2"):
+        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
             for lbl, val in fields:
                 with (
                     ui.column()
@@ -123,7 +160,7 @@ def _open_run_drawer(run: OperationRunRecord) -> None:
                     ui.label(val).classes("text-caption font-mono break-all")
 
         if run.sync is not None:
-            with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+            with ui.row().classes("w-full items-center gap-2 flex-wrap"):
                 status_badge(f"Actionable: {run.sync.actionable_count}", tone=BadgeTone.NEUTRAL)
                 status_badge(f"Synced: {run.sync.synced_count}", tone=BadgeTone.INFO)
                 status_badge(f"Healed: {run.sync.healed_count}", tone=BadgeTone.INFO)
@@ -133,10 +170,189 @@ def _open_run_drawer(run: OperationRunRecord) -> None:
                 )
                 status_badge(f"Deferred: {run.sync.deferred_count}", tone=BadgeTone.NEUTRAL)
 
+        diff_box = ui.column().classes("w-full gap-2")
+
+        def _render_diff(kind: str) -> None:
+            diff_box.clear()
+            with diff_box:
+                target_prev = prev_success.run_id if prev_success else run.run_id
+                diff = OperationsAnalytics.snapshot_diff(
+                    profile, target_prev, run.run_id, kind=kind, cache=cache
+                )
+                if diff.state == "parse_error":
+                    error_state_panel(
+                        f"Malformed {kind.title()} Snapshot JSON",
+                        f"{diff.parse_warning_a or ''} {diff.parse_warning_b or ''}".strip(),
+                    )
+                    with ui.expansion("View Raw Snapshot Text").classes("w-full"):
+                        ui.code(diff.raw_text_b or diff.raw_text_a, language="text").classes(
+                            "w-full"
+                        )
+                    return
+                if diff.state == "unavailable":
+                    ui.label(
+                        diff.diagnostics[0] if diff.diagnostics else "Snapshot unavailable."
+                    ).classes("text-caption").style("color: var(--studio-text-muted);")
+                    return
+                ui.label(
+                    f"Comparing {kind.title()} Snapshot vs Previous Successful Run ({_short_id(target_prev)}): {len(diff.diffs)} structural differences"
+                ).classes("text-caption font-semibold")
+                if diff.diffs:
+                    d_cols = [
+                        TableColumn(name="path", label="JSON Path", field="path"),
+                        TableColumn(name="change_type", label="Change", field="change_type"),
+                        TableColumn(name="value_a", label="Previous", field="value_a"),
+                        TableColumn(name="value_b", label="Selected", field="value_b"),
+                    ]
+                    d_rows = [
+                        {
+                            "path": d.path,
+                            "change_type": d.change_type.upper(),
+                            "value_a": json.dumps(d.value_a, default=str)[:120]
+                            if d.value_a is not None
+                            else "—",
+                            "value_b": json.dumps(d.value_b, default=str)[:120]
+                            if d.value_b is not None
+                            else "—",
+                        }
+                        for d in diff.diffs[:150]
+                    ]
+                    bounded_data_table(
+                        columns=d_cols,
+                        rows=d_rows,
+                        row_key="path",
+                        title=f"{kind.title()} Structural Diff",
+                    )
+                else:
+                    status_badge(
+                        "Identical canonical snapshot (0 differences)", tone=BadgeTone.INFO
+                    )
+
+                with ui.expansion(f"View Full Canonical {kind.title()} Payload JSON").classes(
+                    "w-full"
+                ):
+                    ui.code(
+                        json.dumps(diff.payload_b, indent=2, default=str)
+                        if diff.payload_b is not None
+                        else diff.raw_text_b,
+                        language="json",
+                    ).classes("w-full text-caption")
+
+        with ui.row().classes("w-full items-center gap-2"):
+            ui.button("Rules Snapshot & Diff", on_click=lambda: _render_diff("rules")).props(
+                "dense outline color=primary"
+            )
+            ui.button("Settings Snapshot & Diff", on_click=lambda: _render_diff("settings")).props(
+                "dense outline color=primary"
+            )
+        _render_diff("rules")
+
         with ui.row().classes("w-full items-center justify-between pt-2"):
-            ui.label("Forensic JSONL log & provider traces coming in Phase 20.").classes(
+            ui.label("Archived JSONL forensic log viewer coming in Phase 21.").classes(
                 "text-caption"
             ).style("color: var(--studio-text-muted);")
+            ui.button("Close", on_click=dlg.close).props("flat color=primary")
+    dlg.open()
+
+
+def _open_file_events_drawer(file_rec: SourceFileRecord, profile: PFETLProfile) -> None:
+    """Show independent freshness timestamps & verbatim artifact events for one file."""
+    ev_snap = OperationsAnalytics.artifact_events(
+        profile, ArtifactEventFilter(file_id=file_rec.file_id, limit=100)
+    )
+    with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label(f"Artifact Lineage: {file_rec.file_name}").classes("text-h6 font-semibold")
+            status_badge(file_rec.sync_status or "UNKNOWN", tone=BadgeTone.INFO)
+
+        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
+            for lbl, val in (
+                ("Last Seen At", _fmt_ts(file_rec.last_seen_at)),
+                ("Last Changed At", _fmt_ts(file_rec.last_changed_at)),
+                ("Last Synced At", _fmt_ts(file_rec.last_synced_at)),
+                ("Category / Type", f"{file_rec.file_category} / {file_rec.file_type}"),
+                ("File Size", _fmt_bytes(file_rec.file_size_bytes)),
+                ("Content Hash", _short_id(file_rec.file_hash)),
+            ):
+                with (
+                    ui.column()
+                    .classes("gap-0 p-2 rounded")
+                    .style(
+                        "background: rgba(15, 23, 42, 0.55); border: 1px solid rgba(148, 163, 184, 0.12);"
+                    )
+                ):
+                    ui.label(lbl).classes("text-caption").style("color: var(--studio-text-muted);")
+                    ui.label(val).classes("text-caption font-mono break-all")
+
+        if ev_snap.events:
+            cols = [
+                TableColumn(name="event_at", label="Event At", field="event_at"),
+                TableColumn(name="event_type", label="Event Type", field="event_type"),
+                TableColumn(name="transition", label="Status Transition", field="transition"),
+                TableColumn(name="convergence", label="Convergence", field="convergence"),
+                TableColumn(name="affected_table", label="Affected Table", field="affected_table"),
+                TableColumn(name="event_reason", label="Reason", field="event_reason"),
+            ]
+            rows = [
+                {
+                    "event_at": e.event_at_raw or "—",
+                    "event_type": e.event_type,
+                    "transition": f"{e.previous_status or '∅'} → {e.new_status}",
+                    "convergence": e.convergence_result,
+                    "affected_table": e.affected_table or "—",
+                    "event_reason": e.event_reason or "—",
+                }
+                for e in ev_snap.events
+            ]
+            bounded_data_table(
+                columns=cols, rows=rows, row_key="event_at", title="Artifact Run Events"
+            )
+        else:
+            empty_state_panel("No Artifact Events", "No events recorded for this file.")
+
+        with ui.row().classes("w-full justify-end"):
+            ui.button("Close", on_click=dlg.close).props("flat color=primary")
+    dlg.open()
+
+
+def _open_failure_drawer(failure: RunFailureRecord) -> None:
+    """Open failure detail drawer with traceback collapsed by default (local display only)."""
+    with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-3xl p-5 gap-4"):
+        with ui.row().classes("w-full items-center justify-between"):
+            ui.label(f"Run Failure #{failure.id}: {failure.error_type}").classes(
+                "text-h6 font-semibold"
+            )
+            status_badge(failure.failure_domain or "UNKNOWN", tone=BadgeTone.WARNING)
+
+        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-2 gap-2"):
+            for lbl, val in (
+                ("Run ID", failure.run_id),
+                ("Stage", failure.stage or "—"),
+                ("Failed ISIN", failure.failed_isin or "—"),
+                ("Created At", failure.created_at_raw or "—"),
+            ):
+                with (
+                    ui.column()
+                    .classes("gap-0 p-2 rounded")
+                    .style(
+                        "background: rgba(15, 23, 42, 0.55); border: 1px solid rgba(148, 163, 184, 0.12);"
+                    )
+                ):
+                    ui.label(lbl).classes("text-caption").style("color: var(--studio-text-muted);")
+                    ui.label(val).classes("text-caption font-mono break-all")
+
+        ui.label("Error Message").classes("text-caption font-semibold")
+        ui.code(failure.error_message or "—", language="text").classes("w-full text-caption")
+
+        if failure.traceback_log:
+            with ui.expansion(
+                "Traceback (Local Display Only — Collapsed by Default)",
+                icon="bug_report",
+                value=False,
+            ).classes("w-full"):
+                ui.code(failure.traceback_log, language="text").classes("w-full text-caption")
+
+        with ui.row().classes("w-full justify-end"):
             ui.button("Close", on_click=dlg.close).props("flat color=primary")
     dlg.open()
 
@@ -211,12 +427,375 @@ def _render_warehouse_section(warehouse: WarehouseHealthSnapshot) -> None:
             )
 
 
-def _render_phase20_placeholder(title: str, description: str, sources: tuple[str, ...]) -> None:
+def _render_sources_tab(
+    container: ui.tab_panel,
+    profile: PFETLProfile,
+    cache: QueryCache | None,
+) -> None:
+    state: dict[str, Any] = {"category": None, "status": None, "search": "", "limit": 200}
+
+    def _draw() -> None:
+        container.clear()
+        with container:
+            try:
+                src = OperationsAnalytics.source_registry(
+                    profile,
+                    SourceRegistryFilter(
+                        category=state["category"],
+                        sync_status=state["status"],
+                        search=state["search"] or None,
+                        limit=int(state["limit"]),
+                    ),
+                    cache=cache,
+                )
+                evs = OperationsAnalytics.artifact_events(
+                    profile, ArtifactEventFilter(limit=200), cache=cache
+                )
+            except Exception as exc:
+                error_state_panel("Unable to load Sources & Artifacts", str(exc))
+                return
+
+            if src.state == "unavailable":
+                error_state_panel(
+                    "Control Plane Unavailable",
+                    src.diagnostics[0] if src.diagnostics else "SQLite Control Plane missing.",
+                )
+                return
+
+            def _set_cat(v: Any) -> None:
+                state["category"] = str(v) or None
+                _draw()
+
+            def _set_st(v: Any) -> None:
+                state["status"] = str(v) or None
+                _draw()
+
+            def _set_search(v: Any) -> None:
+                state["search"] = str(v or "")
+                _draw()
+
+            with ui.row().classes("w-full items-center gap-3 flex-wrap mb-3"):
+                ui.select(
+                    options={"": "All Categories", **{c: c for c in src.available_categories}},
+                    value=state["category"] or "",
+                    label="File Category",
+                    on_change=lambda e: _set_cat(e.value),
+                ).props("dense outlined dark").classes("w-52")
+                ui.select(
+                    options={"": "All Sync Statuses", **{s: s for s in src.available_statuses}},
+                    value=state["status"] or "",
+                    label="Sync Status",
+                    on_change=lambda e: _set_st(e.value),
+                ).props("dense outlined dark").classes("w-44")
+                ui.input(
+                    label="Search Filename / Path",
+                    value=state["search"],
+                    on_change=lambda e: _set_search(e.value),
+                ).props("dense outlined dark clearable").classes("w-64")
+
+            if src.state == "empty" or not src.files:
+                empty_state_panel(
+                    "No Source Files Found",
+                    src.diagnostics[0]
+                    if src.diagnostics
+                    else "No matching files in cp_file_registry.",
+                )
+                return
+
+            _render_kpi_grid(src.kpis)
+
+            with ui.grid().classes("w-full grid-cols-1 lg:grid-cols-2 gap-4 my-4"):
+                chart_panel(
+                    title="Registered Files by Category",
+                    subtitle="Top source categories in cp_file_registry",
+                    figure=build_ops_source_categories_figure(src.category_counts),
+                    source_caption="Source: cp_file_registry",
+                )
+                chart_panel(
+                    title="Source File Sync Status Mix",
+                    subtitle="SYNCED vs REMOVED / PENDING distribution",
+                    figure=build_ops_source_freshness_timeline_figure(src.files),
+                    source_caption="Source: cp_file_registry",
+                )
+
+            if evs.events:
+                chart_panel(
+                    title="Artifact Lifecycle Events & Convergence",
+                    subtitle="Verbatim event_type × convergence_result across recent events",
+                    figure=build_ops_artifact_events_figure(evs.events),
+                    source_caption="Source: cp_artifact_run_events",
+                )
+
+            file_map = {f.file_id: f for f in src.files}
+            with ui.row().classes("w-full items-center gap-3 flex-wrap my-2"):
+                file_sel = (
+                    ui.select(
+                        options={
+                            f.file_id: f"{f.file_name} ({f.file_category})" for f in src.files[:100]
+                        },
+                        value=src.files[0].file_id,
+                        label="Inspect File Lineage",
+                    )
+                    .props("dense outlined dark")
+                    .classes("w-96")
+                )
+                ui.button(
+                    "Open File Lineage Drawer",
+                    icon="open_in_new",
+                    on_click=lambda: (
+                        _open_file_events_drawer(file_map[str(file_sel.value)], profile)
+                        if str(file_sel.value) in file_map
+                        else None
+                    ),
+                ).props("outline color=primary")
+
+            f_cols = [
+                TableColumn(name="file_name", label="File Name", field="file_name"),
+                TableColumn(name="file_category", label="Category", field="file_category"),
+                TableColumn(name="sync_status", label="Sync Status", field="sync_status"),
+                TableColumn(name="size", label="Size", field="size", align="right"),
+                TableColumn(name="last_seen", label="Last Seen", field="last_seen"),
+                TableColumn(name="last_changed", label="Last Changed", field="last_changed"),
+                TableColumn(name="last_synced", label="Last Synced", field="last_synced"),
+            ]
+            f_rows = [
+                {
+                    "file_name": f.file_name,
+                    "file_category": f.file_category,
+                    "sync_status": f.sync_status,
+                    "size": _fmt_bytes(f.file_size_bytes),
+                    "last_seen": _fmt_ts(f.last_seen_at),
+                    "last_changed": _fmt_ts(f.last_changed_at),
+                    "last_synced": _fmt_ts(f.last_synced_at),
+                }
+                for f in src.files
+            ]
+            bounded_data_table(
+                columns=f_cols,
+                rows=f_rows,
+                row_key="file_name",
+                title="Source Registry & Independent Freshness (cp_file_registry)",
+            )
+
+            if evs.events:
+                e_cols = [
+                    TableColumn(name="event_at", label="Event At", field="event_at"),
+                    TableColumn(name="event_type", label="Event Type", field="event_type"),
+                    TableColumn(name="transition", label="Previous → New", field="transition"),
+                    TableColumn(name="convergence", label="Convergence", field="convergence"),
+                    TableColumn(
+                        name="affected_table", label="Affected Table", field="affected_table"
+                    ),
+                    TableColumn(name="event_reason", label="Event Reason", field="event_reason"),
+                ]
+                e_rows = [
+                    {
+                        "event_at": e.event_at_raw or "—",
+                        "event_type": e.event_type,
+                        "transition": f"{e.previous_status or '∅'} → {e.new_status}",
+                        "convergence": e.convergence_result,
+                        "affected_table": e.affected_table or "—",
+                        "event_reason": e.event_reason or "—",
+                    }
+                    for e in evs.events
+                ]
+                bounded_data_table(
+                    columns=e_cols,
+                    rows=e_rows,
+                    row_key="event_at",
+                    title="Recent Artifact Run Events (cp_artifact_run_events)",
+                )
+
+    _draw()
+
+
+def _render_providers_tab(
+    container: ui.tab_panel,
+    profile: PFETLProfile,
+    cache: QueryCache | None,
+) -> None:
+    state: dict[str, Any] = {"provider": None, "status": None, "run_id": None}
+
+    def _draw() -> None:
+        container.clear()
+        with container:
+            try:
+                prov = OperationsAnalytics.provider_requests(
+                    profile,
+                    ProviderRequestFilter(
+                        run_id=state["run_id"],
+                        provider=state["provider"],
+                        status=state["status"],
+                        limit=250,
+                    ),
+                    cache=cache,
+                )
+                fails = OperationsAnalytics.run_failures(
+                    profile, run_id=state["run_id"], limit=200, cache=cache
+                )
+            except Exception as exc:
+                error_state_panel("Unable to load Providers & Failures", str(exc))
+                return
+
+            if prov.state == "unavailable":
+                error_state_panel(
+                    "Control Plane Unavailable",
+                    prov.diagnostics[0] if prov.diagnostics else "SQLite Control Plane missing.",
+                )
+                return
+
+            def _set_prov(v: Any) -> None:
+                state["provider"] = str(v) or None
+                _draw()
+
+            def _set_st(v: Any) -> None:
+                state["status"] = str(v) or None
+                _draw()
+
+            with ui.row().classes("w-full items-center gap-3 flex-wrap mb-3"):
+                ui.select(
+                    options={"": "All Providers", **{p: p for p in prov.available_providers}},
+                    value=state["provider"] or "",
+                    label="Provider",
+                    on_change=lambda e: _set_prov(e.value),
+                ).props("dense outlined dark").classes("w-52")
+                ui.select(
+                    options={"": "All Statuses", **{s: s for s in prov.available_statuses}},
+                    value=state["status"] or "",
+                    label="Request Status",
+                    on_change=lambda e: _set_st(e.value),
+                ).props("dense outlined dark").classes("w-44")
+
+            if prov.kpis:
+                _render_kpi_grid(prov.kpis)
+
+            if prov.requests:
+                with ui.grid().classes("w-full grid-cols-1 lg:grid-cols-2 gap-4 my-4"):
+                    chart_panel(
+                        title="Provider Requests by Status",
+                        subtitle="CACHED vs SUCCESS vs FAILED across providers",
+                        figure=build_ops_provider_status_figure(prov.requests),
+                        source_caption="Source: cp_external_provider_requests",
+                    )
+                    chart_panel(
+                        title="Provider Attempt Count Distribution",
+                        subtitle="0 attempts (cache hits) vs retry attempt counts",
+                        figure=build_ops_provider_attempts_figure(prov.requests),
+                        source_caption="Source: cp_external_provider_requests",
+                    )
+
+                p_cols = [
+                    TableColumn(name="created_at", label="Created At", field="created_at"),
+                    TableColumn(name="provider", label="Provider", field="provider"),
+                    TableColumn(name="entity", label="Entity / Ticker", field="entity"),
+                    TableColumn(name="window", label="Requested Window", field="window"),
+                    TableColumn(name="attempts", label="Attempts", field="attempts", align="right"),
+                    TableColumn(name="status", label="Status", field="status"),
+                    TableColumn(name="failure_class", label="Failure Class", field="failure_class"),
+                ]
+                p_rows = [
+                    {
+                        "created_at": r.created_at_raw or "—",
+                        "provider": r.provider,
+                        "entity": r.entity,
+                        "window": (
+                            f"{r.requested_start.isoformat()} → {r.requested_end.isoformat()}"
+                            if r.requested_start and r.requested_end
+                            else "—"
+                        ),
+                        "attempts": r.attempt_count,
+                        "status": r.status,
+                        "failure_class": r.failure_class or "—",
+                    }
+                    for r in prov.requests
+                ]
+                bounded_data_table(
+                    columns=p_cols,
+                    rows=p_rows,
+                    row_key="entity",
+                    title="External Provider Requests (cp_external_provider_requests)",
+                )
+            else:
+                empty_state_panel(
+                    "No Provider Requests",
+                    prov.diagnostics[0] if prov.diagnostics else "No requests recorded.",
+                )
+
+            if fails.failures:
+                chart_panel(
+                    title="Run Failures by Domain & Stage",
+                    subtitle="Recorded exceptions grouped by failure_domain and stage",
+                    figure=build_ops_failure_domains_figure(fails.failures),
+                    source_caption="Source: cp_run_failures",
+                )
+                fail_map = {f.id: f for f in fails.failures}
+                with ui.row().classes("w-full items-center gap-3 flex-wrap my-2"):
+                    fail_sel = (
+                        ui.select(
+                            options={
+                                f.id: f"#{f.id} · {f.failure_domain}/{f.stage} ({f.error_type})"
+                                for f in fails.failures
+                            },
+                            value=fails.failures[0].id,
+                            label="Inspect Failure Detail",
+                        )
+                        .props("dense outlined dark")
+                        .classes("w-96")
+                    )
+                    ui.button(
+                        "Open Failure Drawer",
+                        icon="bug_report",
+                        on_click=lambda: (
+                            _open_failure_drawer(fail_map[int(fail_sel.value)])
+                            if int(fail_sel.value or -1) in fail_map
+                            else None
+                        ),
+                    ).props("outline color=warning")
+
+                fl_cols = [
+                    TableColumn(name="id", label="ID", field="id", align="right"),
+                    TableColumn(name="run_id", label="Run ID", field="run_id"),
+                    TableColumn(name="domain", label="Domain", field="domain"),
+                    TableColumn(name="stage", label="Stage", field="stage"),
+                    TableColumn(name="error_type", label="Error Type", field="error_type"),
+                    TableColumn(name="error_message", label="Message", field="error_message"),
+                    TableColumn(name="created_at", label="Created At", field="created_at"),
+                ]
+                fl_rows = [
+                    {
+                        "id": f.id,
+                        "run_id": _short_id(f.run_id),
+                        "domain": f.failure_domain,
+                        "stage": f.stage,
+                        "error_type": f.error_type,
+                        "error_message": f.error_message[:120],
+                        "created_at": f.created_at_raw or "—",
+                    }
+                    for f in fails.failures
+                ]
+                bounded_data_table(
+                    columns=fl_cols,
+                    rows=fl_rows,
+                    row_key="id",
+                    title="Run Failures (cp_run_failures)",
+                )
+            else:
+                with ui.card().classes("studio-card w-full p-4 rounded-lg"):
+                    with ui.row().classes("items-center gap-2"):
+                        ui.icon("check_circle", size="20px").style("color: #10B981;")
+                        ui.label("Zero Run Failures Recorded in cp_run_failures").classes(
+                            "text-body2 font-semibold"
+                        )
+
+    _draw()
+
+
+def _render_phase21_placeholder(title: str, description: str, sources: tuple[str, ...]) -> None:
     with ui.card().classes("studio-card w-full p-6 gap-3 rounded-lg"):
         with ui.row().classes("items-center gap-2"):
             ui.icon("construction", size="22px").style("color: var(--studio-accent);")
             ui.label(title).classes("text-subtitle1 font-semibold")
-            status_badge("Phase 20", tone=BadgeTone.NEUTRAL)
+            status_badge("Phase 21", tone=BadgeTone.NEUTRAL)
         ui.label(description).classes("text-body2").style("color: var(--studio-text-muted);")
         with ui.row().classes("items-center gap-2 flex-wrap"):
             for src in sources:
@@ -230,7 +809,7 @@ def render_operations_page(
     initial_tab: str = "runs",
     on_tab_change: Callable[[str], Any] | None = None,
 ) -> None:
-    """Render the Phase 19 Operations workspace from shared `AppContext`."""
+    """Render the Phase 19 & 20 Operations workspace from shared `AppContext`."""
     route = ROUTES_BY_ID["operations"]
     with ui.column().classes("w-full gap-4"):
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
@@ -254,8 +833,12 @@ def render_operations_page(
                 upstream_sources=(
                     "cp_runs",
                     "cp_run_sync_summaries",
-                    "meta.m_Table_Row_Counts",
-                    "meta.m_Data_Contracts",
+                    "cp_file_registry",
+                    "cp_artifact_run_events",
+                    "cp_external_provider_requests",
+                    "cp_run_failures",
+                    "cp_settings_snapshots",
+                    "cp_rules_snapshots",
                 ),
             )
             return
@@ -277,23 +860,14 @@ def render_operations_page(
             p_providers = ui.tab_panel("providers").classes("p-0 pt-3")
             p_forensics = ui.tab_panel("forensics").classes("p-0 pt-3")
 
-        with p_sources:
-            _render_phase20_placeholder(
-                "Sources & Artifacts Registry",
-                "Ingestion file registry, artifact run events, and payload provenance will be wired in Phase 20.",
-                ("cp_file_registry", "cp_file_payloads", "cp_artifact_run_events"),
-            )
-        with p_providers:
-            _render_phase20_placeholder(
-                "Provider Requests & Failures",
-                "External market/FX provider request traces and run failure diagnostics will be wired in Phase 20.",
-                ("cp_external_provider_requests", "cp_run_failures"),
-            )
+        _render_sources_tab(p_sources, profile, cache)
+        _render_providers_tab(p_providers, profile, cache)
+
         with p_forensics:
-            _render_phase20_placeholder(
+            _render_phase21_placeholder(
                 "Forensics & Evidence Download",
-                "Decompressed execution_log JSONL viewer and archived run trace explorer will be wired in Phase 20.",
-                ("cp_runs.execution_log", "logs_directory JSONL"),
+                "Decompressed execution_log JSONL viewer and archived run trace explorer will be wired in Phase 21.",
+                ("cp_runs.execution_log", "logs_directory JSONL", "cp_file_payloads"),
             )
 
         def _render_runs() -> None:
@@ -425,16 +999,18 @@ def render_operations_page(
                                 for r in snap.runs
                             },
                             value=snap.runs[0].run_id,
-                            label="Inspect Run Detail",
+                            label="Inspect Run Detail & Snapshots",
                         )
                         .props("dense outlined dark")
                         .classes("w-80")
                     )
                     ui.button(
-                        "Open Run Drawer",
+                        "Open Run & Snapshot Drawer",
                         icon="open_in_new",
                         on_click=lambda: (
-                            _open_run_drawer(run_map[str(inspect_sel.value)])
+                            _open_run_drawer(
+                                run_map[str(inspect_sel.value)], snap.runs, profile, cache
+                            )
                             if str(inspect_sel.value) in run_map
                             else None
                         ),
