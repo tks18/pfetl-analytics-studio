@@ -1,0 +1,376 @@
+"""Phase 17 Plotly chart builders for the Tax Analytics workspace."""
+
+from __future__ import annotations
+
+from collections.abc import Sequence
+from typing import Any
+
+from pfetl_analytics_studio.ui.charts import (
+    currency_ticks,
+    numeric_ticks,
+    studio_plotly_layout,
+)
+from pfetl_analytics_studio.ui.formatting import format_currency
+
+_TAX_PALETTE = ["#38BDF8", "#A78BFA", "#34D399", "#FBBF24", "#F472B6", "#60A5FA"]
+
+
+def build_tax_fy_trend_figure(
+    all_fy_rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build multi-FY grouped bars of Ledger Income, Realized Gain/Loss, Est. Tax & Credits."""
+    if not all_fy_rows:
+        return None
+    fys = [str(r.get("FY", "")) for r in all_fy_rows]
+    led_inc = [float(r.get("Total_Ledger_Income") or 0.0) for r in all_fy_rows]
+    inv_gl = [float(r.get("Total_Investment_Gain_Loss") or 0.0) for r in all_fy_rows]
+    est_tax = [
+        float(r.get("Total_Estimated_Ledger_Tax") or 0.0)
+        + float(r.get("Total_Estimated_Investment_Tax") or 0.0)
+        for r in all_fy_rows
+    ]
+    tax_credits = [float(r.get("Total_Tax_Credits") or 0.0) for r in all_fy_rows]
+    y_ticks = currency_ticks(
+        [*led_inc, *inv_gl, *est_tax, *tax_credits], currency_id, include_zero=True
+    )
+    layout = studio_plotly_layout(
+        height=340, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": fys,
+                "y": led_inc,
+                "name": "Ledger Income",
+                "marker": {"color": "#38BDF8"},
+            },
+            {
+                "type": "bar",
+                "x": fys,
+                "y": inv_gl,
+                "name": "Inv. Gain/Loss",
+                "marker": {"color": "#34D399"},
+            },
+            {
+                "type": "bar",
+                "x": fys,
+                "y": est_tax,
+                "name": "Est. Total Tax",
+                "marker": {"color": "#F87171"},
+            },
+            {
+                "type": "bar",
+                "x": fys,
+                "y": tax_credits,
+                "name": "Tax Credits",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_composition_donut_figure(
+    summary: Any,
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build Donut of Est. Ledger Tax vs Est. Investment Tax vs Tax Credits."""
+    led = max(0.0, float(getattr(summary, "total_estimated_ledger_tax", 0.0) or 0.0))
+    inv = max(0.0, float(getattr(summary, "total_estimated_investment_tax", 0.0) or 0.0))
+    cred = max(0.0, float(getattr(summary, "total_tax_credits", 0.0) or 0.0))
+    if led + inv + cred <= 0:
+        return None
+    labels = ["Est. Ledger Tax", "Est. Investment Tax", "Tax Credits (TDS)"]
+    vals = [led, inv, cred]
+    layout = studio_plotly_layout(height=340)
+    return {
+        "data": [
+            {
+                "type": "pie",
+                "labels": labels,
+                "values": vals,
+                "hole": 0.55,
+                "marker": {"colors": ["#38BDF8", "#A78BFA", "#34D399"]},
+                "hovertemplate": "%{label}<br>Amount: %{customdata} (%{percent})<extra></extra>",
+                "customdata": [format_currency(v, currency_id) for v in vals],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_indicative_exposure_figure(
+    summary: Any,
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build bar comparison of Unrealized Tax-If-Sold, Harvest Savings & Net Exposure."""
+    unr = float(getattr(summary, "indicative_unrealized_tax_liability", 0.0) or 0.0)
+    sav = float(getattr(summary, "indicative_harvestable_tax_savings", 0.0) or 0.0)
+    net = float(getattr(summary, "indicative_net_tax_exposure", 0.0) or 0.0)
+    if unr == 0 and sav == 0 and net == 0:
+        return None
+    labels = ["Unrealized Tax-If-Sold", "Harvest Tax Savings", "Indicative Net Exposure"]
+    vals = [unr, sav, net]
+    y_ticks = currency_ticks(vals, currency_id, include_zero=True)
+    layout = studio_plotly_layout(height=340, y_ticks=y_ticks, x_axis_type="category")
+    layout["showlegend"] = False
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": vals,
+                "marker": {"color": ["#F87171", "#34D399", "#FBBF24"]},
+                "hovertemplate": "%{x}<br>%{customdata}<extra></extra>",
+                "customdata": [format_currency(v, currency_id) for v in vals],
+            }
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_head_breakdown_figure(
+    rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build horizontal grouped bars of Event Amount vs Estimated Tax by Tax Sub-Head."""
+    top = list(rows[:10])
+    if not top:
+        return None
+    top.reverse()
+    labels = [
+        f"{getattr(r, 'tax_sub_head', '')} ({getattr(r, 'source_type', '')})"[:32] for r in top
+    ]
+    amt = [float(getattr(r, "event_amount_inr", 0.0) or 0.0) for r in top]
+    tax = [float(getattr(r, "estimated_tax_inr", 0.0) or 0.0) for r in top]
+    x_ticks = currency_ticks([*amt, *tax], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340, barmode="group", horizontal_bars=True, x_currency_ticks=x_ticks
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": amt,
+                "name": "Event Amount",
+                "orientation": "h",
+                "marker": {"color": "#38BDF8"},
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": tax,
+                "name": "Estimated Tax",
+                "orientation": "h",
+                "marker": {"color": "#F87171"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_source_type_figure(
+    rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build bar chart of Event Amount & Estimated Tax grouped by Source_Type."""
+    if not rows:
+        return None
+    by_src: dict[str, tuple[float, float]] = {}
+    for r in rows:
+        st = str(getattr(r, "source_type", "") or "OTHER")
+        prev_a, prev_t = by_src.get(st, (0.0, 0.0))
+        by_src[st] = (
+            prev_a + float(getattr(r, "event_amount_inr", 0.0) or 0.0),
+            prev_t + float(getattr(r, "estimated_tax_inr", 0.0) or 0.0),
+        )
+    labels = list(by_src.keys())
+    amts = [by_src[k][0] for k in labels]
+    taxes = [by_src[k][1] for k in labels]
+    y_ticks = currency_ticks([*amts, *taxes], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": amts,
+                "name": "Event Amount",
+                "marker": {"color": "#A78BFA"},
+            },
+            {
+                "type": "bar",
+                "x": labels,
+                "y": taxes,
+                "name": "Estimated Tax",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_recon_bridge_figure(
+    rows: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build grouped horizontal bars comparing Ledger Tax Event vs Quant Realized Gain/Loss."""
+    top = list(rows[:10])
+    if not top:
+        return None
+    top.reverse()
+    labels = [str(getattr(r, "tax_sub_head", ""))[:28] for r in top]
+    led = [float(getattr(r, "ledger_tax_event_amount", 0.0) or 0.0) for r in top]
+    qnt = [float(getattr(r, "quant_realized_gain_loss", 0.0) or 0.0) for r in top]
+    diff = [float(getattr(r, "investment_source_difference_inr", 0.0) or 0.0) for r in top]
+    x_ticks = currency_ticks([*led, *qnt, *diff], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340, barmode="group", horizontal_bars=True, x_currency_ticks=x_ticks
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "y": labels,
+                "x": led,
+                "name": "Ledger Amount",
+                "orientation": "h",
+                "marker": {"color": "#38BDF8"},
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": qnt,
+                "name": "Quant Realized P&L",
+                "orientation": "h",
+                "marker": {"color": "#34D399"},
+            },
+            {
+                "type": "bar",
+                "y": labels,
+                "x": diff,
+                "name": "Source Diff",
+                "orientation": "h",
+                "marker": {"color": "#F87171"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_completeness_figure(
+    rows: Sequence[Any],
+) -> dict[str, Any] | None:
+    """Build stacked bar of Ready vs Check Required event counts across Tax Sub-Heads."""
+    top = list(rows[:10])
+    if not top:
+        return None
+    labels = [str(getattr(r, "tax_sub_head", ""))[:22] for r in top]
+    ready = [float(getattr(r, "ready_count", 0) or 0) for r in top]
+    check = [float(getattr(r, "check_required_count", 0) or 0) for r in top]
+    y_ticks = numeric_ticks([r + c for r, c in zip(ready, check, strict=True)], suffix="")
+    layout = studio_plotly_layout(
+        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": labels,
+                "y": ready,
+                "name": "Ready",
+                "marker": {"color": "#34D399"},
+            },
+            {
+                "type": "bar",
+                "x": labels,
+                "y": check,
+                "name": "Check Required",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_events_timeline_figure(
+    events: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build monthly bar chart of Event Amount & Estimated Tax across `silver.fact_tax_events`."""
+    if not events:
+        return None
+    by_ym: dict[str, tuple[float, float]] = {}
+    for ev in events:
+        dt = getattr(ev, "event_date", None)
+        ym = dt.strftime("%Y-%m") if dt else "Unknown"
+        pa, pt = by_ym.get(ym, (0.0, 0.0))
+        by_ym[ym] = (
+            pa + float(getattr(ev, "amount_inr", 0.0) or 0.0),
+            pt + float(getattr(ev, "estimated_tax", 0.0) or 0.0),
+        )
+    yms = sorted(by_ym.keys())
+    amts = [by_ym[k][0] for k in yms]
+    taxes = [by_ym[k][1] for k in yms]
+    y_ticks = currency_ticks([*amts, *taxes], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=340, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": yms,
+                "y": amts,
+                "name": "Event Amount",
+                "marker": {"color": "#38BDF8"},
+            },
+            {
+                "type": "bar",
+                "x": yms,
+                "y": taxes,
+                "name": "Estimated Tax",
+                "marker": {"color": "#F87171"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_fy_readiness_figure(
+    all_fy_rows: Sequence[Any],
+) -> dict[str, Any] | None:
+    """Build stacked bar of Ready vs Check Required tax events across all FYs."""
+    if not all_fy_rows:
+        return None
+    fys = [str(r.get("FY", "")) for r in all_fy_rows]
+    ready = [float(r.get("Ready_Count") or 0) for r in all_fy_rows]
+    check = [float(r.get("Check_Required_Count") or 0) for r in all_fy_rows]
+    y_ticks = numeric_ticks([r + c for r, c in zip(ready, check, strict=True)], suffix="")
+    layout = studio_plotly_layout(
+        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": fys,
+                "y": ready,
+                "name": "Ready Events",
+                "marker": {"color": "#34D399"},
+            },
+            {
+                "type": "bar",
+                "x": fys,
+                "y": check,
+                "name": "Check Required",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }

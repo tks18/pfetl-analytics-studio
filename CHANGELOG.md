@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.20](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.19...0.1.20) (2026-11-26)
+
+
+### Features 🔥
+
+* **analytics:** add Phase 17 TaxAnalytics models and queries ([da21526](https://github.com/tks18/pfetl-analytics-studio/commit/da21526526e39b28ed6da00ca7da630c301936aa))
+* **ui:** add 8 tax charts and Tax workspace page ([f1aa957](https://github.com/tks18/pfetl-analytics-studio/commit/f1aa9575dddc0224ce92532fde75b2e66c62f6b6))
+
+
+### Tests 🧪
+
+* **analytics:** add unit tests for Phase 17 tax queries ([c254ed8](https://github.com/tks18/pfetl-analytics-studio/commit/c254ed8a1ac40d521b057329560af729e300c8bc))
+
 ### [0.1.19](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.18...0.1.19) (2026-11-26)
 
 
