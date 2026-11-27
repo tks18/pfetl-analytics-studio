@@ -17,6 +17,10 @@ from pfetl_analytics_studio.reports.templates.cashflow import (
     CASHFLOW_BUDGET_REVIEW_DEF,
     register_cashflow_sources,
 )
+from pfetl_analytics_studio.reports.templates.currency import (
+    MULTI_CURRENCY_EXPOSURE_REVIEW_DEF,
+    register_currency_sources,
+)
 from pfetl_analytics_studio.reports.templates.expense import (
     EXPENSE_LIFESTYLE_REVIEW_DEF,
     register_expense_sources,
@@ -32,6 +36,14 @@ from pfetl_analytics_studio.reports.templates.income import (
 from pfetl_analytics_studio.reports.templates.monthly import (
     MONTHLY_FINANCIAL_REVIEW_DEF,
     register_monthly_sources,
+)
+from pfetl_analytics_studio.reports.templates.performance import (
+    INVESTMENT_PERFORMANCE_BENCHMARK_DEF,
+    register_performance_sources,
+)
+from pfetl_analytics_studio.reports.templates.portfolio import (
+    PORTFOLIO_REVIEW_DEF,
+    register_portfolio_sources,
 )
 from pfetl_analytics_studio.reports.templates.wealth import (
     NET_WORTH_WEALTH_ATTRIBUTION_DEF,
@@ -56,13 +68,24 @@ def register_cashflow_expense_income_templates(registry: ReportRegistry) -> None
     register_income_sources(registry)
 
 
+def register_investment_reports_templates(registry: ReportRegistry) -> None:
+    """Register the Phase 28 Portfolio, Performance, and Currency built-in templates."""
+    register_portfolio_sources(registry)
+    register_performance_sources(registry)
+    register_currency_sources(registry)
+
+
 __all__ = [
     "CASHFLOW_BUDGET_REVIEW_DEF",
     "EXPENSE_LIFESTYLE_REVIEW_DEF",
     "FINANCIAL_YEAR_REVIEW_DEF",
     "INCOME_RESILIENCE_REVIEW_DEF",
+    "INVESTMENT_PERFORMANCE_BENCHMARK_DEF",
     "MONTHLY_FINANCIAL_REVIEW_DEF",
+    "MULTI_CURRENCY_EXPOSURE_REVIEW_DEF",
     "NET_WORTH_WEALTH_ATTRIBUTION_DEF",
+    "PORTFOLIO_REVIEW_DEF",
     "register_cashflow_expense_income_templates",
+    "register_investment_reports_templates",
     "register_monthly_fy_wealth_templates",
 ]
