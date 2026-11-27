@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.31](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.30...0.1.31) (2026-11-27)
+
+
+### Others 🔧
+
+* **hooks:** switch pre-push hook to audit-fast and pylint ([9e14223](https://github.com/tks18/pfetl-analytics-studio/commit/9e14223534e2be8a26e04f3d0bcaedeafa790a40))
+
+
+### Features 🔥
+
+* **reports:** add Portfolio, Performance, and Currency reports ([debd6be](https://github.com/tks18/pfetl-analytics-studio/commit/debd6bedbdeb1aa89c08259ea6c40363df3218d7))
+
+
+### Tests 🧪
+
+* **reports:** verify Portfolio, Performance, and Currency reports ([55e0151](https://github.com/tks18/pfetl-analytics-studio/commit/55e01513f5a615cea8126b37afde2272eef7c21d))
+
 ### [0.1.30](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.29...0.1.30) (2026-11-27)
 
 
