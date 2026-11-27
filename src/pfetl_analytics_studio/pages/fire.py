@@ -614,7 +614,7 @@ def render_fire_page(
     initial_tab: str = "trajectory",
     on_tab_change: Callable[[str], Any] | None = None,
 ) -> None:
-    """Render the Phase 18 FIRE & Simulation Analytics page."""
+    """Render the FIRE & Simulation Analytics page."""
     route = ROUTES_BY_ID["fire"]
     with ui.column().classes("w-full gap-4"):
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):

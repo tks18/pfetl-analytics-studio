@@ -1,4 +1,4 @@
-"""DuckDB SQL queries for Phase 17 Tax Analytics."""
+"""DuckDB SQL queries for Tax Analytics."""
 
 from __future__ import annotations
 

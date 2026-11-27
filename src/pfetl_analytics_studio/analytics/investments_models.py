@@ -186,7 +186,7 @@ class FxExposureRow(BaseModel):
 
 
 class InvestmentPerformanceSnapshot(BaseModel):
-    """Complete immutable Phase 14 Performance, Benchmark, FX & Concentration snapshot."""
+    """Complete immutable Performance, Benchmark, FX & Concentration snapshot."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -403,7 +403,7 @@ class ReconciliationGroupRow(BaseModel):
 
 
 class RealizedReconciliationSnapshot(BaseModel):
-    """Combined Phase 16 Realized & Reconciliation workspace snapshot."""
+    """Combined Realized & Reconciliation workspace snapshot."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -482,7 +482,7 @@ class FxObservationPoint(BaseModel):
 
 
 class MarketEvidenceSnapshot(BaseModel):
-    """Phase 16 Market, Benchmark & FX Evidence snapshot."""
+    """Market, Benchmark & FX Evidence snapshot."""
 
     model_config = ConfigDict(frozen=True)
 

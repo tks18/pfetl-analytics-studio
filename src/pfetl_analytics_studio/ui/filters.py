@@ -328,7 +328,7 @@ def period_selector(
     current_preset : PeriodPreset, optional
         Fallback active preset when `current_request` is omitted.
     on_preset_change : Callable[[PeriodPreset], None] | None, optional
-        Legacy preset-only change callback.
+        Preset-only period change callback.
     current_comparison : ComparisonMode, optional
         Fallback comparison mode when `current_request` is omitted.
     on_comparison_change : Callable[[ComparisonMode], None] | None, optional

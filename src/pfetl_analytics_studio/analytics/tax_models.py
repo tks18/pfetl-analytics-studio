@@ -1,4 +1,4 @@
-"""Typed DTOs for Phase 17 Tax Analytics.
+"""Typed DTOs for Tax Analytics.
 
 All outputs carry `indicative=True` to preserve the non-statutory boundary.
 """

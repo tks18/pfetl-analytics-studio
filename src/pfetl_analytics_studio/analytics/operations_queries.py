@@ -1,4 +1,4 @@
-"""SQLite Control Plane & DuckDB meta queries for Phase 19 Operations."""
+"""SQLite Control Plane & DuckDB meta queries for Operations & Forensics."""
 
 from __future__ import annotations
 

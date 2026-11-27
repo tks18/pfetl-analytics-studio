@@ -1,4 +1,4 @@
-"""Phase 16 Realized, Reconciliation & Market Evidence UI sub-tabs."""
+"""Realized, Reconciliation & Market Evidence UI sub-tabs."""
 
 from __future__ import annotations
 
@@ -96,7 +96,7 @@ def render_realized_tab(
     *,
     cache: QueryCache | None = None,
 ) -> None:
-    """Render the Phase 16 Realized Events, Lineage & Reconciliation sub-tab."""
+    """Render the Realized Events, Lineage & Reconciliation sub-tab."""
     profile = context.profile
     if profile is None:
         return
@@ -363,7 +363,7 @@ def render_evidence_tab(
     *,
     cache: QueryCache | None = None,
 ) -> None:
-    """Render the Phase 16 Market, Benchmark & FX Evidence sub-tab."""
+    """Render the Market, Benchmark & FX Evidence sub-tab."""
     profile = context.profile
     if profile is None:
         return

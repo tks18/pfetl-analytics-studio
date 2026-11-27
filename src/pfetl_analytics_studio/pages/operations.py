@@ -255,7 +255,7 @@ def _open_run_drawer(
         _render_diff("rules")
 
         with ui.row().classes("w-full items-center justify-between pt-2"):
-            ui.label("Archived JSONL forensic log viewer coming in Phase 21.").classes(
+            ui.label("No archived JSONL forensic log available for this run.").classes(
                 "text-caption"
             ).style("color: var(--studio-text-muted);")
             ui.button("Close", on_click=dlg.close).props("flat color=primary")
@@ -1165,7 +1165,7 @@ def render_operations_page(
     initial_tab: str = "runs",
     on_tab_change: Callable[[str], Any] | None = None,
 ) -> None:
-    """Render the Phase 19 & 20 Operations workspace from shared `AppContext`."""
+    """Render the Operations & Forensics workspace from shared `AppContext`."""
     route = ROUTES_BY_ID["operations"]
     with ui.column().classes("w-full gap-4"):
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):

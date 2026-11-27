@@ -1032,7 +1032,7 @@ def _render_guided_tab(
 
 
 def render_explorer_page(context: AppContext) -> None:
-    """Render the Phase 22/23 Explorer workspace (Catalog, Guided, Saved Views, Read-Only SQL)."""
+    """Render the Explorer workspace (Catalog, Guided, Saved Views, Read-Only SQL)."""
     render_domain_workspace(
         context=context,
         route=ROUTES_BY_ID["explorer"],

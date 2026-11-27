@@ -618,7 +618,7 @@ def _render_performance_tab(
     *,
     cache: QueryCache | None = None,
 ) -> None:
-    """Render the Phase 14 Performance, Benchmark, FX & Concentration sub-tab."""
+    """Render the Performance, Benchmark, FX & Concentration sub-tab."""
     profile = context.profile
     if profile is None:
         return
@@ -842,7 +842,7 @@ def _render_lots_tab(
     *,
     cache: QueryCache | None = None,
 ) -> None:
-    """Render the Phase 15 Investment Lot Explorer sub-tab."""
+    """Render the Investment Lot Explorer sub-tab."""
     profile = context.profile
     if profile is None:
         return

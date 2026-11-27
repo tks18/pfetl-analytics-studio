@@ -1,4 +1,4 @@
-"""Typed contracts for Phase 22 Data Catalog and Guided Explorer."""
+"""Typed contracts for Data Catalog and Guided Explorer."""
 
 from __future__ import annotations
 

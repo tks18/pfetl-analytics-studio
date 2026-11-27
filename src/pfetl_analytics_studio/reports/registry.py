@@ -300,7 +300,7 @@ def _execute_overview_monthly_table(ctx: ReportSourceContext, block_id: str) -> 
 
 
 def build_default_report_registry() -> ReportRegistry:
-    """Create the default `ReportRegistry` with Phase 24 demonstration sources & template."""
+    """Create the default `ReportRegistry` with all analytical block sources & built-in templates."""
     registry = ReportRegistry()
     registry.register_source(
         RegisteredBlockSource(

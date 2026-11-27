@@ -1,4 +1,4 @@
-"""Typed DTOs for Phase 19 Operations Run History, Sync Health & Warehouse Freshness."""
+"""Typed DTOs for Operations Run History, Sync Health & Warehouse Freshness."""
 
 from __future__ import annotations
 
@@ -97,7 +97,7 @@ class WarehouseHealthSnapshot(BaseModel):
 
 
 class OperationsSnapshot(BaseModel):
-    """Complete Phase 19 Operations Run History & Sync Health snapshot."""
+    """Complete Operations Run History & Sync Health snapshot."""
 
     model_config = ConfigDict(frozen=True)
 
