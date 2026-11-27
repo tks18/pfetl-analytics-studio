@@ -520,6 +520,36 @@ def test_phase27_prebuilt_cashflow_expense_income_reports_render_and_export(
         assert xlsx_out.bytes_written > 1000
 
 
+def test_phase28_prebuilt_portfolio_performance_currency_reports_render_and_export(
+    profile_with_full_atlas: PFETLProfile,
+    tmp_path: Path,
+) -> None:
+    """Portfolio, Performance, and Currency built-ins render and export PDF/PPTX/XLSX."""
+    seed_overview_gold_tables(profile_with_full_atlas.duckdb_path)
+    app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
+    service = ReportService(registry=DEFAULT_REPORT_REGISTRY)
+
+    for report_id in (
+        "portfolio_review",
+        "investment_performance_benchmark",
+        "multi_currency_exposure_review",
+    ):
+        defn = DEFAULT_REPORT_REGISTRY.get_definition(report_id)
+        assert defn is not None
+        assert defn.builtin is True
+
+        res = service.render(defn, app_ctx)
+        assert [b.block_id for b in res.blocks] == [b.block_id for b in defn.blocks]
+        assert any(isinstance(b, RenderedProvenanceBlock) for b in res.blocks)
+
+        pdf_out = ReportExporter.export_pdf(res, tmp_path / f"{report_id}.pdf")
+        pptx_out = ReportExporter.export_pptx(res, tmp_path / f"{report_id}.pptx")
+        xlsx_out = ReportExporter.export_xlsx(res, tmp_path / f"{report_id}.xlsx")
+        assert pdf_out.bytes_written > 1000
+        assert pptx_out.bytes_written > 4000
+        assert xlsx_out.bytes_written > 1000
+
+
 def test_exporters_handle_missing_kaleido_prerequisite_gracefully(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
