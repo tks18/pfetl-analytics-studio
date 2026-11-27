@@ -36,7 +36,7 @@ Run saved custom definitions through the exact same deterministic preview/proven
 ## UI / interaction specification
 - Custom list shows last run/export history.
 - Preview supports current selected run or chosen historical run.
-- Buttons: Preview, Export PDF, Export XLSX, Duplicate, Edit; rerun against latest successful run.
+- Buttons: Preview, Export PDF (landscape deck), Export PPTX (editable 16:9 slides), Export XLSX, Duplicate, Edit; rerun against latest successful run (browser download via `ui.download`).
 - Show provenance changes between prior and rerun.
 
 ## Implementation sequence

@@ -33,14 +33,15 @@ Implement Investment Tax & Harvesting, Tax Position Review, and FIRE & Planning 
 - FIRE report uses canonical Gold outputs and provenance; any sensitivity block is labelled scenario-only.
 
 ## UI / interaction specification
-- Filters: FY, ISIN, tax type/subtype, holding type for tax; comparison only for FIRE where supported.
+- Filters: FY, ISIN, tax type/subtype, holding type for tax; comparison only for FIRE where supported, with Preview and browser downloads (Landscape PDF, Editable 16:9 PPTX, XLSX).
+- Templates use presentation-deck pacing (`PageBreakBlock` slide boundaries, 4-up KPI cards, data-labeled maturity/trajectory charts, and concise formatted tables with indicative/scenario disclaimers).
 
 ## Implementation sequence
-1. Define ordered blocks and mandatory disclaimers.
+1. Define presentation-paced ordered blocks and mandatory disclaimers.
 2. Include estimate completeness/reconciliation in Tax Position.
 3. Include lot maturity/harvest evidence in Investment Tax.
 4. Include FI target/gap/P10/P50/P90/probability/simulation provenance in FIRE.
-5. Test disclaimers and values.
+5. Test disclaimers, values, and Landscape PDF / Editable PPTX / XLSX exports.
 
 ## Focused verification
 - All tax outputs remain labelled indicative.

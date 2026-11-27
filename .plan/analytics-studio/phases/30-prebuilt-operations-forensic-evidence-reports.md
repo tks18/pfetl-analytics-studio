@@ -37,12 +37,13 @@ Implement Data Health & PFETL Operations, Run Forensic, and Source Evidence & Ch
 
 ## UI / interaction specification
 - Operations reports use local operational evidence and provenance; no finance methodology.
+- Templates use presentation-deck pacing (`PageBreakBlock` slide boundaries, 4-up KPI cards, legible timeline/duration charts, and bounded formatted tables) with Preview and browser downloads (Landscape PDF, Editable 16:9 PPTX, XLSX).
 
 ## Implementation sequence
-1. Define blocks for health/freshness/sync/providers/failures/row counts.
+1. Define presentation-paced blocks for health/freshness/sync/providers/failures/row counts.
 2. Define forensic event timeline/slow operations/failures/lineage.
 3. Define source change history/hash/replay/convergence/payload availability.
-4. Test filters and exports on fixture Control Plane.
+4. Test filters and Landscape PDF / Editable PPTX / XLSX exports on fixture Control Plane.
 
 ## Focused verification
 - All ten Control Plane tables have at least one report/page consumer.

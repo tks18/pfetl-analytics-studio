@@ -33,12 +33,13 @@ Implement Cashflow & Budget Review, Expense & Lifestyle Review, and Income Resil
 - Transaction appendices are bounded and optional; large full transaction exports belong XLSX/CSV, not huge PDF tables.
 
 ## UI / interaction specification
-- Built-in cards with supported household filters and custom period controls.
+- Built-in cards with supported household filters, custom period controls, Preview, and browser downloads (Landscape PDF, Editable 16:9 PPTX, XLSX).
+- Templates follow presentation-deck pacing (`PageBreakBlock` slide boundaries, 4-up KPI cards, data-labeled charts, and concise tables; full transaction dumps go to XLSX/CSV).
 
 ## Implementation sequence
-1. Define block order/content for all three.
+1. Define presentation-paced block order/content for all three.
 2. Include budget health/reconciliation in Cashflow; core/non-core + real growth in Expense; active/passive/coverage/dependency in Income.
-3. Test filter propagation and exported provenance.
+3. Test filter propagation and Landscape PDF / Editable PPTX / XLSX provenance exports.
 
 ## Focused verification
 - Report values equal corresponding analytics service outputs.

@@ -39,13 +39,14 @@ Implement and certify Monthly Financial Review, Financial Year Review, and Net W
 - All blocks inherit common provenance and filters; missing optional domain data becomes warning block.
 
 ## UI / interaction specification
-- Reports page Built-in list shows cards, description, default timeline, supported filters, Preview/Export.
+- Reports page Built-in list shows cards, description, default timeline, supported filters, Preview, and browser downloads (Landscape PDF, Editable 16:9 PPTX, XLSX).
+- Each template is structured as an executive presentation deck using `PageBreakBlock` slide boundaries, 4-up KPI cards, data-labeled charts with compact INR formatting, and bounded formatted tables.
 
 ## Implementation sequence
-1. Define exact ordered blocks for each of three reports.
+1. Define exact ordered blocks (with `PageBreakBlock` slide breaks) for each of three reports.
 2. Wire to existing analytics registry only.
 3. Add report-specific filter allowlists.
-4. Generate fixture PDF/XLSX snapshots structurally (page/sheet/block presence, not pixel screenshots).
+4. Generate fixture Landscape PDF, Editable PPTX, and XLSX snapshots structurally (slide/page/sheet/block presence, not pixel screenshots).
 5. Test custom period and filter propagation.
 
 ## Focused verification
