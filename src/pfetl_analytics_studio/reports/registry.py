@@ -28,23 +28,14 @@ from pfetl_analytics_studio.analytics.overview_models import (
 from pfetl_analytics_studio.context import AppContext
 from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.reports.models import (
-    ChartBlock,
-    DividerBlock,
-    KPIGroupBlock,
-    NarrativeBlock,
-    PageBreakBlock,
-    ProvenanceBlock,
     RenderedChartBlock,
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportContext,
     ReportDefinition,
     ReportKpiItem,
-    SubtitleBlock,
-    TableBlock,
-    TitleBlock,
 )
-from pfetl_analytics_studio.semantic import FilterSet, PeriodRequest
+from pfetl_analytics_studio.reports.templates import register_monthly_fy_wealth_templates
 from pfetl_analytics_studio.ui.formatting import format_metric_value
 from pfetl_analytics_studio.ui.theme import StudioColor
 
@@ -337,58 +328,7 @@ def build_default_report_registry() -> ReportRegistry:
         )
     )
 
-    registry.register_definition(
-        ReportDefinition(
-            id="builtin.executive_snapshot",
-            name="Executive Financial Snapshot (Runtime Demo)",
-            description=(
-                "Demonstration report verifying deterministic block ordering, run provenance, "
-                "KPI cards, Plotly chart serialization, and monthly tabular output."
-            ),
-            default_period=PeriodRequest(),
-            default_filters=FilterSet(),
-            builtin=True,
-            blocks=(
-                TitleBlock(
-                    block_id="cover_title",
-                    title="Executive Financial Snapshot",
-                    subtitle="Deterministic PFETL Analytics Studio Report Runtime",
-                ),
-                ProvenanceBlock(
-                    block_id="run_provenance",
-                    show_snapshots=True,
-                    show_disclaimer=True,
-                ),
-                NarrativeBlock(
-                    block_id="exec_note",
-                    heading="Methodology & Scope",
-                    body=(
-                        "All values below are queried read-only from canonical PFETL Gold marts "
-                        "and pinned to the exact PFETL run and Settings/Rules snapshots shown above."
-                    ),
-                ),
-                SubtitleBlock(block_id="kpi_heading", text="Key Financial Indicators"),
-                KPIGroupBlock(
-                    block_id="exec_kpis",
-                    source_id="overview.kpis",
-                    title="Executive KPIs",
-                ),
-                DividerBlock(block_id="mid_divider", label="Trajectory & Monthly Ledger"),
-                ChartBlock(
-                    block_id="nw_chart",
-                    source_id="overview.net_worth_trend",
-                    title="Net Worth & Net Savings Trajectory",
-                ),
-                PageBreakBlock(block_id="page_break_1"),
-                TableBlock(
-                    block_id="monthly_table",
-                    source_id="overview.monthly_summary_table",
-                    title="Monthly Net Worth & Cashflow Breakdown",
-                    max_rows=24,
-                ),
-            ),
-        )
-    )
+    register_monthly_fy_wealth_templates(registry)
     return registry
 
 
