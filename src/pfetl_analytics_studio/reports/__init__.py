@@ -13,6 +13,15 @@ Does not own
 
 from __future__ import annotations
 
+from pfetl_analytics_studio.reports.editor import (
+    BlockValidationIssue,
+    ReportBlockDraft,
+    ReportDefinitionDraft,
+    ReportValidationResult,
+    clone_definition_as_draft,
+    generate_unique_report_name,
+    validate_report_draft,
+)
 from pfetl_analytics_studio.reports.exporters import (
     ExportFormat,
     ExportPrerequisiteError,
@@ -67,6 +76,7 @@ from pfetl_analytics_studio.reports.service import (
 
 __all__ = [
     "DEFAULT_REPORT_REGISTRY",
+    "BlockValidationIssue",
     "ChartBlock",
     "CurrencyMode",
     "DividerBlock",
@@ -88,9 +98,11 @@ __all__ = [
     "RenderedTableBlock",
     "RenderedTextBlock",
     "ReportBlock",
+    "ReportBlockDraft",
     "ReportContext",
     "ReportContextOverrides",
     "ReportDefinition",
+    "ReportDefinitionDraft",
     "ReportExporter",
     "ReportKpiItem",
     "ReportRegistry",
@@ -99,6 +111,7 @@ __all__ = [
     "ReportService",
     "ReportSourceContext",
     "ReportSourceKind",
+    "ReportValidationResult",
     "ReportWarning",
     "RequiredReportBlockError",
     "SavedViewBlock",
@@ -106,7 +119,10 @@ __all__ = [
     "TableBlock",
     "TitleBlock",
     "build_default_report_registry",
+    "clone_definition_as_draft",
+    "generate_unique_report_name",
     "render_chart_image_bytes",
     "sanitize_excel_sheet_name",
     "sanitize_filename",
+    "validate_report_draft",
 ]
