@@ -35,7 +35,10 @@ from pfetl_analytics_studio.reports.models import (
     ReportDefinition,
     ReportKpiItem,
 )
-from pfetl_analytics_studio.reports.templates import register_monthly_fy_wealth_templates
+from pfetl_analytics_studio.reports.templates import (
+    register_cashflow_expense_income_templates,
+    register_monthly_fy_wealth_templates,
+)
 from pfetl_analytics_studio.ui.formatting import format_metric_value
 from pfetl_analytics_studio.ui.theme import StudioColor
 
@@ -329,6 +332,7 @@ def build_default_report_registry() -> ReportRegistry:
     )
 
     register_monthly_fy_wealth_templates(registry)
+    register_cashflow_expense_income_templates(registry)
     return registry
 
 
