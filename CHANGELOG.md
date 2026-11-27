@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.27](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.26...0.1.27) (2026-11-27)
+
+
+### Features 🔥
+
+* **reports:** add report domain models, registry, and runtime ([c5cfd3c](https://github.com/tks18/pfetl-analytics-studio/commit/c5cfd3c8f953b80d3e84d36ec944bd3fce183c34))
+* **state:** add saved_reports and report_runs schema v5 tables ([7dce8d3](https://github.com/tks18/pfetl-analytics-studio/commit/7dce8d38f38978c19709cb9964183801252b70fc))
+* **ui:** add report preview and run history to Reports page ([f3676a1](https://github.com/tks18/pfetl-analytics-studio/commit/f3676a11e8406b684491c3ec41c192a2c03277e9))
+
+
+### Tests 🧪
+
+* **reports:** verify block ordering, pinning, and broken blocks ([1ea3dd8](https://github.com/tks18/pfetl-analytics-studio/commit/1ea3dd82da2c5101340079639366ace5271fa876))
+
 ### [0.1.26](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.25...0.1.26) (2026-11-27)
 
 
