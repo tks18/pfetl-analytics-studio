@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.30](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.29...0.1.30) (2026-11-27)
+
+
+### Features 🔥
+
+* **reports:** add Cashflow, Expense, and Income built-in reports ([734074b](https://github.com/tks18/pfetl-analytics-studio/commit/734074b258baf4625a0f101441b2bdb70aa8c458))
+
+
+### Tests 🧪
+
+* **reports:** verify Cashflow, Expense, and Income reports and exports ([d59d210](https://github.com/tks18/pfetl-analytics-studio/commit/d59d21037a76aaa87f93f02454c8ade0658fd4df))
+
 ### [0.1.29](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.28...0.1.29) (2026-11-27)
 
 
