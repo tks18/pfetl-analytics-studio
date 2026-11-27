@@ -1,4 +1,4 @@
-"""Tests for Phase 18 FireAnalytics service, simulation provenance, and FIRE charts."""
+"""Tests for FireAnalytics service, simulation provenance, and FIRE charts."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Tests for Phase 19 OperationsAnalytics, Control Plane sync join & warehouse health."""
+"""Tests for OperationsAnalytics, Control Plane sync join & warehouse health."""
 
 from __future__ import annotations
 
@@ -313,7 +313,7 @@ def test_operations_run_sync_and_warehouse_health(tmp_path: Path) -> None:
         assert len(fig["data"]) >= 1
 
 
-def test_phase20_sources_providers_failures_and_snapshot_diff(tmp_path: Path) -> None:
+def test_sources_providers_failures_and_snapshot_diff(tmp_path: Path) -> None:
     db_path = tmp_path / "ops20.duckdb"
     cp_path = tmp_path / "cp20.sqlite"
     _create_meta_db(db_path)
@@ -388,7 +388,7 @@ def test_phase20_sources_providers_failures_and_snapshot_diff(tmp_path: Path) ->
         assert len(fig["data"]) >= 1
 
 
-def test_phase21_forensic_jsonl_lineage_and_payload_download(tmp_path: Path) -> None:
+def test_forensic_jsonl_lineage_and_payload_download(tmp_path: Path) -> None:
     db_path = tmp_path / "ops21.duckdb"
     cp_path = tmp_path / "cp21.sqlite"
     _create_meta_db(db_path)

@@ -1,4 +1,4 @@
-"""Tests for Phase 17 TaxAnalytics service, Gold tax marts, and completeness."""
+"""Tests for TaxAnalytics service, Gold tax marts, and completeness."""
 
 from __future__ import annotations
 

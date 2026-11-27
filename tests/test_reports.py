@@ -1,4 +1,4 @@
-"""Tests for Phase 24 Report Definition, Provenance, Registry, and Runtime."""
+"""Tests for Report Definition, Provenance, Registry, and Runtime."""
 
 from __future__ import annotations
 
@@ -453,7 +453,7 @@ def test_exporter_pptx_builds_editable_16_9_deck_and_records_history(tmp_path: P
         assert [r.output_format for r in runs] == ["pptx"]
 
 
-def test_phase26_prebuilt_monthly_fy_wealth_reports_render_and_export(
+def test_prebuilt_monthly_fy_wealth_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
 ) -> None:
@@ -496,7 +496,7 @@ def test_phase26_prebuilt_monthly_fy_wealth_reports_render_and_export(
         assert xlsx_out.bytes_written > 1000
 
 
-def test_phase27_prebuilt_cashflow_expense_income_reports_render_and_export(
+def test_prebuilt_cashflow_expense_income_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
 ) -> None:
@@ -527,7 +527,7 @@ def test_phase27_prebuilt_cashflow_expense_income_reports_render_and_export(
 
 
 
-def test_phase28_prebuilt_portfolio_performance_currency_reports_render_and_export(
+def test_prebuilt_portfolio_performance_currency_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
 ) -> None:
@@ -558,7 +558,7 @@ def test_phase28_prebuilt_portfolio_performance_currency_reports_render_and_expo
 
 
 
-def test_phase29_prebuilt_tax_and_fire_reports_render_and_export(
+def test_prebuilt_tax_and_fire_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
 ) -> None:
@@ -592,7 +592,7 @@ def test_phase29_prebuilt_tax_and_fire_reports_render_and_export(
 
 
 
-def _seed_phase30_control_plane(cp_path: Path) -> None:
+def _seed_operations_control_plane(cp_path: Path) -> None:
     """Populate full Control Plane schema & forensic JSONL blob on fixture SQLite."""
     events_jsonl = "\n".join(
         [
@@ -734,13 +734,13 @@ def _seed_phase30_control_plane(cp_path: Path) -> None:
         con.close()
 
 
-def test_phase30_prebuilt_operations_forensic_evidence_reports_render_and_export(
+def test_prebuilt_operations_forensic_evidence_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
 ) -> None:
     """Data Health, Run Forensic, and Source Evidence built-ins render and export cleanly."""
     seed_overview_gold_tables(profile_with_full_atlas.duckdb_path)
-    _seed_phase30_control_plane(profile_with_full_atlas.control_plane_path)
+    _seed_operations_control_plane(profile_with_full_atlas.control_plane_path)
     app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
     service = ReportService(registry=DEFAULT_REPORT_REGISTRY)
 
@@ -785,7 +785,7 @@ def test_phase30_prebuilt_operations_forensic_evidence_reports_render_and_export
         assert xlsx_out.bytes_written > 1000
 
 
-def test_phase31_custom_report_draft_clone_reorder_and_persistence_roundtrip(
+def test_custom_report_draft_clone_reorder_and_persistence_roundtrip(
     tmp_path: Path,
 ) -> None:
     """Clone built-in, reorder blocks, persist, rename, and delete preserving report_runs."""
@@ -848,7 +848,7 @@ def test_phase31_custom_report_draft_clone_reorder_and_persistence_roundtrip(
         assert len(runs) == 1
 
 
-def test_phase31_broken_saved_view_and_source_validation() -> None:
+def test_broken_saved_view_and_source_validation() -> None:
     """Broken SavedView or source references stay visible and block save only when required."""
     defn = ReportDefinition(
         id="custom_broken_test",
@@ -879,7 +879,7 @@ def test_phase31_broken_saved_view_and_source_validation() -> None:
     assert tbl_issues[0].blocking is True
 
 
-def test_phase32_custom_report_lifecycle_export_and_rerun_across_runs(
+def test_custom_report_lifecycle_export_and_rerun_across_runs(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
 ) -> None:
@@ -918,7 +918,7 @@ def test_phase32_custom_report_lifecycle_export_and_rerun_across_runs(
         con.close()
 
     app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
-    state_db = tmp_path / "studio_phase32.sqlite"
+    state_db = tmp_path / "studio_custom_rerun.sqlite"
     with StudioStateStore(db_path=state_db) as store:
         saved_view = store.create_saved_view(
             profile_id=profile_with_full_atlas.profile_id,
