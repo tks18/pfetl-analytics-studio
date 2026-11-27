@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.34](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.33...0.1.34) (2026-11-27)
+
+
+### Features 🔥
+
+* **reports:** add custom report draft, clone, and validation APIs ([e5d956d](https://github.com/tks18/pfetl-analytics-studio/commit/e5d956d9fbab1e4c50db0674de67339244358d4e))
+* **state:** add profile-scoped report definition rename helper ([85edcd2](https://github.com/tks18/pfetl-analytics-studio/commit/85edcd27a0fecc4cf8f18ccdcc5f03a9975d70c9))
+* **ui:** add Custom Reports CRUD and interactive block editor ([ae4ba89](https://github.com/tks18/pfetl-analytics-studio/commit/ae4ba89b1c05a43d6189de356775f463151332e3))
+
+
+### Tests 🧪
+
+* **reports:** verify custom report draft, clone, and validation ([8195e96](https://github.com/tks18/pfetl-analytics-studio/commit/8195e96032747c3a830f4de0d4fb932baea5a677))
+
 ### [0.1.33](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.32...0.1.33) (2026-11-27)
 
 
