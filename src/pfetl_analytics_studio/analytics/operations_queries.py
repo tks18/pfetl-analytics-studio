@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
@@ -197,12 +198,12 @@ def query_warehouse_contracts(
     rows = duck_reader.fetch_all(
         """
         SELECT
-            LOWER(COALESCE(layer, 'unknown')) AS layer,
+            LOWER(COALESCE(CAST(layer AS VARCHAR), 'unknown')) AS layer,
             COUNT(*) AS contract_count,
-            SUM(CASE WHEN COALESCE(is_full_replace, FALSE) THEN 1 ELSE 0 END) AS full_replace_count,
-            STRING_AGG(DISTINCT COALESCE(domain, ''), ',') AS domains_csv
+            SUM(CASE WHEN COALESCE(CAST(is_full_replace AS BOOLEAN), FALSE) THEN 1 ELSE 0 END) AS full_replace_count,
+            STRING_AGG(DISTINCT COALESCE(CAST(domain AS VARCHAR), ''), ',') AS domains_csv
         FROM meta.m_Data_Contracts
-        GROUP BY LOWER(COALESCE(layer, 'unknown'))
+        GROUP BY LOWER(COALESCE(CAST(layer AS VARCHAR), 'unknown'))
         ORDER BY layer ASC;
         """
     )
@@ -1300,6 +1301,34 @@ def query_payload_availability(cp_reader: ControlPlaneReader, file_id: str) -> t
     if row is None or row.get("byte_len") is None:
         return False, 0
     return True, int(row["byte_len"])
+
+
+def query_payload_availability_map(
+    cp_reader: ControlPlaneReader,
+    file_ids: Sequence[str] | None = None,
+) -> dict[str, int]:
+    """Return `{file_id: byte_len}` for retained payloads without loading `file_bytes`."""
+    if not _cp_table_exists(cp_reader, "cp_file_payloads"):
+        return {}
+    if file_ids is not None:
+        unique_ids = tuple(dict.fromkeys(fid for fid in file_ids if fid))
+        if not unique_ids:
+            return {}
+        placeholders = ", ".join("?" for _ in unique_ids)
+        rows = cp_reader.fetch_all(
+            f"SELECT file_id, length(file_bytes) AS byte_len FROM cp_file_payloads "
+            f"WHERE file_id IN ({placeholders});",
+            unique_ids,
+        )
+    else:
+        rows = cp_reader.fetch_all(
+            "SELECT file_id, length(file_bytes) AS byte_len FROM cp_file_payloads;",
+        )
+    return {
+        str(row["file_id"]): int(row["byte_len"])
+        for row in rows
+        if row.get("file_id") is not None and row.get("byte_len") is not None
+    }
 
 
 def query_source_payload_bytes(cp_reader: ControlPlaneReader, file_id: str) -> SourcePayloadResult:

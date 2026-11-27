@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.33](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.32...0.1.33) (2026-11-27)
+
+
+### Features 🔥
+
+* **analytics:** add batch retained-payload metadata query ([fda023b](https://github.com/tks18/pfetl-analytics-studio/commit/fda023bffd2d8334df1891672fcff9a23ded170a))
+* **reports:** add Data Health, Forensic, and Evidence reports ([94efd0d](https://github.com/tks18/pfetl-analytics-studio/commit/94efd0d8ad32a9b1cc4c3f3c6a1607424ce0908b))
+
+
+### Tests 🧪
+
+* **reports:** verify Phase 30 Operations, Forensic, and Evidence ([32d896c](https://github.com/tks18/pfetl-analytics-studio/commit/32d896c6be06608a6def5eb431ada37d988856d2))
+
 ### [0.1.32](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.31...0.1.32) (2026-11-27)
 
 

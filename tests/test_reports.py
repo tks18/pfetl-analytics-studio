@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime
+import json
 from pathlib import Path
+import sqlite3
 from typing import Any
 import zipfile
 
@@ -574,6 +576,199 @@ def test_phase29_prebuilt_tax_and_fire_reports_render_and_export(
         assert prov_blocks
         if report_id in ("investment_tax_harvesting", "tax_position_review"):
             assert "Indicative" in prov_blocks[0].disclaimer_text
+
+        pdf_out = ReportExporter.export_pdf(res, tmp_path / f"{report_id}.pdf")
+        pptx_out = ReportExporter.export_pptx(res, tmp_path / f"{report_id}.pptx")
+        xlsx_out = ReportExporter.export_xlsx(res, tmp_path / f"{report_id}.xlsx")
+        assert pdf_out.bytes_written > 1000
+        assert pptx_out.bytes_written > 4000
+        assert xlsx_out.bytes_written > 1000
+
+
+def _seed_phase30_control_plane(cp_path: Path) -> None:
+    """Populate full Control Plane schema & forensic JSONL blob on fixture SQLite."""
+    events_jsonl = "\n".join(
+        [
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event_id": "ev-2",
+                    "sequence": 2,
+                    "timestamp": "2026-11-26T00:02:41Z",
+                    "event_code": "ANALYTICS_COMPLETED",
+                    "severity": "INFO",
+                    "outcome": "COMPLETED",
+                    "message": "Analytics phase finished",
+                    "context": {
+                        "run_id": "run-latest-002",
+                        "stage": "ANALYZING",
+                        "component": "pipeline",
+                        "operation": "phase_4_analytics",
+                        "operation_id": "op-2",
+                        "parent_operation_id": "op-root",
+                        "duration_ms": 1245.5,
+                        "rows": 46,
+                    },
+                }
+            ),
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "event_id": "ev-1",
+                    "sequence": 1,
+                    "timestamp": "2026-11-26T00:02:40Z",
+                    "event_code": "PIPELINE_START",
+                    "severity": "INFO",
+                    "outcome": "COMPLETED",
+                    "message": "Pipeline initialized",
+                    "context": {
+                        "run_id": "run-latest-002",
+                        "stage": "INITIALIZING",
+                        "component": "lifecycle",
+                        "operation": "phase_0_init",
+                        "operation_id": "op-root",
+                    },
+                }
+            ),
+        ]
+    )
+    con = sqlite3.connect(str(cp_path))
+    try:
+        con.executescript(
+            """
+            DROP TABLE IF EXISTS cp_external_provider_requests;
+            CREATE TABLE cp_external_provider_requests (
+                request_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                provider TEXT,
+                entity TEXT,
+                requested_start DATE,
+                requested_end DATE,
+                attempt_count INTEGER,
+                status TEXT,
+                failure_class TEXT,
+                final_error TEXT,
+                created_at TIMESTAMP
+            );
+            INSERT INTO cp_external_provider_requests VALUES
+                ('pr1', 'run-latest-002', 'Yahoo Finance', '^NDX', '2026-11-20', '2026-11-26', 1, 'CACHED', NULL, NULL, '2026-11-26T00:02:42');
+
+            DROP TABLE IF EXISTS cp_file_registry;
+            CREATE TABLE cp_file_registry (
+                file_id TEXT PRIMARY KEY,
+                file_name TEXT,
+                relative_path TEXT,
+                file_category TEXT,
+                file_type TEXT,
+                file_hash TEXT,
+                file_size_bytes BIGINT,
+                sync_status TEXT,
+                first_seen_run_id TEXT,
+                first_seen_at TIMESTAMP,
+                last_seen_run_id TEXT,
+                last_seen_at TIMESTAMP,
+                last_changed_run_id TEXT,
+                last_changed_at TIMESTAMP,
+                last_synced_run_id TEXT,
+                last_synced_at TIMESTAMP
+            );
+            INSERT INTO cp_file_registry VALUES
+                ('f1', 'mf.csv', 'in/mf.csv', 'mf_holdings', 'csv', 'h1', 4096, 'SYNCED', 'run-latest-002', '2026-11-26T00:02:40', 'run-latest-002', '2026-11-26T00:02:40', 'run-latest-002', '2026-11-26T00:02:40', 'run-latest-002', '2026-11-26T00:02:41');
+
+            DROP TABLE IF EXISTS cp_artifact_run_events;
+            CREATE TABLE cp_artifact_run_events (
+                event_id TEXT PRIMARY KEY,
+                run_id TEXT,
+                file_id TEXT,
+                event_type TEXT,
+                event_at TIMESTAMP,
+                observed_path TEXT,
+                content_hash TEXT,
+                previous_status TEXT,
+                new_status TEXT,
+                event_reason TEXT,
+                affected_table TEXT,
+                detecting_run_id TEXT,
+                replay_run_id TEXT,
+                convergence_result TEXT
+            );
+            INSERT INTO cp_artifact_run_events VALUES
+                ('e1', 'run-latest-002', 'f1', 'SYNCED', '2026-11-26T00:02:41', 'in/mf.csv', 'h1', 'PENDING_BRONZE', 'SYNCED', 'Loaded', 'bronze.mf', 'run-latest-002', 'run-latest-002', 'CONVERGED');
+
+            DROP TABLE IF EXISTS cp_file_payloads;
+            CREATE TABLE cp_file_payloads (
+                file_id TEXT PRIMARY KEY,
+                file_bytes BLOB
+            );
+            INSERT INTO cp_file_payloads VALUES ('f1', X'DEADBEEF');
+
+            DROP TABLE IF EXISTS cp_run_failures;
+            CREATE TABLE cp_run_failures (
+                id INTEGER PRIMARY KEY,
+                run_id TEXT,
+                failed_isin TEXT,
+                stage TEXT,
+                error_type TEXT,
+                error_message TEXT,
+                traceback_log TEXT,
+                failure_domain TEXT,
+                created_at TIMESTAMP
+            );
+            INSERT INTO cp_run_failures VALUES
+                (1, 'run-latest-002', 'INE001A01036', 'market_sync', 'ValueError', 'Price missing', 'Traceback', 'market_data', '2026-11-26T00:02:41');
+            """
+        )
+        con.execute(
+            "UPDATE cp_runs SET execution_log = ? WHERE run_id = 'run-latest-002';",
+            (events_jsonl,),
+        )
+        con.commit()
+    finally:
+        con.close()
+
+
+def test_phase30_prebuilt_operations_forensic_evidence_reports_render_and_export(
+    profile_with_full_atlas: PFETLProfile,
+    tmp_path: Path,
+) -> None:
+    """Data Health, Run Forensic, and Source Evidence built-ins render and export cleanly."""
+    seed_overview_gold_tables(profile_with_full_atlas.duckdb_path)
+    _seed_phase30_control_plane(profile_with_full_atlas.control_plane_path)
+    app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
+    service = ReportService(registry=DEFAULT_REPORT_REGISTRY)
+
+    assert len(DEFAULT_REPORT_REGISTRY.list_definitions()) == 15
+
+    for report_id in (
+        "data_health_operations",
+        "run_forensic",
+        "source_evidence_change",
+    ):
+        defn = DEFAULT_REPORT_REGISTRY.get_definition(report_id)
+        assert defn is not None
+        assert defn.builtin is True
+
+        res = service.render(defn, app_ctx)
+        assert [b.block_id for b in res.blocks] == [b.block_id for b in defn.blocks]
+        assert any(isinstance(b, RenderedProvenanceBlock) for b in res.blocks)
+
+        if report_id == "run_forensic":
+            appendix = next(
+                b
+                for b in res.blocks
+                if isinstance(b, RenderedTableBlock) and b.block_id == "forensic_appendix_table"
+            )
+            seqs = [int(r["Seq"]) for r in appendix.rows]
+            assert seqs == sorted(seqs)
+
+        if report_id == "source_evidence_change":
+            payload_tbl = next(
+                b
+                for b in res.blocks
+                if isinstance(b, RenderedTableBlock) and b.block_id == "evidence_payload_table"
+            )
+            for row in payload_tbl.rows:
+                assert not isinstance(row.get("Retained Payload"), (bytes, bytearray))
 
         pdf_out = ReportExporter.export_pdf(res, tmp_path / f"{report_id}.pdf")
         pptx_out = ReportExporter.export_pptx(res, tmp_path / f"{report_id}.pptx")
