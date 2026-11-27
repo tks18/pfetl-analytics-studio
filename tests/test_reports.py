@@ -53,6 +53,7 @@ from pfetl_analytics_studio.reports import (
     TableBlock,
     TitleBlock,
     clone_definition_as_draft,
+    compare_report_provenance,
     sanitize_excel_sheet_name,
     sanitize_filename,
     validate_report_draft,
@@ -876,6 +877,130 @@ def test_phase31_broken_saved_view_and_source_validation() -> None:
     assert len(tbl_issues) == 1
     assert tbl_issues[0].code == "MISSING_BLOCK_SOURCE"
     assert tbl_issues[0].blocking is True
+
+
+def test_phase32_custom_report_lifecycle_export_and_rerun_across_runs(
+    profile_with_full_atlas: PFETLProfile,
+    tmp_path: Path,
+) -> None:
+    """Saved custom report previews, exports PDF/PPTX/XLSX, and reruns across PFETL runs."""
+    seed_overview_gold_tables(profile_with_full_atlas.duckdb_path)
+
+    # Seed an earlier historical PFETL run in Control Plane SQLite for rerun comparison.
+    con = sqlite3.connect(str(profile_with_full_atlas.control_plane_path))
+    try:
+        con.execute(
+            """
+            INSERT OR IGNORE INTO cp_settings_snapshots (snapshot_id, content_hash, canonical_payload, created_at)
+            VALUES ('snap-set-prev', 'hash-sp', '{}', '2026-10-01T00:00:00Z');
+            """
+        )
+        con.execute(
+            """
+            INSERT OR IGNORE INTO cp_rules_snapshots (snapshot_id, content_hash, canonical_payload, created_at)
+            VALUES ('snap-rul-prev', 'hash-rp', '{}', '2026-10-01T00:00:00Z');
+            """
+        )
+        con.execute(
+            """
+            INSERT OR IGNORE INTO cp_runs (
+                run_id, started_at, finished_at, status, commit_state,
+                application_version, schema_version, settings_snapshot_id, rules_snapshot_id
+            ) VALUES (
+                'run-prev-001', '2026-10-01T00:00:00Z', '2026-10-01T00:01:00Z',
+                'SUCCESS', 'FULLY_COMMITTED', 'v11.3.1', 'v2.9.0',
+                'snap-set-prev', 'snap-rul-prev'
+            );
+            """
+        )
+        con.commit()
+    finally:
+        con.close()
+
+    app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
+    state_db = tmp_path / "studio_phase32.sqlite"
+    with StudioStateStore(db_path=state_db) as store:
+        saved_view = store.create_saved_view(
+            profile_id=profile_with_full_atlas.profile_id,
+            name="Core Monthly Explorer",
+            kind=SavedViewKind.SQL,
+            datasource=SqlDatasource.DUCKDB,
+            sql_text='SELECT "MONTH_END_DATE", "Total_Net_Worth_Market" FROM gold.core_monthly_fact LIMIT 12',
+        )
+        builtin = DEFAULT_REPORT_REGISTRY.get_definition("monthly_financial_review")
+        assert builtin is not None
+        draft = clone_definition_as_draft(builtin, existing_names=set(), suffix="Custom")
+        draft.add_block(
+            ReportDefinitionDraft.from_definition(
+                ReportDefinition(
+                    id="tmp",
+                    name="tmp",
+                    blocks=(
+                        NarrativeBlock(block_id="cust_note", heading="Note", body="Custom rerun check"),
+                        SavedViewBlock(block_id="cust_sv", view_id=saved_view.view_id, max_rows=10),
+                    ),
+                )
+            ).blocks[0]
+        )
+        draft.add_block(
+            ReportDefinitionDraft.from_definition(
+                ReportDefinition(
+                    id="tmp2",
+                    name="tmp2",
+                    blocks=(
+                        SavedViewBlock(block_id="cust_sv", view_id=saved_view.view_id, max_rows=10),
+                    ),
+                )
+            ).blocks[0]
+        )
+        custom_def = draft.to_definition()
+        saved_rec = store.save_report_definition(
+            profile_with_full_atlas.profile_id,
+            custom_def.name,
+            custom_def.model_dump_json(),
+            report_id=custom_def.id,
+            description=custom_def.description,
+        )
+
+    service = ReportService(registry=DEFAULT_REPORT_REGISTRY)
+    res_prev = service.render_saved_report(
+        saved_rec.report_id,
+        app_ctx,
+        state_db_path=state_db,
+        context_overrides=ReportContextOverrides(pfetl_run_id="run-prev-001"),
+        record_history=True,
+    )
+    assert res_prev.context.pfetl_run_id == "run-prev-001"
+    assert res_prev.context.core_version == "v11.3.1"
+
+    pdf_out = ReportExporter.export_pdf(res_prev, tmp_path / "custom.pdf")
+    pptx_out = ReportExporter.export_pptx(res_prev, tmp_path / "custom.pptx")
+    xlsx_out = ReportExporter.export_xlsx(res_prev, tmp_path / "custom.xlsx")
+    assert pdf_out.bytes_written > 1000
+    assert pptx_out.bytes_written > 4000
+    assert xlsx_out.bytes_written > 1000
+
+    # Rerun same saved custom definition against the newer PFETL run.
+    res_latest = service.render_saved_report(
+        saved_rec.report_id,
+        app_ctx,
+        state_db_path=state_db,
+        context_overrides=ReportContextOverrides(pfetl_run_id="run-latest-002"),
+        record_history=True,
+    )
+    assert res_latest.context.pfetl_run_id == "run-latest-002"
+    changes = compare_report_provenance(res_prev.context, res_latest.context)
+    changed_fields = {c.field for c in changes}
+    assert "pfetl_run_id" in changed_fields
+    assert "core_version" in changed_fields
+
+    with StudioStateStore(db_path=state_db) as store:
+        after_rec = store.get_report_definition(saved_rec.report_id)
+        assert after_rec is not None
+        assert after_rec.definition_json == saved_rec.definition_json
+        runs = store.list_report_runs(report_id=saved_rec.report_id)
+        assert len(runs) == 2
+        assert {r.pfetl_run_id for r in runs} == {"run-prev-001", "run-latest-002"}
 
 
 def test_exporters_handle_missing_kaleido_prerequisite_gracefully(

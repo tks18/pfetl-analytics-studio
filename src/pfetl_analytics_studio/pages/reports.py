@@ -10,6 +10,8 @@ from typing import Any
 
 from nicegui import run, ui
 
+from pfetl_analytics_studio.analytics import OperationsAnalytics
+from pfetl_analytics_studio.analytics.operations_models import RunHistoryFilter
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.pages.report_editor_ui import (
@@ -21,6 +23,7 @@ from pfetl_analytics_studio.reports import (
     DEFAULT_REPORT_REGISTRY,
     ExportPrerequisiteError,
     ExportResult,
+    ProvenanceChange,
     RenderedBlock,
     RenderedBrokenBlock,
     RenderedChartBlock,
@@ -29,6 +32,7 @@ from pfetl_analytics_studio.reports import (
     RenderedStructuralBlock,
     RenderedTableBlock,
     RenderedTextBlock,
+    ReportContext,
     ReportContextOverrides,
     ReportDefinition,
     ReportDefinitionDraft,
@@ -36,6 +40,7 @@ from pfetl_analytics_studio.reports import (
     ReportResult,
     ReportService,
     clone_definition_as_draft,
+    compare_report_provenance,
     sanitize_filename,
 )
 from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest, preset_display_name
@@ -303,12 +308,14 @@ def _render_catalog_cards(
     on_preview: Callable[[ReportDefinition], Any],
     selected_id_ref: dict[str, ReportDefinition],
     *,
+    last_runs_by_report: dict[str, ReportRunRecord],
     on_new_custom: Callable[[], Any],
     on_clone_builtin: Callable[[ReportDefinition], Any],
     on_edit_custom: Callable[[SavedReportRecord], Any],
     on_rename_custom: Callable[[SavedReportRecord], Any],
     on_duplicate_custom: Callable[[SavedReportRecord], Any],
     on_delete_custom: Callable[[SavedReportRecord], Any],
+    on_rerun_latest_custom: Callable[[SavedReportRecord], Any],
 ) -> Callable[[], Any]:
     """Render a scalable, searchable, paginated 3-column Report Gallery."""
     search_state: dict[str, str] = {"q": ""}
@@ -446,6 +453,15 @@ def _render_catalog_cards(
                                             ui.label(rec.description).classes(
                                                 "text-xs line-clamp-2"
                                             ).style(f"color: {StudioColor.MUTED}")
+                                        last_run = last_runs_by_report.get(rec.report_id)
+                                        if last_run is not None:
+                                            ui.label(
+                                                f"Last: {last_run.output_format.upper()} · "
+                                                f"{last_run.pfetl_run_id[:10]} · "
+                                                f"{last_run.generated_at.strftime('%Y-%m-%d %H:%M')}"
+                                            ).classes("text-xs").style(
+                                                f"color: {StudioColor.MUTED}"
+                                            )
                                     with ui.row().classes(
                                         "w-full justify-end flex-wrap gap-1 pt-1"
                                     ):
@@ -458,6 +474,12 @@ def _render_catalog_cards(
                                                 )
                                             ),
                                         ).props("color=primary dense size=sm")
+                                        ui.button(
+                                            icon="refresh",
+                                            on_click=lambda _e, r=rec: on_rerun_latest_custom(r),
+                                        ).props("outline dense size=sm").tooltip(
+                                            "Rerun on Latest Successful Run"
+                                        )
                                         ui.button(
                                             "Edit",
                                             icon="edit",
@@ -604,19 +626,83 @@ def _load_reports_initial_state(
     return saved_reports, saved_views, run_history
 
 
-def _build_period_overrides(sel_preset: str, context: AppContext) -> ReportContextOverrides | None:
-    """Build `ReportContextOverrides` for Template Default, Global Period & Filters, or Preset."""
+def _load_available_run_options(
+    context: AppContext,
+    cache: QueryCache,
+) -> tuple[dict[str, str], str | None]:
+    """Load PFETL run options for preview/rerun selector and latest successful run ID."""
+    options: dict[str, str] = {"active": "Current Active Run"}
+    latest_success_id: str | None = None
+    if context.profile is None:
+        return options, None
+    ops = OperationsAnalytics.run_history(
+        context.profile,
+        RunHistoryFilter(limit=25),
+        catalog_snapshot=context.catalog_snapshot,
+        cache=cache,
+    )
+    for rec in ops.runs:
+        if latest_success_id is None and rec.status.upper() == "SUCCESS":
+            latest_success_id = rec.run_id
+        stamp = rec.started_at_raw[:16] if rec.started_at_raw else ""
+        options[rec.run_id] = f"{rec.run_id[:10]} · {rec.status} {stamp}".strip()
+    if latest_success_id:
+        options = {
+            "active": "Current Active Run",
+            "latest_success": f"Latest Success ({latest_success_id[:10]})",
+            **{k: v for k, v in options.items() if k != "active"},
+        }
+    return options, latest_success_id
+
+
+def _build_preview_overrides(
+    sel_preset: str,
+    sel_run_key: str,
+    latest_success_id: str | None,
+    context: AppContext,
+) -> ReportContextOverrides | None:
+    """Build `ReportContextOverrides` combining selected period preset and PFETL run."""
+    period_req: PeriodRequest | None = None
+    filters = None
     if sel_preset == "global":
-        return ReportContextOverrides(
-            period_request=context.period_request,
-            filters=context.filters,
-        )
-    if sel_preset != "default":
-        return ReportContextOverrides(
-            period_request=PeriodRequest(preset=PeriodPreset(sel_preset)),
-            filters=context.filters,
-        )
-    return None
+        period_req = context.period_request
+        filters = context.filters
+    elif sel_preset != "default":
+        period_req = PeriodRequest(preset=PeriodPreset(sel_preset))
+        filters = context.filters
+
+    run_id_override: str | None = None
+    if sel_run_key == "latest_success":
+        run_id_override = latest_success_id
+    elif sel_run_key != "active":
+        run_id_override = sel_run_key
+
+    if period_req is None and filters is None and run_id_override is None:
+        return None
+    return ReportContextOverrides(
+        pfetl_run_id=run_id_override,
+        period_request=period_req,
+        filters=filters,
+    )
+
+
+def _render_provenance_changes_banner(changes: tuple[ProvenanceChange, ...]) -> None:
+    """Render compact diff strip highlighting provenance changes since the prior run."""
+    if not changes:
+        return
+    with (
+        ui.card()
+        .classes("studio-card w-full p-3 rounded-xl gap-1")
+        .style("border: 1px solid rgba(59, 130, 246, 0.35);")
+    ):
+        ui.label("Provenance Changes Since Prior Run").classes(
+            "text-xs font-semibold uppercase tracking-wider"
+        ).style(f"color: {StudioColor.ACCENT}")
+        with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+            for ch in changes:
+                ui.label(f"{ch.label}: {ch.before[:16]} → {ch.after[:16]}").classes(
+                    "text-xs font-mono"
+                ).style(f"color: {StudioColor.TEXT}")
 
 
 def _run_report_export_sync(
@@ -683,10 +769,17 @@ def render_reports_page(  # pylint: disable=too-many-statements
         saved_reports, saved_views, run_history = _load_reports_initial_state(
             context, state_db_path
         )
+        run_options, latest_success_run_id = _load_available_run_options(context, active_cache)
+        last_runs_by_report: dict[str, ReportRunRecord] = {}
+        for run_rec in run_history:
+            last_runs_by_report.setdefault(run_rec.report_id, run_rec)
+
         editor_state: dict[str, ReportDefinitionDraft | None] = {"draft": None}
         refresh_gallery_ref: dict[str, Callable[[], Any] | None] = {"fn": None}
 
-        period_override_state: dict[str, str] = {"preset": "default"}
+        period_override_state: dict[str, str] = {"preset": "default", "run_key": "active"}
+        prior_context_by_def: dict[str, ReportContext] = {}
+        provenance_changes_state: dict[str, tuple[ProvenanceChange, ...]] = {"items": ()}
         export_progress_state: dict[str, str | bool] = {"active": False, "label": ""}
 
         @ui.refreshable
@@ -796,6 +889,7 @@ def render_reports_page(  # pylint: disable=too-many-statements
                     icon="play_circle_outline",
                 )
                 return
+            _render_provenance_changes_banner(provenance_changes_state["items"])
             _render_report_result(result, on_export_image=_export_chart_asset)
 
         @ui.refreshable
@@ -805,7 +899,12 @@ def render_reports_page(  # pylint: disable=too-many-statements
         async def _run_preview(defn: ReportDefinition) -> None:
             selected_def["current"] = defn
             error_state["error"] = None
-            overrides = _build_period_overrides(period_override_state["preset"], context)
+            overrides = _build_preview_overrides(
+                period_override_state["preset"],
+                period_override_state["run_key"],
+                latest_success_run_id,
+                context,
+            )
             try:
                 result = await run.io_bound(
                     service.render,
@@ -815,9 +914,22 @@ def render_reports_page(  # pylint: disable=too-many-statements
                     record_history=True,
                     state_db_path=state_db_path,
                 )
+                prior_ctx = prior_context_by_def.get(defn.id)
+                provenance_changes_state["items"] = (
+                    compare_report_provenance(prior_ctx, result.context)
+                    if prior_ctx is not None
+                    else ()
+                )
+                prior_context_by_def[defn.id] = result.context
                 rendered_state["result"] = result
                 with StudioStateStore(db_path=state_db_path) as store:
                     run_history[:] = store.list_report_runs(limit=25)
+                last_runs_by_report.clear()
+                for run_rec in run_history:
+                    last_runs_by_report.setdefault(run_rec.report_id, run_rec)
+                refresh_fn = refresh_gallery_ref["fn"]
+                if refresh_fn is not None:
+                    refresh_fn()
             except Exception as exc:  # noqa: BLE001
                 error_state["error"] = str(exc)
             _preview_container.refresh()
@@ -827,6 +939,16 @@ def render_reports_page(  # pylint: disable=too-many-statements
             period_override_state["preset"] = new_preset
             if rendered_state["result"] is not None:
                 await _run_preview(selected_def["current"])
+
+        async def _on_run_change(new_run_key: str) -> None:
+            period_override_state["run_key"] = new_run_key
+            if rendered_state["result"] is not None:
+                await _run_preview(selected_def["current"])
+
+        async def _rerun_latest_custom(rec: SavedReportRecord) -> None:
+            if latest_success_run_id:
+                period_override_state["run_key"] = "latest_success"
+            await _run_preview(ReportDefinition.model_validate_json(rec.definition_json))
 
         def _reload_saved_reports() -> None:
             if not context.profile_id:
@@ -942,12 +1064,14 @@ def render_reports_page(  # pylint: disable=too-many-statements
             saved_reports,
             _run_preview,
             selected_def,
+            last_runs_by_report=last_runs_by_report,
             on_new_custom=_open_new_custom,
             on_clone_builtin=_open_clone,
             on_edit_custom=_open_edit_custom,
             on_rename_custom=lambda r: open_rename_report_dialog(r, _rename_custom),
             on_duplicate_custom=_duplicate_custom,
             on_delete_custom=lambda r: open_delete_report_dialog(r, _delete_custom),
+            on_rerun_latest_custom=_rerun_latest_custom,
         )
         _editor_container()
 
@@ -963,6 +1087,17 @@ def render_reports_page(  # pylint: disable=too-many-statements
                         label="Report Period",
                         on_change=lambda e: _on_period_change(str(e.value or "default")),
                     ).props("dense outlined").classes("w-48")
+                    ui.select(
+                        options=run_options,
+                        value=period_override_state["run_key"],
+                        label="PFETL Run",
+                        on_change=lambda e: _on_run_change(str(e.value or "active")),
+                    ).props("dense outlined").classes("w-56")
+                    ui.button(
+                        "Rerun Latest",
+                        icon="refresh",
+                        on_click=lambda _e: _on_run_change("latest_success"),
+                    ).props("outline dense")
                     pdf_btn = ui.button(
                         "Export PDF",
                         icon="picture_as_pdf",

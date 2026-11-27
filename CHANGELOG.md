@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.35](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.34...0.1.35) (2026-11-27)
+
+
+### Features 🔥
+
+* **reports:** add render_saved_report and provenance diff helpers ([cf909cd](https://github.com/tks18/pfetl-analytics-studio/commit/cf909cd99aa7c965a313862b54baf541f912f053))
+* **ui:** add PFETL run selector, rerun, and diff banner ([396dac8](https://github.com/tks18/pfetl-analytics-studio/commit/396dac83ccb11b749e9f68422385aed5d4dc3d89))
+
+
+### Tests 🧪
+
+* **reports:** verify report export and rerun across PFETL runs ([a5ec166](https://github.com/tks18/pfetl-analytics-studio/commit/a5ec166784a8edae149edef1d7558c4919fa4bce))
+
 ### [0.1.34](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.33...0.1.34) (2026-11-27)
 
 

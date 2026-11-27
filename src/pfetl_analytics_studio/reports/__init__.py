@@ -68,10 +68,12 @@ from pfetl_analytics_studio.reports.registry import (
     build_default_report_registry,
 )
 from pfetl_analytics_studio.reports.service import (
+    ProvenanceChange,
     ReportContextOverrides,
     ReportResolutionError,
     ReportService,
     RequiredReportBlockError,
+    compare_report_provenance,
 )
 
 __all__ = [
@@ -88,6 +90,7 @@ __all__ = [
     "NarrativeBlock",
     "PageBreakBlock",
     "ProvenanceBlock",
+    "ProvenanceChange",
     "RegisteredBlockSource",
     "RenderedBlock",
     "RenderedBrokenBlock",
@@ -120,6 +123,7 @@ __all__ = [
     "TitleBlock",
     "build_default_report_registry",
     "clone_definition_as_draft",
+    "compare_report_provenance",
     "generate_unique_report_name",
     "render_chart_image_bytes",
     "sanitize_excel_sheet_name",
