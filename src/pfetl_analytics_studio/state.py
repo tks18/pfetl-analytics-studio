@@ -20,7 +20,7 @@ from pydantic import BaseModel, ConfigDict
 
 from pfetl_analytics_studio.profile import PFETLProfile
 
-CURRENT_SCHEMA_VERSION = 4
+CURRENT_SCHEMA_VERSION = 5
 
 
 def get_studio_state_path() -> Path:
@@ -84,6 +84,34 @@ class SavedViewDefinition(BaseModel):
     category: str = "Custom"
     created_at: datetime
     updated_at: datetime
+
+
+class SavedReportRecord(BaseModel):
+    """Persisted custom or cloned report definition record in `studio.sqlite`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    report_id: str
+    profile_id: str
+    name: str
+    description: str = ""
+    definition_json: str
+    created_at: datetime
+    updated_at: datetime
+
+
+class ReportRunRecord(BaseModel):
+    """Persisted report execution provenance & output metadata in `studio.sqlite`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    report_run_id: str
+    report_id: str
+    pfetl_run_id: str
+    period_json: str
+    output_format: str
+    output_path: str = ""
+    generated_at: datetime
 
 
 _DEFAULT_SQL_STARTERS: tuple[tuple[str, str, str, SqlDatasource, str], ...] = (
@@ -314,6 +342,37 @@ class StudioStateStore:
                     "ALTER TABLE saved_views ADD COLUMN category TEXT NOT NULL DEFAULT 'Custom';"
                 )
             cursor.execute("PRAGMA user_version = 4;")
+            conn.commit()
+
+        if version < 5:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_reports (
+                    report_id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    definition_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(profile_id, name)
+                );
+                """
+            )
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS report_runs (
+                    report_run_id TEXT PRIMARY KEY,
+                    report_id TEXT NOT NULL,
+                    pfetl_run_id TEXT NOT NULL,
+                    period_json TEXT NOT NULL,
+                    output_format TEXT NOT NULL,
+                    output_path TEXT NOT NULL DEFAULT '',
+                    generated_at TEXT NOT NULL
+                );
+                """
+            )
+            cursor.execute("PRAGMA user_version = 5;")
             conn.commit()
 
     def record_profile_opened(
@@ -747,6 +806,203 @@ class StudioStateStore:
             inserted += 1
         self.set_preference(pref_key, "1")
         return inserted
+
+    @staticmethod
+    def _row_to_saved_report(row: sqlite3.Row) -> SavedReportRecord:
+        """Convert a `saved_reports` SQLite row into a frozen `SavedReportRecord`."""
+        return SavedReportRecord(
+            report_id=str(row["report_id"]),
+            profile_id=str(row["profile_id"]),
+            name=str(row["name"]),
+            description=str(row["description"] or ""),
+            definition_json=str(row["definition_json"]),
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+
+    @staticmethod
+    def _row_to_report_run(row: sqlite3.Row) -> ReportRunRecord:
+        """Convert a `report_runs` SQLite row into a frozen `ReportRunRecord`."""
+        return ReportRunRecord(
+            report_run_id=str(row["report_run_id"]),
+            report_id=str(row["report_id"]),
+            pfetl_run_id=str(row["pfetl_run_id"]),
+            period_json=str(row["period_json"]),
+            output_format=str(row["output_format"]),
+            output_path=str(row["output_path"] or ""),
+            generated_at=datetime.fromisoformat(str(row["generated_at"])),
+        )
+
+    def save_report_definition(
+        self,
+        profile_id: str,
+        name: str,
+        definition_json: str,
+        *,
+        report_id: str | None = None,
+        description: str = "",
+    ) -> SavedReportRecord:
+        """Create or update a persisted report definition in `saved_reports`."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Report name must not be empty.")
+        rid = report_id or str(uuid.uuid4())
+        now = datetime.now(UTC).isoformat()
+        conn = self._get_connection()
+        existing = self.get_report_definition(rid)
+        try:
+            with conn:
+                if existing is None:
+                    conn.execute(
+                        """
+                        INSERT INTO saved_reports (
+                            report_id, profile_id, name, description,
+                            definition_json, created_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                        """,
+                        (
+                            rid,
+                            profile_id,
+                            clean_name,
+                            description.strip(),
+                            definition_json,
+                            now,
+                            now,
+                        ),
+                    )
+                else:
+                    conn.execute(
+                        """
+                        UPDATE saved_reports
+                        SET name = ?, description = ?, definition_json = ?, updated_at = ?
+                        WHERE report_id = ?;
+                        """,
+                        (
+                            clean_name,
+                            description.strip(),
+                            definition_json,
+                            now,
+                            rid,
+                        ),
+                    )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"A saved report named '{clean_name}' already exists for this profile."
+            ) from exc
+
+        saved = self.get_report_definition(rid)
+        assert saved is not None
+        return saved
+
+    def get_report_definition(self, report_id: str) -> SavedReportRecord | None:
+        """Fetch a single saved report definition by `report_id`."""
+        conn = self._get_connection()
+        row = conn.execute(
+            """
+            SELECT report_id, profile_id, name, description,
+                   definition_json, created_at, updated_at
+            FROM saved_reports
+            WHERE report_id = ?;
+            """,
+            (report_id,),
+        ).fetchone()
+        return self._row_to_saved_report(row) if row is not None else None
+
+    def list_report_definitions(self, profile_id: str) -> list[SavedReportRecord]:
+        """List saved report definitions for `profile_id`, newest first."""
+        conn = self._get_connection()
+        rows = conn.execute(
+            """
+            SELECT report_id, profile_id, name, description,
+                   definition_json, created_at, updated_at
+            FROM saved_reports
+            WHERE profile_id = ?
+            ORDER BY updated_at DESC, name ASC;
+            """,
+            (profile_id,),
+        ).fetchall()
+        return [self._row_to_saved_report(r) for r in rows]
+
+    def delete_report_definition(self, report_id: str) -> None:
+        """Delete a saved report definition by `report_id`."""
+        conn = self._get_connection()
+        with conn:
+            conn.execute("DELETE FROM saved_reports WHERE report_id = ?;", (report_id,))
+
+    def record_report_run(
+        self,
+        report_id: str,
+        pfetl_run_id: str,
+        period_json: str,
+        output_format: str,
+        *,
+        output_path: str = "",
+        generated_at: datetime | None = None,
+    ) -> ReportRunRecord:
+        """Persist a report execution / export metadata entry in `report_runs`."""
+        run_record_id = str(uuid.uuid4())
+        timestamp = (generated_at or datetime.now(UTC)).isoformat()
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO report_runs (
+                    report_run_id, report_id, pfetl_run_id, period_json,
+                    output_format, output_path, generated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?);
+                """,
+                (
+                    run_record_id,
+                    report_id,
+                    pfetl_run_id,
+                    period_json,
+                    output_format,
+                    output_path,
+                    timestamp,
+                ),
+            )
+        return ReportRunRecord(
+            report_run_id=run_record_id,
+            report_id=report_id,
+            pfetl_run_id=pfetl_run_id,
+            period_json=period_json,
+            output_format=output_format,
+            output_path=output_path,
+            generated_at=datetime.fromisoformat(timestamp),
+        )
+
+    def list_report_runs(
+        self,
+        *,
+        report_id: str | None = None,
+        limit: int = 50,
+    ) -> list[ReportRunRecord]:
+        """List recent report execution records, newest first."""
+        conn = self._get_connection()
+        if report_id is not None:
+            rows = conn.execute(
+                """
+                SELECT report_run_id, report_id, pfetl_run_id, period_json,
+                       output_format, output_path, generated_at
+                FROM report_runs
+                WHERE report_id = ?
+                ORDER BY generated_at DESC
+                LIMIT ?;
+                """,
+                (report_id, limit),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT report_run_id, report_id, pfetl_run_id, period_json,
+                       output_format, output_path, generated_at
+                FROM report_runs
+                ORDER BY generated_at DESC
+                LIMIT ?;
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_report_run(r) for r in rows]
 
     def close(self) -> None:
         """Close active SQLite connection if open."""
