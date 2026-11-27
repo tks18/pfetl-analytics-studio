@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.29](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.28...0.1.29) (2026-11-27)
+
+
+### Features 🔥
+
+* **reports:** add Monthly, FY, and Wealth built-in report templates ([c1c8c5e](https://github.com/tks18/pfetl-analytics-studio/commit/c1c8c5e0e78de1097eeb1788a8c0537cc11560fd))
+* **shell:** enable global filters and async profile-switch spinner ([d73c8fc](https://github.com/tks18/pfetl-analytics-studio/commit/d73c8fc63bb671f73dfe95e5500610e98f7c5bf3))
+* **ui:** add 3-col report gallery, period refresh, and export spinner ([b5a9e19](https://github.com/tks18/pfetl-analytics-studio/commit/b5a9e1968eddbab2e73cc7477c511e9b74cf8b5f))
+
+
+### Tests 🧪
+
+* **reports:** verify built-in report templates and export behavior ([ac62ed0](https://github.com/tks18/pfetl-analytics-studio/commit/ac62ed024202c38659fce5fdc3aa7da14f314c31))
+
 ### [0.1.28](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.27...0.1.28) (2026-11-27)
 
 

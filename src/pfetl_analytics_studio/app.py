@@ -164,9 +164,16 @@ _ROUTE_FILTER_SCOPE: dict[str, tuple[bool, tuple[FilterField, ...], str]] = {
         "Scope: Guided Analytics respects Global Period & compatible domain filters",
     ),
     "reports": (
-        False,
-        (),
-        "Scope: Report Definitions specify their own period and provenance",
+        True,
+        (
+            FilterField.FY,
+            FilterField.ASSET_GROUP,
+            FilterField.INCOME_CATEGORY,
+            FilterField.EXPENSE_CATEGORY,
+            FilterField.INSTRUMENT_CLASS,
+            FilterField.CURRENCY_ID,
+        ),
+        "Scope: Select 'Use Global Period & Filters' in Reports to apply global period & filters",
     ),
 }
 
@@ -536,14 +543,23 @@ def _render_profile_picker_form(
             )
         )
 
-        def _submit() -> None:
-            res = open_and_persist_profile(
-                session,
-                settings_path=str(settings_input.value or ""),
-                rules_path=str(rules_input.value or ""),
-                label=str(label_input.value or ""),
-                is_pinned=bool(pin_switch.value),
+        async def _submit() -> None:
+            notif = ui.notification(
+                "Loading PFETL profile & hydrating warehouse…",
+                spinner=True,
+                timeout=None,
             )
+            try:
+                res = await run.io_bound(
+                    open_and_persist_profile,
+                    session,
+                    settings_path=str(settings_input.value or ""),
+                    rules_path=str(rules_input.value or ""),
+                    label=str(label_input.value or ""),
+                    is_pinned=bool(pin_switch.value),
+                )
+            finally:
+                notif.dismiss()
             if not res.is_ok or res.profile is None:
                 msg = res.error.message if res.error else "Unable to load profile pair."
                 error_box.set_text(msg)
@@ -955,14 +971,23 @@ def _render_recent_profiles_card(
             ):
                 for item in recent:
 
-                    def _make_switch(rec: RecentProfileRecord) -> Callable[[], None]:
-                        def _do_switch() -> None:
-                            open_and_persist_profile(
-                                session,
-                                settings_path=str(rec.settings_path),
-                                rules_path=str(rec.rules_path),
-                                label=rec.label,
+                    def _make_switch(rec: RecentProfileRecord) -> Callable[[], Any]:
+                        async def _do_switch() -> None:
+                            notif = ui.notification(
+                                f"Loading profile '{rec.label}' & hydrating warehouse…",
+                                spinner=True,
+                                timeout=None,
                             )
+                            try:
+                                await run.io_bound(
+                                    open_and_persist_profile,
+                                    session,
+                                    settings_path=str(rec.settings_path),
+                                    rules_path=str(rec.rules_path),
+                                    label=rec.label,
+                                )
+                            finally:
+                                notif.dismiss()
                             ui.navigate.to(redirect_path)
 
                         return _do_switch

@@ -78,7 +78,7 @@ def test_report_registry_rejects_duplicate_ids() -> None:
             )
         )
 
-    defn = DEFAULT_REPORT_REGISTRY.get_definition("builtin.executive_snapshot")
+    defn = DEFAULT_REPORT_REGISTRY.get_definition("monthly_financial_review")
     assert defn is not None
     registry.register_definition(defn)
     with pytest.raises(DuplicateReportRegistrationError):
@@ -90,7 +90,7 @@ def test_report_definition_json_roundtrip_in_studio_sqlite(
 ) -> None:
     """ReportDefinition round-trips cleanly through StudioStateStore `saved_reports`."""
     assert CURRENT_SCHEMA_VERSION >= 5
-    defn = DEFAULT_REPORT_REGISTRY.get_definition("builtin.executive_snapshot")
+    defn = DEFAULT_REPORT_REGISTRY.get_definition("monthly_financial_review")
     assert defn is not None
 
     custom_defn = defn.model_copy(
@@ -445,6 +445,49 @@ def test_exporter_pptx_builds_editable_16_9_deck_and_records_history(tmp_path: P
     with StudioStateStore(db_path=state_db) as store:
         runs = store.list_report_runs()
         assert [r.output_format for r in runs] == ["pptx"]
+
+
+def test_phase26_prebuilt_monthly_fy_wealth_reports_render_and_export(
+    profile_with_full_atlas: PFETLProfile,
+    tmp_path: Path,
+) -> None:
+    """Monthly, FY, and Wealth built-ins render deterministically and export PDF/PPTX/XLSX."""
+    seed_overview_gold_tables(profile_with_full_atlas.duckdb_path)
+    app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
+    service = ReportService(registry=DEFAULT_REPORT_REGISTRY)
+
+    for report_id in (
+        "monthly_financial_review",
+        "financial_year_review",
+        "net_worth_wealth_attribution",
+    ):
+        defn = DEFAULT_REPORT_REGISTRY.get_definition(report_id)
+        assert defn is not None
+        assert defn.builtin is True
+
+        res = service.render(defn, app_ctx)
+        assert [b.block_id for b in res.blocks] == [b.block_id for b in defn.blocks]
+        assert any(isinstance(b, RenderedProvenanceBlock) for b in res.blocks)
+        if report_id in ("monthly_financial_review", "financial_year_review"):
+            assert any(isinstance(b, RenderedKPIGroupBlock) for b in res.blocks)
+
+        if report_id == "monthly_financial_review":
+            charts = [b for b in res.blocks if isinstance(b, RenderedChartBlock)]
+            wf = next((c for c in charts if c.source_id == "monthly.attribution_waterfall"), None)
+            assert wf is not None
+            wf_data: list[dict[str, Any]] = list(wf.figure_dict.get("data") or [])
+            assert wf_data and "Residual" in wf_data[0].get("x", [])
+
+        if report_id == "financial_year_review":
+            prov_blocks = [b for b in res.blocks if isinstance(b, RenderedProvenanceBlock)]
+            assert prov_blocks and "Indicative" in prov_blocks[0].disclaimer_text
+
+        pdf_out = ReportExporter.export_pdf(res, tmp_path / f"{report_id}.pdf")
+        pptx_out = ReportExporter.export_pptx(res, tmp_path / f"{report_id}.pptx")
+        xlsx_out = ReportExporter.export_xlsx(res, tmp_path / f"{report_id}.xlsx")
+        assert pdf_out.bytes_written > 1000
+        assert pptx_out.bytes_written > 5000
+        assert xlsx_out.bytes_written > 1000
 
 
 def test_exporters_handle_missing_kaleido_prerequisite_gracefully(

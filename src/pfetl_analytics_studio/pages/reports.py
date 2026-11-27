@@ -24,12 +24,14 @@ from pfetl_analytics_studio.reports import (
     RenderedStructuralBlock,
     RenderedTableBlock,
     RenderedTextBlock,
+    ReportContextOverrides,
     ReportDefinition,
     ReportExporter,
     ReportResult,
     ReportService,
     sanitize_filename,
 )
+from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest, preset_display_name
 from pfetl_analytics_studio.state import ReportRunRecord, SavedReportRecord, StudioStateStore
 from pfetl_analytics_studio.ui import (
     BadgeTone,
@@ -241,65 +243,112 @@ def _render_catalog_cards(
     builtins: tuple[ReportDefinition, ...],
     saved_reports: list[SavedReportRecord],
     on_preview: Callable[[ReportDefinition], Any],
+    selected_id_ref: dict[str, ReportDefinition],
 ) -> None:
-    """Render Built-in Templates and Custom Reports catalog cards."""
-    with ui.row().classes("w-full gap-4 flex-wrap"):
-        with ui.card().classes("studio-card flex-1 min-w-[300px] p-4 rounded-xl gap-2"):
-            with ui.row().classes("w-full items-center justify-between"):
-                ui.label("Built-in Templates").classes("text-base font-semibold").style(
-                    f"color: {StudioColor.TEXT}"
-                )
-                status_badge(
-                    f"{len(builtins)} Runtime Demo",
-                    tone=BadgeTone.INFO,
-                    outline=True,
-                )
-            ui.label(
-                "Phases 26–30 populate the 15 prebuilt financial, tax, and operational reports."
-            ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
-            for tmpl in builtins:
-                with ui.row().classes("w-full items-center justify-between gap-2 pt-2"):
-                    with ui.column().classes("gap-0"):
-                        ui.label(tmpl.name).classes("text-sm font-medium").style(
-                            f"color: {StudioColor.TEXT}"
-                        )
-                        ui.label(tmpl.description).classes("text-xs").style(
-                            f"color: {StudioColor.MUTED}"
-                        )
-                    ui.button(
-                        "Run Deterministic Preview",
-                        icon="play_arrow",
-                        on_click=lambda _e, d=tmpl: on_preview(d),
-                    ).props("color=primary dense")
+    """Render a scalable, searchable, tabbed 3-column Report Gallery."""
+    search_state: dict[str, str] = {"q": ""}
 
-        with ui.card().classes("studio-card flex-1 min-w-[300px] p-4 rounded-xl gap-2"):
-            with ui.row().classes("w-full items-center justify-between"):
-                ui.label("Custom Reports").classes("text-base font-semibold").style(
-                    f"color: {StudioColor.TEXT}"
-                )
-                status_badge(
-                    f"{len(saved_reports)} Saved",
-                    tone=BadgeTone.NEUTRAL,
-                    outline=True,
-                )
-            if not saved_reports:
-                ui.label(
-                    "No custom report definitions saved yet. Phases 31–32 add the "
-                    "interactive Clone & Custom Report Builder."
-                ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
-            else:
-                for rec in saved_reports:
-                    with ui.row().classes("w-full items-center justify-between gap-2 pt-1"):
-                        ui.label(rec.name).classes("text-sm font-medium").style(
-                            f"color: {StudioColor.TEXT}"
-                        )
-                        ui.button(
-                            "Preview",
-                            icon="play_arrow",
-                            on_click=lambda _e, r=rec: on_preview(
-                                ReportDefinition.model_validate_json(r.definition_json)
-                            ),
-                        ).props("outline dense")
+    with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
+        with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
+            with ui.tabs().props("dense no-caps active-color=primary") as catalog_tabs:
+                tab_builtin = ui.tab("builtin", label=f"Built-in Templates ({len(builtins)})")
+                tab_custom = ui.tab("custom", label=f"Custom Reports ({len(saved_reports)})")
+            ui.input(
+                placeholder="Search reports…",
+                on_change=lambda e: (
+                    search_state.update({"q": str(e.value or "").strip().lower()}),
+                    _gallery_grid.refresh(),
+                ),
+            ).props("dense outlined clearable debounce=200").classes("w-64")
+
+        @ui.refreshable
+        def _gallery_grid() -> None:
+            query = search_state["q"]
+            with ui.tab_panels(catalog_tabs, value=tab_builtin).classes("w-full bg-transparent"):
+                with ui.tab_panel(tab_builtin).classes("p-0 pt-2"):
+                    filtered = [
+                        t
+                        for t in builtins
+                        if not query or query in t.name.lower() or query in t.description.lower()
+                    ]
+                    if not filtered:
+                        ui.label("No built-in templates match your search.").classes(
+                            "text-sm"
+                        ).style(f"color: {StudioColor.MUTED}")
+                    else:
+                        with ui.grid(columns=3).classes("w-full gap-3"):
+                            for tmpl in filtered:
+                                is_active = selected_id_ref["current"].id == tmpl.id
+                                border = (
+                                    "1px solid #3B82F6"
+                                    if is_active
+                                    else "1px solid rgba(148, 163, 184, 0.2)"
+                                )
+                                with (
+                                    ui.card()
+                                    .classes("studio-card p-3 rounded-xl justify-between gap-2")
+                                    .style(f"border: {border};")
+                                ):
+                                    with ui.column().classes("gap-1"):
+                                        with ui.row().classes(
+                                            "w-full items-start justify-between gap-2"
+                                        ):
+                                            ui.label(tmpl.name).classes(
+                                                "text-sm font-semibold leading-snug"
+                                            ).style(f"color: {StudioColor.TEXT}")
+                                            status_badge(
+                                                preset_display_name(tmpl.default_period.preset),
+                                                tone=BadgeTone.INFO
+                                                if is_active
+                                                else BadgeTone.NEUTRAL,
+                                                outline=True,
+                                            )
+                                        ui.label(tmpl.description).classes(
+                                            "text-xs line-clamp-2"
+                                        ).style(f"color: {StudioColor.MUTED}")
+                                    with ui.row().classes("w-full justify-end pt-1"):
+                                        ui.button(
+                                            "Preview",
+                                            icon="play_arrow",
+                                            on_click=lambda _e, d=tmpl: on_preview(d),
+                                        ).props("color=primary dense size=sm")
+
+                with ui.tab_panel(tab_custom).classes("p-0 pt-2"):
+                    filtered_custom = [
+                        r
+                        for r in saved_reports
+                        if not query or query in r.name.lower() or query in r.description.lower()
+                    ]
+                    if not filtered_custom:
+                        ui.label(
+                            "No custom report definitions saved yet. Phases 31–32 add the "
+                            "interactive Clone & Custom Report Builder."
+                        ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
+                    else:
+                        with ui.grid(columns=3).classes("w-full gap-3"):
+                            for rec in filtered_custom:
+                                with ui.card().classes(
+                                    "studio-card p-3 rounded-xl justify-between gap-2"
+                                ):
+                                    ui.label(rec.name).classes("text-sm font-semibold").style(
+                                        f"color: {StudioColor.TEXT}"
+                                    )
+                                    if rec.description:
+                                        ui.label(rec.description).classes("text-xs").style(
+                                            f"color: {StudioColor.MUTED}"
+                                        )
+                                    with ui.row().classes("w-full justify-end pt-1"):
+                                        ui.button(
+                                            "Preview",
+                                            icon="play_arrow",
+                                            on_click=lambda _e, r=rec: on_preview(
+                                                ReportDefinition.model_validate_json(
+                                                    r.definition_json
+                                                )
+                                            ),
+                                        ).props("outline dense size=sm")
+
+        _gallery_grid()
 
 
 def _render_history_table(run_history: list[ReportRunRecord]) -> None:
@@ -330,6 +379,151 @@ def _render_history_table(run_history: list[ReportRunRecord]) -> None:
     )
 
 
+def _render_reports_header_and_guards(context: AppContext) -> bool:
+    """Render Reports header and standard profile/lock/compatibility guards."""
+    route = ROUTES_BY_ID["reports"]
+    with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+        with ui.row().classes("items-center gap-3"):
+            with (
+                ui.element("div")
+                .classes("w-9 h-9 rounded-lg flex items-center justify-center shrink-0")
+                .style(
+                    "background-color: rgba(59, 130, 246, 0.14); "
+                    "border: 1px solid rgba(59, 130, 246, 0.25);"
+                )
+            ):
+                ui.icon(route.icon, size="20px").style(f"color: {StudioColor.ACCENT}")
+            with ui.column().classes("gap-0"):
+                ui.label(route.label).classes("text-2xl font-bold tracking-tight").style(
+                    f"color: {StudioColor.TEXT}"
+                )
+                ui.label(route.description).classes("text-sm").style(f"color: {StudioColor.MUTED}")
+
+    if context.profile is None:
+        empty_state_panel(
+            title="Select a PFETL Profile to Explore Reports",
+            message=(
+                "No PFETL Settings / FinancialRules pair is active. Use 'Open Profile' "
+                "in the top bar or launch with `--settings` and `--rules`."
+            ),
+            icon="folder_open",
+            hint="Reports bind deterministically to one PFETL run and its snapshots.",
+            action_label="Go to Overview Profile Picker",
+            action_target="/overview",
+        )
+        return False
+
+    if context.is_warehouse_locked:
+        empty_state_panel(
+            title="Reports Paused While PFETL Lock Is Active",
+            message=(
+                "PFETL Core holds `pipeline.lock` on the DuckDB warehouse. Studio defers "
+                "report execution until Core finishes writing cleanly."
+            ),
+            icon="lock",
+            hint="Control Plane run telemetry and logs remain available under Operations.",
+            action_label="Inspect Operations & Runs",
+            action_target="/operations",
+        )
+        return False
+
+    if context.is_incompatible and context.compatibility:
+        error_state_panel(
+            title="Reports Blocked by Compatibility Check",
+            message=(
+                "Required upstream PFETL surfaces or columns did not match expected "
+                "catalog contracts."
+            ),
+            details=list(context.compatibility.diagnostics[:6]),
+        )
+        return False
+
+    return True
+
+
+def _temp_export_path(filename: str) -> Path:
+    """Resolve a temporary local export path prior to browser download."""
+    export_dir = Path(tempfile.gettempdir()) / "pfetl_studio_exports"
+    export_dir.mkdir(parents=True, exist_ok=True)
+    return export_dir / filename
+
+
+_PERIOD_OPTIONS: dict[str, str] = {
+    "default": "Template Default Period",
+    "global": "Use Global Period & Filters",
+    PeriodPreset.LATEST_COMPLETE_MONTH.value: "Latest Complete Month",
+    PeriodPreset.FYTD.value: "FYTD",
+    PeriodPreset.ROLLING_12M.value: "Rolling 12M",
+    PeriodPreset.SINCE_INCEPTION.value: "Since Inception",
+}
+
+
+def _load_reports_initial_state(
+    context: AppContext, state_db_path: Path | None
+) -> tuple[list[SavedReportRecord], list[ReportRunRecord]]:
+    """Load saved custom reports and recent report runs from `studio.sqlite`."""
+    saved_reports: list[SavedReportRecord] = []
+    run_history: list[ReportRunRecord] = []
+    with StudioStateStore(db_path=state_db_path) as store:
+        if context.profile_id:
+            saved_reports = store.list_report_definitions(context.profile_id)
+        run_history = store.list_report_runs(limit=25)
+    return saved_reports, run_history
+
+
+def _build_period_overrides(sel_preset: str, context: AppContext) -> ReportContextOverrides | None:
+    """Build `ReportContextOverrides` for Template Default, Global Period & Filters, or Preset."""
+    if sel_preset == "global":
+        return ReportContextOverrides(
+            period_request=context.period_request,
+            filters=context.filters,
+        )
+    if sel_preset != "default":
+        return ReportContextOverrides(
+            period_request=PeriodRequest(preset=PeriodPreset(sel_preset)),
+            filters=context.filters,
+        )
+    return None
+
+
+def _run_report_export_sync(
+    result: ReportResult,
+    fmt: str,
+    target: Path,
+    state_db_path: Path | None,
+) -> tuple[ExportResult, str]:
+    """Execute synchronous PDF, PPTX, or XLSX export and return `(ExportResult, media_type)`."""
+    if fmt == "pdf":
+        return (
+            ReportExporter.export_pdf(
+                result,
+                target,
+                record_history=True,
+                state_db_path=state_db_path,
+            ),
+            "application/pdf",
+        )
+    if fmt == "pptx":
+        return (
+            ReportExporter.export_pptx(
+                result,
+                target,
+                record_history=True,
+                state_db_path=state_db_path,
+            ),
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+        )
+    return (
+        ReportExporter.export_xlsx(
+            result,
+            target,
+            record_history=True,
+            state_db_path=state_db_path,
+        ),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
+
+
 def render_reports_page(
     context: AppContext,
     *,
@@ -337,67 +531,11 @@ def render_reports_page(
     state_db_path: Path | None = None,
 ) -> None:
     """Render the Reports workspace from shared `AppContext`."""
-    route = ROUTES_BY_ID["reports"]
     active_cache = cache if cache is not None else _REPORTS_CACHE
     service = ReportService(registry=DEFAULT_REPORT_REGISTRY, cache=active_cache)
 
     with ui.column().classes("w-full gap-4"):
-        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
-            with ui.row().classes("items-center gap-3"):
-                with (
-                    ui.element("div")
-                    .classes("w-9 h-9 rounded-lg flex items-center justify-center shrink-0")
-                    .style(
-                        "background-color: rgba(59, 130, 246, 0.14); "
-                        "border: 1px solid rgba(59, 130, 246, 0.25);"
-                    )
-                ):
-                    ui.icon(route.icon, size="20px").style(f"color: {StudioColor.ACCENT}")
-                with ui.column().classes("gap-0"):
-                    ui.label(route.label).classes("text-2xl font-bold tracking-tight").style(
-                        f"color: {StudioColor.TEXT}"
-                    )
-                    ui.label(route.description).classes("text-sm").style(
-                        f"color: {StudioColor.MUTED}"
-                    )
-
-        if context.profile is None:
-            empty_state_panel(
-                title="Select a PFETL Profile to Explore Reports",
-                message=(
-                    "No PFETL Settings / FinancialRules pair is active. Use 'Open Profile' "
-                    "in the top bar or launch with `--settings` and `--rules`."
-                ),
-                icon="folder_open",
-                hint="Reports bind deterministically to one PFETL run and its snapshots.",
-                action_label="Go to Overview Profile Picker",
-                action_target="/overview",
-            )
-            return
-
-        if context.is_warehouse_locked:
-            empty_state_panel(
-                title="Reports Paused While PFETL Lock Is Active",
-                message=(
-                    "PFETL Core holds `pipeline.lock` on the DuckDB warehouse. Studio defers "
-                    "report execution until Core finishes writing cleanly."
-                ),
-                icon="lock",
-                hint="Control Plane run telemetry and logs remain available under Operations.",
-                action_label="Inspect Operations & Runs",
-                action_target="/operations",
-            )
-            return
-
-        if context.is_incompatible and context.compatibility:
-            error_state_panel(
-                title="Reports Blocked by Compatibility Check",
-                message=(
-                    "Required upstream PFETL surfaces or columns did not match expected "
-                    "catalog contracts."
-                ),
-                details=list(context.compatibility.diagnostics[:6]),
-            )
+        if not _render_reports_header_and_guards(context):
             return
 
         builtins = DEFAULT_REPORT_REGISTRY.list_definitions(builtin_only=True)
@@ -409,22 +547,44 @@ def render_reports_page(
         rendered_state: dict[str, ReportResult | None] = {"result": None}
         error_state: dict[str, str | None] = {"error": None}
 
-        saved_reports: list[SavedReportRecord] = []
-        run_history: list[ReportRunRecord] = []
-        with StudioStateStore(db_path=state_db_path) as store:
-            if context.profile_id:
-                saved_reports = store.list_report_definitions(context.profile_id)
-            run_history = store.list_report_runs(limit=25)
+        saved_reports, run_history = _load_reports_initial_state(context, state_db_path)
 
-        def _temp_export_path(filename: str) -> Path:
-            export_dir = Path(tempfile.gettempdir()) / "pfetl_studio_exports"
-            export_dir.mkdir(parents=True, exist_ok=True)
-            return export_dir / filename
+        period_override_state: dict[str, str] = {"preset": "default"}
+        export_progress_state: dict[str, str | bool] = {"active": False, "label": ""}
+
+        @ui.refreshable
+        def _export_status_strip() -> None:
+            if not bool(export_progress_state["active"]):
+                return
+            with (
+                ui.row()
+                .classes("items-center gap-2 px-3 py-1 rounded-lg")
+                .style(
+                    "background: rgba(59, 130, 246, 0.14); border: 1px solid rgba(59, 130, 246, 0.3);"
+                )
+            ):
+                ui.spinner(size="sm", color="primary")
+                ui.label(str(export_progress_state["label"])).classes("text-xs font-medium").style(
+                    f"color: {StudioColor.TEXT}"
+                )
+
+        export_buttons: list[ui.button] = []
+
+        def _set_exporting(active: bool, label: str = "") -> None:
+            export_progress_state["active"] = active
+            export_progress_state["label"] = label
+            for btn in export_buttons:
+                if active:
+                    btn.disable()
+                else:
+                    btn.enable()
+            _export_status_strip.refresh()
 
         async def _export_chart_asset(block: RenderedChartBlock, fmt: str) -> None:
             stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             stem = sanitize_filename(f"{block.block_id}_{stamp}")
             target = _temp_export_path(f"{stem}.{fmt}")
+            _set_exporting(True, f"Rendering {fmt.upper()} chart…")
             try:
                 fn = (
                     ReportExporter.export_chart_png
@@ -440,6 +600,8 @@ def render_reports_page(
                 )
             except ExportPrerequisiteError as exc:
                 ui.notify(str(exc), type="negative")
+            finally:
+                _set_exporting(False)
 
         async def _export_report(fmt: str) -> None:
             result = rendered_state["result"]
@@ -449,37 +611,15 @@ def render_reports_page(
             stamp = datetime.now(UTC).strftime("%Y%m%d_%H%M%S")
             stem = sanitize_filename(f"{result.definition_id}_{stamp}")
             target = _temp_export_path(f"{stem}.{fmt}")
+            _set_exporting(True, f"Generating {fmt.upper()} report (may take a few seconds)…")
             try:
-                export_res: ExportResult
-                if fmt == "pdf":
-                    export_res = await run.io_bound(
-                        ReportExporter.export_pdf,
-                        result,
-                        target,
-                        record_history=True,
-                        state_db_path=state_db_path,
-                    )
-                    media = "application/pdf"
-                elif fmt == "pptx":
-                    export_res = await run.io_bound(
-                        ReportExporter.export_pptx,
-                        result,
-                        target,
-                        record_history=True,
-                        state_db_path=state_db_path,
-                    )
-                    media = (
-                        "application/vnd.openxmlformats-officedocument.presentationml.presentation"
-                    )
-                else:
-                    export_res = await run.io_bound(
-                        ReportExporter.export_xlsx,
-                        result,
-                        target,
-                        record_history=True,
-                        state_db_path=state_db_path,
-                    )
-                    media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                export_res, media = await run.io_bound(
+                    _run_report_export_sync,
+                    result,
+                    fmt,
+                    target,
+                    state_db_path,
+                )
                 with StudioStateStore(db_path=state_db_path) as store:
                     run_history[:] = store.list_report_runs(limit=25)
                 _history_container.refresh()
@@ -497,6 +637,8 @@ def render_reports_page(
                     ui.notify(msg, type="positive")
             except ExportPrerequisiteError as exc:
                 ui.notify(str(exc), type="negative")
+            finally:
+                _set_exporting(False)
 
         @ui.refreshable
         def _preview_container() -> None:
@@ -526,11 +668,13 @@ def render_reports_page(
         async def _run_preview(defn: ReportDefinition) -> None:
             selected_def["current"] = defn
             error_state["error"] = None
+            overrides = _build_period_overrides(period_override_state["preset"], context)
             try:
                 result = await run.io_bound(
                     service.render,
                     defn,
                     context,
+                    context_overrides=overrides,
                     record_history=True,
                     state_db_path=state_db_path,
                 )
@@ -542,7 +686,12 @@ def render_reports_page(
             _preview_container.refresh()
             _history_container.refresh()
 
-        _render_catalog_cards(builtins, saved_reports, _run_preview)
+        async def _on_period_change(new_preset: str) -> None:
+            period_override_state["preset"] = new_preset
+            if rendered_state["result"] is not None:
+                await _run_preview(selected_def["current"])
+
+        _render_catalog_cards(builtins, saved_reports, _run_preview, selected_def)
 
         with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
@@ -550,21 +699,29 @@ def render_reports_page(
                     f"color: {StudioColor.TEXT}"
                 )
                 with ui.row().classes("items-center gap-2 flex-wrap"):
-                    ui.button(
+                    ui.select(
+                        options=_PERIOD_OPTIONS,
+                        value=period_override_state["preset"],
+                        label="Report Period",
+                        on_change=lambda e: _on_period_change(str(e.value or "default")),
+                    ).props("dense outlined").classes("w-48")
+                    pdf_btn = ui.button(
                         "Export PDF",
                         icon="picture_as_pdf",
                         on_click=lambda _e: _export_report("pdf"),
                     ).props("outline dense")
-                    ui.button(
+                    pptx_btn = ui.button(
                         "Export PPTX",
                         icon="slideshow",
                         on_click=lambda _e: _export_report("pptx"),
                     ).props("outline dense")
-                    ui.button(
+                    xlsx_btn = ui.button(
                         "Export XLSX",
                         icon="table_view",
                         on_click=lambda _e: _export_report("xlsx"),
                     ).props("outline dense")
+                    export_buttons.extend([pdf_btn, pptx_btn, xlsx_btn])
+            _export_status_strip()
             _preview_container()
 
         _history_container()
