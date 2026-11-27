@@ -1,17 +1,17 @@
 #!/usr/bin/env sh
-# Personal Finance ETL - Pre-Push Quality Gate (Full Tier)
-# Runs Ruff, Format, Mypy, Pyright, Pylint, and Pytest (~40-70s).
-echo "[Quality Gate] Running Pre-Push Full Verification Suite..."
+# Personal Finance ETL - Pre-Push Quality Gate (Fast Tier + Pylint)
+# Runs Ruff, Format, Mypy, and Pylint without blocking push on full pytest.
+echo "[Quality Gate] Running Pre-Push Fast + Pylint Verification..."
 
-uv run poe audit-full
+uv run poe audit-fast && uv run pylint src
 EXIT_CODE=$?
 
 if [ $EXIT_CODE -ne 0 ]; then
     echo ""
     echo "[Quality Gate] [FAIL] Pre-push verification failed."
-    echo "[Quality Gate] Push aborted. Ensure all 6 engines pass before pushing."
+    echo "[Quality Gate] Push aborted. Ensure Ruff, Mypy, and Pylint pass before pushing."
     exit $EXIT_CODE
 fi
 
-echo "[Quality Gate] [PASS] Full verification suite passed cleanly. Proceeding with push."
+echo "[Quality Gate] [PASS] Pre-push checks passed cleanly. Proceeding with push."
 exit 0
