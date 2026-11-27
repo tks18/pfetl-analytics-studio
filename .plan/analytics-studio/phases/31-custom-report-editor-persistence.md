@@ -38,7 +38,7 @@ Let Shan compose, clone, reorder and save personal report definitions from exist
 
 ## UI / interaction specification
 - Reports page Custom tab: New, Clone Built-in, Rename, Duplicate, Delete.
-- Editor: report metadata; global period/filter defaults; ordered block list; Add Block chooser grouped by KPI/Chart/Table/Saved View/Narrative/Provenance/Divider/Page Break; move up/down (drag optional, not required); per-block filter override; validation summary.
+- Editor: report metadata; global period/filter defaults; ordered block list; Add Block chooser grouped by KPI/Chart/Table/Saved View/Narrative/Provenance/Divider/Page Break (with presentation-deck slide boundary hints for `PageBreakBlock`, concise KPI card grids, and legible chart-per-slide layout); move up/down (drag optional, not required); per-block filter override; validation summary.
 - Auto-save is not required; explicit Save protects definitions.
 
 ## Implementation sequence

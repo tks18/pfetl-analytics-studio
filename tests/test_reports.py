@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+from datetime import UTC, date, datetime
 from pathlib import Path
+from typing import Any
+import zipfile
 
+import plotly.io as pio  # type: ignore[import-untyped]
+import polars as pl
+from pptx import Presentation
 import pytest
 from nicegui import Client
 from nicegui.page import page
@@ -16,6 +22,7 @@ from pfetl_analytics_studio.reports import (
     ChartBlock,
     DividerBlock,
     DuplicateReportRegistrationError,
+    ExportPrerequisiteError,
     KPIGroupBlock,
     NarrativeBlock,
     PageBreakBlock,
@@ -28,9 +35,13 @@ from pfetl_analytics_studio.reports import (
     RenderedStructuralBlock,
     RenderedTableBlock,
     RenderedTextBlock,
+    ReportContext,
     ReportContextOverrides,
     ReportDefinition,
+    ReportExporter,
+    ReportKpiItem,
     ReportRegistry,
+    ReportResult,
     ReportService,
     ReportSourceKind,
     RequiredReportBlockError,
@@ -38,8 +49,10 @@ from pfetl_analytics_studio.reports import (
     SubtitleBlock,
     TableBlock,
     TitleBlock,
+    sanitize_excel_sheet_name,
+    sanitize_filename,
 )
-from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.semantic import PeriodContext, PeriodPreset, PeriodRequest
 from pfetl_analytics_studio.state import (
     CURRENT_SCHEMA_VERSION,
     SavedViewKind,
@@ -237,4 +250,232 @@ def test_reports_page_renders_headless(
 
     with Client(page("/reports_test")):
         render_reports_page(app_ctx, state_db_path=state_db)
+
+
+def _make_fixture_report_result() -> ReportResult:
+    """Build a pure in-memory `ReportResult` requiring zero database access."""
+    now = datetime(2026, 11, 27, 12, 0, 0, tzinfo=UTC)
+    ctx = ReportContext(
+        profile_id="prof_fixture_01",
+        pfetl_run_id="run_fixture_abc123",
+        core_version="v12.1.3",
+        schema_version="v3",
+        settings_snapshot_id="snap_set_1111",
+        rules_snapshot_id="snap_rule_2222",
+        period=PeriodContext(
+            preset=PeriodPreset.LATEST_COMPLETE_MONTH,
+            label="Nov 2026",
+            start_date=date(2026, 11, 1),
+            end_date=date(2026, 11, 30),
+        ),
+        studio_version="0.1.26",
+        generated_at=now,
+        currency_mode="base",
+    )
+    table_block = RenderedTableBlock(
+        block_id="tbl_monthly",
+        source_id="overview.monthly_summary_table",
+        title="Monthly: Summary / 2026*",
+        columns=("Month End", "Market Net Worth", "Net Savings Flow"),
+        rows=(
+            {"Month End": "2026-10-31", "Market Net Worth": 1250000.0, "Net Savings Flow": 85000.0},
+            {"Month End": "2026-11-30", "Market Net Worth": 1345000.0, "Net Savings Flow": 95000.0},
+        ),
+        total_rows=2,
+        truncated=False,
+        source_tables=("gold.core_monthly_fact",),
+    )
+    chart_block = RenderedChartBlock(
+        block_id="chart_nw",
+        source_id="overview.net_worth_trend",
+        title="Net Worth Trend",
+        figure_dict={
+            "data": [
+                {
+                    "type": "scatter",
+                    "mode": "lines+markers",
+                    "x": ["2026-10-31", "2026-11-30"],
+                    "y": [1250000.0, 1345000.0],
+                    "name": "Market Net Worth",
+                }
+            ],
+            "layout": {"title": "Net Worth Trend"},
+        },
+        source_tables=("gold.core_monthly_fact",),
+        caption="Source: gold.core_monthly_fact",
+    )
+    return ReportResult(
+        definition_id="builtin.fixture_export",
+        definition_name="Fixture Export Report",
+        context=ctx,
+        blocks=(
+            RenderedTextBlock(
+                block_type="title",
+                block_id="t1",
+                heading="Fixture Export Report",
+                body="Deterministic Offline Fixture",
+            ),
+            RenderedProvenanceBlock(
+                block_id="p1",
+                profile_id=ctx.profile_id,
+                pfetl_run_id=ctx.pfetl_run_id,
+                core_version=ctx.core_version,
+                schema_version=ctx.schema_version,
+                settings_snapshot_id=ctx.settings_snapshot_id,
+                rules_snapshot_id=ctx.rules_snapshot_id,
+                period_label=ctx.period.label,
+                studio_version=ctx.studio_version,
+                generated_at=ctx.generated_at,
+                disclaimer_text="Indicative / estimated figures only.",
+            ),
+            RenderedKPIGroupBlock(
+                block_id="k1",
+                source_id="overview.kpis",
+                title="Executive KPIs",
+                items=(
+                    ReportKpiItem(
+                        label="Market Net Worth",
+                        value=1345000.0,
+                        formatted_value="₹13.45L",
+                        subtitle="Nov 2026",
+                        source_table="gold.core_monthly_fact",
+                    ),
+                ),
+            ),
+            chart_block,
+            RenderedStructuralBlock(block_type="page_break", block_id="pb1"),
+            table_block,
+        ),
+        duration_ms=12.5,
+    )
+
+
+def test_exporters_pdf_xlsx_csv_and_chart_images_without_db_access(tmp_path: Path) -> None:
+    """Exporters generate valid PDF, XLSX, CSV, PNG, and SVG files from fixture ReportResult."""
+    result = _make_fixture_report_result()
+    state_db = tmp_path / "export_history.sqlite"
+
+    pdf_res = ReportExporter.export_pdf(
+        result,
+        tmp_path / "out" / "fixture_report.pdf",
+        record_history=True,
+        state_db_path=state_db,
+    )
+    assert pdf_res.path.exists()
+    assert pdf_res.bytes_written > 1000
+    assert pdf_res.path.read_bytes().startswith(b"%PDF-")
+
+    xlsx_res = ReportExporter.export_xlsx(
+        result,
+        tmp_path / "out" / "fixture_report.xlsx",
+        record_history=True,
+        state_db_path=state_db,
+    )
+    assert xlsx_res.path.exists()
+    assert xlsx_res.bytes_written > 1000
+    assert xlsx_res.warnings == ()
+    with zipfile.ZipFile(xlsx_res.path, "r") as zf:
+        names = set(zf.namelist())
+        assert any(name.startswith("xl/media/") for name in names)
+        workbook_xml = zf.read("xl/workbook.xml").decode("utf-8")
+        assert "Summary &amp; Provenance" in workbook_xml or "Summary & Provenance" in workbook_xml
+        assert "Charts" in workbook_xml
+        shared_or_sheet = "".join(
+            zf.read(n).decode("utf-8", errors="ignore")
+            for n in names
+            if n.startswith("xl/worksheets/") or n == "xl/sharedStrings.xml"
+        )
+        assert "run_fixture_abc123" in shared_or_sheet
+        assert "snap_set_1111" in shared_or_sheet
+
+    table_block = result.blocks[-1]
+    assert isinstance(table_block, RenderedTableBlock)
+    csv_res = ReportExporter.export_csv(table_block, tmp_path / "out" / "monthly.csv")
+    loaded_df = pl.read_csv(csv_res.path)
+    assert loaded_df.columns == list(table_block.columns)
+    assert loaded_df.height == len(table_block.rows)
+    assert loaded_df["Market Net Worth"].to_list() == [1250000.0, 1345000.0]
+
+    chart_block = result.blocks[3]
+    assert isinstance(chart_block, RenderedChartBlock)
+    png_res = ReportExporter.export_chart_png(chart_block.figure_dict, tmp_path / "out" / "c.png")
+    assert png_res.bytes_written > 500
+    assert png_res.path.read_bytes().startswith(b"\x89PNG")
+
+    svg_res = ReportExporter.export_chart_svg(chart_block.figure_dict, tmp_path / "out" / "c.svg")
+    assert svg_res.bytes_written > 200
+    assert "<svg" in svg_res.path.read_text(encoding="utf-8")
+
+    with StudioStateStore(db_path=state_db) as store:
+        runs = store.list_report_runs()
+        assert {r.output_format for r in runs} == {"pdf", "xlsx"}
+        assert all(r.pfetl_run_id == "run_fixture_abc123" for r in runs)
+
+
+def test_exporter_pptx_builds_editable_16_9_deck_and_records_history(tmp_path: Path) -> None:
+    """ReportExporter.export_pptx produces an editable 16:9 deck with slides, tables, and chart."""
+    result = _make_fixture_report_result()
+    state_db = tmp_path / "pptx_history.sqlite"
+
+    pptx_res = ReportExporter.export_pptx(
+        result,
+        tmp_path / "out" / "fixture_deck.pptx",
+        record_history=True,
+        state_db_path=state_db,
+    )
+    assert pptx_res.path.exists()
+    assert pptx_res.bytes_written > 5000
+    assert pptx_res.format == "pptx"
+
+    prs: Any = Presentation(str(pptx_res.path))
+    assert len(prs.slides) >= 4
+    slide_texts: list[str] = [
+        str(shape.text_frame.text)
+        for slide in prs.slides
+        for shape in slide.shapes
+        if shape.has_text_frame
+    ]
+    joined = "\n".join(slide_texts)
+    assert "Fixture Export Report" in joined
+    assert "run_fixture_abc123" in joined
+    assert "₹13.45L" in joined
+    assert any(shape.has_table for slide in prs.slides for shape in slide.shapes)
+    assert any(shape.has_chart for slide in prs.slides for shape in slide.shapes)
+
+    with StudioStateStore(db_path=state_db) as store:
+        runs = store.list_report_runs()
+        assert [r.output_format for r in runs] == ["pptx"]
+
+
+def test_exporters_handle_missing_kaleido_prerequisite_gracefully(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing Kaleido/Chrome raises ExportPrerequisiteError on PDF/PNG but degrades XLSX cleanly."""
+    result = _make_fixture_report_result()
+
+    def _fail_to_image(*_args: object, **_kwargs: object) -> bytes:
+        raise RuntimeError("Chrome executable not found")
+
+    monkeypatch.setattr(pio, "to_image", _fail_to_image)
+
+    with pytest.raises(ExportPrerequisiteError, match="Chrome/Chromium"):
+        ReportExporter.export_pdf(result, tmp_path / "fail.pdf")
+
+    xlsx_res = ReportExporter.export_xlsx(result, tmp_path / "tables_only.xlsx")
+    assert xlsx_res.path.exists()
+    assert len(xlsx_res.warnings) == 1
+    assert "skipped in XLSX" in xlsx_res.warnings[0]
+
+
+def test_sanitize_excel_sheet_name_and_filename() -> None:
+    """Sheet and filename sanitizers enforce length/character limits and uniqueness."""
+    used: set[str] = set()
+    s1 = sanitize_excel_sheet_name("Very Long [Sheet]: Name / With * Bad ? Chars 2026", used)
+    s2 = sanitize_excel_sheet_name("Very Long [Sheet]: Name / With * Bad ? Chars 2026", used)
+    assert len(s1) <= 31
+    assert len(s2) <= 31
+    assert s1 != s2
+    assert sanitize_filename("bad:file/name?.pdf") == "bad_file_name_.pdf"
+
 

@@ -32,16 +32,17 @@ Implement Portfolio Review, Investment Performance & Benchmark, and Multi-Curren
 - Return/XIRR/weights remain native metrics; templates never aggregate them.
 
 ## UI / interaction specification
-- Filters: ISIN/class/type/subtype/sector/industry/country/geo/currency as supported by each service.
+- Filters: ISIN/class/type/subtype/sector/industry/country/geo/currency as supported by each service, with Preview and browser downloads (Landscape PDF, Editable 16:9 PPTX, XLSX).
+- Templates use presentation-deck pacing (`PageBreakBlock` slide boundaries, 4-up KPI cards, data-labeled allocation/benchmark/FX charts, and concise formatted tables).
 
 ## Implementation sequence
 1. Define Portfolio blocks: value/allocation/performance/concentration/drift/harvest context.
 2. Performance blocks: XIRR/CAGR/benchmark/active return/drawdown/FX impact.
 3. Currency blocks: base/local value, FX rates/appreciation, Asset_PnL vs Forex_PnL, FX XIRR impact.
-4. Test numeric pass-through and filters.
+4. Test numeric pass-through, filters, and Landscape PDF / Editable PPTX / XLSX exports.
 
 ## Focused verification
-- Each report exports PDF/XLSX and provenance.
+- Each report exports Landscape PDF, Editable PPTX, and XLSX with provenance.
 - No non-additive metric is summed.
 
 ## Edge cases and failure behaviour

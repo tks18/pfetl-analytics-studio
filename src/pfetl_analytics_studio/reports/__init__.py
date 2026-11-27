@@ -13,6 +13,15 @@ Does not own
 
 from __future__ import annotations
 
+from pfetl_analytics_studio.reports.exporters import (
+    ExportFormat,
+    ExportPrerequisiteError,
+    ExportResult,
+    ReportExporter,
+    render_chart_image_bytes,
+    sanitize_excel_sheet_name,
+    sanitize_filename,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     CurrencyMode,
@@ -62,6 +71,9 @@ __all__ = [
     "CurrencyMode",
     "DividerBlock",
     "DuplicateReportRegistrationError",
+    "ExportFormat",
+    "ExportPrerequisiteError",
+    "ExportResult",
     "KPIGroupBlock",
     "NarrativeBlock",
     "PageBreakBlock",
@@ -79,6 +91,7 @@ __all__ = [
     "ReportContext",
     "ReportContextOverrides",
     "ReportDefinition",
+    "ReportExporter",
     "ReportKpiItem",
     "ReportRegistry",
     "ReportResolutionError",
@@ -93,4 +106,7 @@ __all__ = [
     "TableBlock",
     "TitleBlock",
     "build_default_report_registry",
+    "render_chart_image_bytes",
+    "sanitize_excel_sheet_name",
+    "sanitize_filename",
 ]

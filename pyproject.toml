@@ -1,6 +1,6 @@
 [project]
 name = "pfetl-analytics-studio"
-version = "0.1.27"
+version = "0.1.28"
 description = "Local-first, read-only analytical companion to Personal Finance ETL for visual exploration, reporting, and intelligence."
 readme = "README.md"
 license = "GPL-3.0-or-later"
@@ -16,6 +16,7 @@ dependencies = [
     "plotly>=7.1.0,<8.0.0",
     "polars>=2.1.0,<3.0.0",
     "pydantic>=2.14.0,<3.0.0",
+    "python-pptx>=1.0.2",
     "reportlab>=5.1.0,<6.0.0",
     "xlsxwriter>=3.3.0,<4.0.0",
 ]

@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.28](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.27...0.1.28) (2026-11-27)
+
+
+### Build System 🏗
+
+* **deps:** add python-pptx for editable presentation exports ([1b62c84](https://github.com/tks18/pfetl-analytics-studio/commit/1b62c84018e9c34a53a08deb9bf73344293e8815))
+
+
+### Docs 📃
+
+* **plan:** update Phase 26-32 specs for presentation-deck reports ([76c7035](https://github.com/tks18/pfetl-analytics-studio/commit/76c7035a2fef80c1d5d3d942922f1741fd1589a8))
+
+
+### Features 🔥
+
+* **reports:** add landscape PDF, chart labels, XLSX, and editable PPTX ([327448c](https://github.com/tks18/pfetl-analytics-studio/commit/327448cf5dfcf6009a0554fbae8bf99a50a22592))
+* **ui:** wire browser downloads for PDF, PPTX, XLSX, and chart assets ([bb011b5](https://github.com/tks18/pfetl-analytics-studio/commit/bb011b5503054c9f1ce397652b0027395b072b6c))
+
+
+### Tests 🧪
+
+* **reports:** verify PDF, XLSX, PPTX, CSV, and chart image exports ([b5c069b](https://github.com/tks18/pfetl-analytics-studio/commit/b5c069b6a8e65a37c5eebc7c058f50129f54ce4d))
+
 ### [0.1.27](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.26...0.1.27) (2026-11-27)
 
 
