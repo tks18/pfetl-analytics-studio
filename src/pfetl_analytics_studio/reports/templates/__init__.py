@@ -21,6 +21,10 @@ from pfetl_analytics_studio.reports.templates.currency import (
     MULTI_CURRENCY_EXPOSURE_REVIEW_DEF,
     register_currency_sources,
 )
+from pfetl_analytics_studio.reports.templates.evidence import (
+    SOURCE_EVIDENCE_CHANGE_DEF,
+    register_evidence_sources,
+)
 from pfetl_analytics_studio.reports.templates.expense import (
     EXPENSE_LIFESTYLE_REVIEW_DEF,
     register_expense_sources,
@@ -33,6 +37,10 @@ from pfetl_analytics_studio.reports.templates.fire import (
     FIRE_PLANNING_REVIEW_DEF,
     register_fire_sources,
 )
+from pfetl_analytics_studio.reports.templates.forensic import (
+    RUN_FORENSIC_DEF,
+    register_forensic_sources,
+)
 from pfetl_analytics_studio.reports.templates.income import (
     INCOME_RESILIENCE_REVIEW_DEF,
     register_income_sources,
@@ -44,6 +52,10 @@ from pfetl_analytics_studio.reports.templates.investment_tax import (
 from pfetl_analytics_studio.reports.templates.monthly import (
     MONTHLY_FINANCIAL_REVIEW_DEF,
     register_monthly_sources,
+)
+from pfetl_analytics_studio.reports.templates.operations import (
+    DATA_HEALTH_OPERATIONS_DEF,
+    register_operations_sources,
 )
 from pfetl_analytics_studio.reports.templates.performance import (
     INVESTMENT_PERFORMANCE_BENCHMARK_DEF,
@@ -94,8 +106,16 @@ def register_tax_fire_templates(registry: ReportRegistry) -> None:
     register_fire_sources(registry)
 
 
+def register_operations_forensic_evidence_templates(registry: ReportRegistry) -> None:
+    """Register the Phase 30 Operations, Run Forensic, and Source Evidence built-in templates."""
+    register_operations_sources(registry)
+    register_forensic_sources(registry)
+    register_evidence_sources(registry)
+
+
 __all__ = [
     "CASHFLOW_BUDGET_REVIEW_DEF",
+    "DATA_HEALTH_OPERATIONS_DEF",
     "EXPENSE_LIFESTYLE_REVIEW_DEF",
     "FINANCIAL_YEAR_REVIEW_DEF",
     "FIRE_PLANNING_REVIEW_DEF",
@@ -106,9 +126,12 @@ __all__ = [
     "MULTI_CURRENCY_EXPOSURE_REVIEW_DEF",
     "NET_WORTH_WEALTH_ATTRIBUTION_DEF",
     "PORTFOLIO_REVIEW_DEF",
+    "RUN_FORENSIC_DEF",
+    "SOURCE_EVIDENCE_CHANGE_DEF",
     "TAX_POSITION_REVIEW_DEF",
     "register_cashflow_expense_income_templates",
     "register_investment_reports_templates",
     "register_monthly_fy_wealth_templates",
+    "register_operations_forensic_evidence_templates",
     "register_tax_fire_templates",
 ]

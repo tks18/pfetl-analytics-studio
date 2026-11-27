@@ -39,6 +39,7 @@ from pfetl_analytics_studio.reports.templates import (
     register_cashflow_expense_income_templates,
     register_investment_reports_templates,
     register_monthly_fy_wealth_templates,
+    register_operations_forensic_evidence_templates,
     register_tax_fire_templates,
 )
 from pfetl_analytics_studio.ui.formatting import format_metric_value
@@ -337,6 +338,7 @@ def build_default_report_registry() -> ReportRegistry:
     register_cashflow_expense_income_templates(registry)
     register_investment_reports_templates(registry)
     register_tax_fire_templates(registry)
+    register_operations_forensic_evidence_templates(registry)
     return registry
 
 
