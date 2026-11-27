@@ -1035,7 +1035,7 @@ Do not rely on formatted hover strings as the identity.
 Add optional support to `chart_panel()` such as:
 
 ```python
-on_point_click=...
+on_point_click = ...
 ```
 
 or the equivalent NiceGUI Plotly event integration.
