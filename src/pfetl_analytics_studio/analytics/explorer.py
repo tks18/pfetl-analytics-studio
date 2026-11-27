@@ -15,23 +15,29 @@ Does not own
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import cast
+from pathlib import Path
+from typing import Any, cast
 
 from pfetl_analytics_studio.analytics.explorer_models import (
     CatalogBrowseResult,
     CatalogFilter,
     GuidedQuery,
     GuidedQueryResult,
+    SqlQueryRequest,
+    SqlQueryResult,
     SurfaceColumnFilter,
     TablePreviewResult,
 )
 from pfetl_analytics_studio.analytics.explorer_queries import (
     build_catalog_coverage,
     compile_guided_query,
+    execute_read_only_sql,
+    export_sql_csv,
     export_surface_csv,
     fetch_surface_preview,
     filter_catalog_entries,
     recommend_chart,
+    validate_read_only_sql,
 )
 from pfetl_analytics_studio.data import (
     CatalogSnapshot,
@@ -45,9 +51,17 @@ from pfetl_analytics_studio.semantic import (
     DEFAULT_DATASETS,
     DEFAULT_METRICS,
     DatasetSpec,
+    FilterSet,
     MetricSpec,
     PeriodContext,
+    PeriodRequest,
     PeriodResolver,
+)
+from pfetl_analytics_studio.state import (
+    SavedViewDefinition,
+    SavedViewKind,
+    SqlDatasource,
+    StudioStateStore,
 )
 
 
@@ -269,3 +283,198 @@ class ExplorerAnalytics:
             extra=query.model_dump(mode="json", exclude={"filters"}),
         )
         return cast(GuidedQueryResult, cache.get_or_compute(key, _compute))
+
+    @staticmethod
+    def execute_sql(
+        profile: PFETLProfile,
+        request: SqlQueryRequest,
+        *,
+        run_id: str = "latest",
+        cache: QueryCache | None = None,
+    ) -> SqlQueryResult:
+        """Validate and execute a single-statement read-only SQL query with bounded rows."""
+        if cache is None:
+            return execute_read_only_sql(profile, request)
+
+        key = build_cache_key(
+            profile.profile_id,
+            run_id,
+            "explorer_sql",
+            extra=request.model_dump(mode="json"),
+        )
+        return cast(
+            SqlQueryResult,
+            cache.get_or_compute(key, lambda: execute_read_only_sql(profile, request)),
+        )
+
+    @staticmethod
+    def export_sql_csv(
+        profile: PFETLProfile,
+        sql: str,
+        datasource: SqlDatasource = SqlDatasource.DUCKDB,
+    ) -> tuple[bytes, int, str]:
+        """Export full unbounded rows of a validated read-only SQL query as CSV bytes."""
+        return export_sql_csv(profile, sql, datasource=datasource)
+
+    @staticmethod
+    def list_saved_views(
+        profile_id: str,
+        *,
+        kind: SavedViewKind | None = None,
+        ensure_starters: bool = True,
+        state_db_path: Path | None = None,
+    ) -> list[SavedViewDefinition]:
+        """List saved Guided and SQL views for `profile_id` from Studio state."""
+        with StudioStateStore(db_path=state_db_path) as store:
+            if ensure_starters:
+                store.seed_default_sql_starters(profile_id)
+            return store.list_saved_views(profile_id, kind=kind)
+
+    @staticmethod
+    def restore_default_sql_starters(
+        profile_id: str,
+        *,
+        state_db_path: Path | None = None,
+    ) -> int:
+        """Restore any missing default SQL starter packs into `studio.sqlite`."""
+        with StudioStateStore(db_path=state_db_path) as store:
+            return store.seed_default_sql_starters(profile_id, force_restore=True)
+
+    @staticmethod
+    def get_saved_view(
+        view_id: str,
+        *,
+        state_db_path: Path | None = None,
+    ) -> SavedViewDefinition | None:
+        """Fetch a single saved view by `view_id`."""
+        with StudioStateStore(db_path=state_db_path) as store:
+            return store.get_saved_view(view_id)
+
+    @staticmethod
+    def save_guided_view(
+        profile_id: str,
+        name: str,
+        query: GuidedQuery,
+        *,
+        description: str = "",
+        period_override: PeriodRequest | None = None,
+        filter_override: FilterSet | None = None,
+        state_db_path: Path | None = None,
+    ) -> SavedViewDefinition:
+        """Persist a reusable `GuidedQuery` semantic specification in Studio state."""
+        with StudioStateStore(db_path=state_db_path) as store:
+            return store.create_saved_view(
+                profile_id,
+                name,
+                SavedViewKind.GUIDED,
+                description=description,
+                datasource=SqlDatasource.DUCKDB,
+                query_spec=query.model_dump(mode="json"),
+                period_override=(
+                    period_override.model_dump(mode="json") if period_override is not None else None
+                ),
+                filter_override=(
+                    filter_override.model_dump(mode="json") if filter_override is not None else None
+                ),
+            )
+
+    @staticmethod
+    def save_sql_view(
+        profile_id: str,
+        name: str,
+        sql_text: str,
+        *,
+        datasource: SqlDatasource = SqlDatasource.DUCKDB,
+        description: str = "",
+        state_db_path: Path | None = None,
+    ) -> SavedViewDefinition:
+        """Persist a validated read-only SQL query in Studio state."""
+        validate_read_only_sql(sql_text)
+        with StudioStateStore(db_path=state_db_path) as store:
+            return store.create_saved_view(
+                profile_id,
+                name,
+                SavedViewKind.SQL,
+                description=description,
+                datasource=datasource,
+                sql_text=sql_text,
+            )
+
+    @staticmethod
+    def update_saved_view(
+        view_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        datasource: SqlDatasource | None = None,
+        category: str | None = None,
+        query_spec: dict[str, Any] | None = None,
+        sql_text: str | None = None,
+        state_db_path: Path | None = None,
+    ) -> SavedViewDefinition:
+        """Update an existing saved view's metadata or query definition."""
+        if sql_text is not None:
+            validate_read_only_sql(sql_text)
+        with StudioStateStore(db_path=state_db_path) as store:
+            return store.update_saved_view(
+                view_id,
+                name=name,
+                description=description,
+                datasource=datasource,
+                category=category,
+                query_spec=query_spec,
+                sql_text=sql_text,
+            )
+
+    @staticmethod
+    def delete_saved_view(
+        view_id: str,
+        *,
+        state_db_path: Path | None = None,
+    ) -> None:
+        """Delete a saved view by `view_id`."""
+        with StudioStateStore(db_path=state_db_path) as store:
+            store.delete_saved_view(view_id)
+
+    @staticmethod
+    def replay_saved_view(
+        profile: PFETLProfile,
+        view: SavedViewDefinition,
+        *,
+        run_id: str = "latest",
+        catalog_snapshot: CatalogSnapshot | None = None,
+        cache: QueryCache | None = None,
+        global_period: PeriodRequest | None = None,
+        global_filters: FilterSet | None = None,
+        sql_limit: int = 500,
+    ) -> GuidedQueryResult | SqlQueryResult:
+        """Replay a saved Guided or SQL view under the active profile."""
+        if view.kind == SavedViewKind.SQL:
+            return ExplorerAnalytics.execute_sql(
+                profile,
+                SqlQueryRequest(sql=view.sql_text, datasource=view.datasource, limit=sql_limit),
+                run_id=run_id,
+                cache=cache,
+            )
+
+        query = GuidedQuery.model_validate(view.query_spec or {})
+        if global_period is not None and query.period is None:
+            query = query.model_copy(update={"period": global_period})
+        elif view.period_override and query.period is None:
+            query = query.model_copy(
+                update={"period": PeriodRequest.model_validate(view.period_override)}
+            )
+        if global_filters is not None and global_filters.filters and not query.filters.filters:
+            ds = DEFAULT_DATASETS.get(query.dataset_id)
+            allowed = set(ds.allowed_filters)
+            compat = tuple(f for f in global_filters.filters if f.field in allowed)
+            if compat:
+                query = query.model_copy(update={"filters": FilterSet(filters=compat)})
+
+        return ExplorerAnalytics.execute_guided(
+            profile,
+            query,
+            run_id=run_id,
+            catalog_snapshot=catalog_snapshot,
+            cache=cache,
+        )
