@@ -2,6 +2,26 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.25](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.24...0.1.25) (2026-11-27)
+
+
+### Features 🔥
+
+* **explorer:** add 82-surface catalog browser and query compiler ([8a4db42](https://github.com/tks18/pfetl-analytics-studio/commit/8a4db42047c256be16978a1dc70275fd87f05eeb))
+* **semantic:** enrich guided explorer metrics across datasets ([ac6efea](https://github.com/tks18/pfetl-analytics-studio/commit/ac6efeaccaa022520f392dd5604ebc496ba8aaac))
+* **shell:** add profile persistence and route-aware filter bar ([29a89f1](https://github.com/tks18/pfetl-analytics-studio/commit/29a89f1bb4656fdc3b3fd2da0f0e0bdb88246a7f))
+* **ui:** add Explorer workspace, CSV export, and lot forensics ([131a11b](https://github.com/tks18/pfetl-analytics-studio/commit/131a11ba4d2adab6c72d209be01b37ad0e5cce06))
+
+
+### Tests 🧪
+
+* **explorer:** verify catalog, query safety, export, and state ([ce7389e](https://github.com/tks18/pfetl-analytics-studio/commit/ce7389ec0a3c70dd31b164d08ca68cac3f89fc31))
+
+
+### Docs 📃
+
+* **pre-phase-9-pat:** update documentation ([8bcddf0](https://github.com/tks18/pfetl-analytics-studio/commit/8bcddf0588b560a0d25806b72dc7280d8b6e681d))
+
 ### [0.1.24](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.23...0.1.24) (2026-11-26)
 
 
