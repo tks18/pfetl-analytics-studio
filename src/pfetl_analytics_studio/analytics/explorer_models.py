@@ -25,6 +25,7 @@ from pfetl_analytics_studio.semantic import (
     PeriodContext,
     PeriodRequest,
 )
+from pfetl_analytics_studio.state import SqlDatasource
 
 
 class CatalogFilter(BaseModel):
@@ -188,4 +189,43 @@ class GuidedQueryResult:
     truncated: bool
     semantic_summary: str
     chart_suggestion: ChartSuggestion
+    warnings: tuple[str, ...] = ()
+
+
+class SqlQueryRequest(BaseModel):
+    """Guarded read-only SQL query request targeting DuckDB or Control Plane."""
+
+    model_config = ConfigDict(frozen=True)
+
+    sql: str
+    datasource: SqlDatasource = SqlDatasource.DUCKDB
+    limit: int = 500
+
+    @field_validator("sql")
+    @classmethod
+    def _non_empty_sql(cls, val: str) -> str:
+        clean = val.strip()
+        if not clean:
+            raise ValueError("SQL query cannot be empty.")
+        return clean
+
+    @field_validator("limit")
+    @classmethod
+    def _clamp_sql_limit(cls, val: int) -> int:
+        return max(1, min(val, 10_000))
+
+
+@dataclass(frozen=True)
+class SqlQueryResult:
+    """Bounded result from guarded read-only SQL execution."""
+
+    sql: str
+    normalized_sql: str
+    datasource: SqlDatasource
+    columns: tuple[str, ...]
+    rows: tuple[dict[str, Any], ...]
+    row_count: int
+    truncated: bool
+    limit_applied: int
+    duration_ms: float
     warnings: tuple[str, ...] = ()

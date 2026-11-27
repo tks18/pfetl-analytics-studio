@@ -18,19 +18,25 @@ from pfetl_analytics_studio.analytics import (
     ExplorerAnalytics,
     GuidedQuery,
     GuidedSortSpec,
+    SqlQueryRequest,
+    SqlQueryResult,
     SurfaceColumnFilter,
 )
 from pfetl_analytics_studio.analytics.explorer_queries import (
     compile_guided_query,
     recommend_chart,
+    validate_read_only_sql,
 )
 from pfetl_analytics_studio.context import AppContext
 from pfetl_analytics_studio.data import (
     SURFACE_ATLAS,
     CompatibilityReport,
     CompatibilityStatus,
+    ControlPlaneReader,
     ControlPlaneState,
+    DuckDBReader,
     QueryCache,
+    ReadOnlyViolationError,
     SurfaceLayer,
     SurfaceUsageCategory,
     WarehouseState,
@@ -48,6 +54,7 @@ from pfetl_analytics_studio.semantic import (
     PeriodPreset,
     PeriodRequest,
 )
+from pfetl_analytics_studio.state import SavedViewKind, SqlDatasource
 from pfetl_analytics_studio.ui import (
     TableColumn,
     apply_studio_theme,
@@ -489,3 +496,108 @@ def test_tax_events_harvesting_charts_and_lot_detail_dialog() -> None:
         apply_studio_theme()
         open_lot_detail_dialog(None, "LOT-MISSING")
         assert len(client.elements) > 0
+
+
+def test_read_only_sql_validator_and_db_guards(explorer_profile: PFETLProfile) -> None:
+    """Verify SQL validator allows SELECT/WITH, blocks DDL/DML/multi-stmt, and DBs reject writes."""
+    ok_select = validate_read_only_sql("/* comment */\nSELECT 1 AS x; ")
+    assert ok_select == "SELECT 1 AS x"
+
+    ok_cte = validate_read_only_sql(
+        "-- lead comment\nWITH t AS (SELECT 1 AS n) SELECT n FROM t;"
+    )
+    assert ok_cte.startswith("WITH t AS")
+
+    # Semicolon inside string literal is allowed; multi-statement is rejected
+    assert "'a;b'" in validate_read_only_sql("SELECT 'a;b' AS s")
+    with pytest.raises(ValueError, match="Multiple SQL statements"):
+        validate_read_only_sql("SELECT 1; DROP TABLE gold.core_monthly_fact")
+
+    for bad_sql in (
+        "CREATE TABLE gold.hack (id INT)",
+        "DELETE FROM gold.core_monthly_fact",
+        "PRAGMA table_info('cp_runs')",
+        "ATTACH 'other.db' AS other",
+        "COPY gold.core_monthly_fact TO 'out.csv'",
+        "INSTALL httpfs",
+        "LOAD httpfs",
+        "WITH c AS (SELECT 1) DELETE FROM gold.core_monthly_fact",
+    ):
+        with pytest.raises(ValueError):
+            validate_read_only_sql(bad_sql)
+
+    # Underlying read-only DB gateways also reject write attempts directly
+    with pytest.raises(ReadOnlyViolationError):
+        DuckDBReader(explorer_profile).fetch_all("CREATE TABLE gold.should_fail (id INT);")
+    with pytest.raises(ReadOnlyViolationError):
+        ControlPlaneReader(explorer_profile).fetch_all("CREATE TABLE cp_fail (id TEXT);")
+
+
+def test_sql_execution_truncation_csv_export_and_saved_view_replay(
+    explorer_profile: PFETLProfile,
+    tmp_path: Path,
+) -> None:
+    """Verify bounded SQL execution, full CSV export, and Saved View replay fidelity."""
+    state_db = tmp_path / "explorer_views.sqlite"
+
+    sql_res = ExplorerAnalytics.execute_sql(
+        explorer_profile,
+        SqlQueryRequest(
+            sql='SELECT "sample_id" FROM "bronze"."household_zcategory"',
+            datasource=SqlDatasource.DUCKDB,
+            limit=50,
+        ),
+        cache=QueryCache(),
+    )
+    assert sql_res.row_count == 50
+    assert sql_res.truncated is True
+
+    csv_bytes, full_cnt, fname = ExplorerAnalytics.export_sql_csv(
+        explorer_profile,
+        'SELECT "sample_id" FROM "bronze"."household_zcategory"',
+        datasource=SqlDatasource.DUCKDB,
+    )
+    assert full_cnt == 600
+    assert fname == "sql_duckdb_export.csv"
+    assert len(csv_bytes.decode("utf-8").strip().splitlines()) == 601
+
+    cp_res = ExplorerAnalytics.execute_sql(
+        explorer_profile,
+        SqlQueryRequest(
+            sql="SELECT run_id, status FROM cp_runs",
+            datasource=SqlDatasource.CONTROL_PLANE,
+            limit=10,
+        ),
+    )
+    assert cp_res.row_count >= 1
+
+    # Save and replay a Guided View -> exact match with direct execute_guided
+    g_query = GuidedQuery(
+        dataset_id="investment_by_class",
+        dimensions=("INSTRUMENT_CLASS",),
+        metrics=("inv_class_invested_value",),
+        sort=(GuidedSortSpec(field="INSTRUMENT_CLASS", descending=False),),
+    )
+    direct = ExplorerAnalytics.execute_guided(explorer_profile, g_query)
+    saved_g = ExplorerAnalytics.save_guided_view(
+        explorer_profile.profile_id,
+        "Class Cost Basis",
+        g_query,
+        description="Saved guided test",
+        state_db_path=state_db,
+    )
+    assert saved_g.kind == SavedViewKind.GUIDED
+    replayed_g = ExplorerAnalytics.replay_saved_view(explorer_profile, saved_g)
+    assert isinstance(replayed_g, type(direct))
+    assert replayed_g.rows == direct.rows
+
+    saved_s = ExplorerAnalytics.save_sql_view(
+        explorer_profile.profile_id,
+        "CP Runs List",
+        "SELECT run_id, status FROM cp_runs",
+        datasource=SqlDatasource.CONTROL_PLANE,
+        state_db_path=state_db,
+    )
+    replayed_s = ExplorerAnalytics.replay_saved_view(explorer_profile, saved_s, sql_limit=5)
+    assert isinstance(replayed_s, SqlQueryResult)
+    assert replayed_s.row_count >= 1

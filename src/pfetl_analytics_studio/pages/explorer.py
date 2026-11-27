@@ -28,6 +28,11 @@ from pfetl_analytics_studio.data import (
     SurfaceUsageCategory,
 )
 from pfetl_analytics_studio.pages import render_domain_workspace
+from pfetl_analytics_studio.pages.explorer_views import (
+    open_save_view_dialog,
+    render_saved_views_tab,
+    render_sql_tab,
+)
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import (
     DatasetSpec,
@@ -39,6 +44,7 @@ from pfetl_analytics_studio.semantic import (
     PeriodPreset,
     PeriodRequest,
 )
+from pfetl_analytics_studio.state import SavedViewKind
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     StudioColor,
@@ -710,6 +716,7 @@ def _render_guided_results_view(g_state: dict[str, Any]) -> None:
 
 
 def _render_guided_builder_card(
+    profile_id: str,
     datasets: list[DatasetSpec],
     ds_map: dict[str, DatasetSpec],
     g_state: dict[str, Any],
@@ -718,6 +725,8 @@ def _render_guided_builder_card(
     on_view_mode: Callable[[Any], None],
     on_chart_override: Callable[[Any], None],
     on_download_csv: Callable[[], None],
+    on_build_query: Callable[[], GuidedQuery],
+    on_view_saved: Callable[[], Any] | None,
     on_run_query: Callable[[], None],
 ) -> None:
     """Render Guided Analytics starter recipes, dataset/metric selectors, and action bar."""
@@ -846,6 +855,16 @@ def _render_guided_builder_card(
                 )
             with ui.row().classes("items-center gap-2"):
                 ui.button(
+                    "Save as View",
+                    icon="bookmark_add",
+                    on_click=lambda: open_save_view_dialog(
+                        profile_id,
+                        kind=SavedViewKind.GUIDED,
+                        query=on_build_query(),
+                        on_saved=lambda _v: on_view_saved() if on_view_saved else None,
+                    ),
+                ).props("outline color=primary")
+                ui.button(
                     "Download Full CSV Dump",
                     icon="download",
                     on_click=on_download_csv,
@@ -862,6 +881,7 @@ def _render_guided_tab(
     *,
     global_period: PeriodRequest | None = None,
     global_filters: FilterSet | None = None,
+    on_view_saved: Callable[[], Any] | None = None,
 ) -> None:
     """Render Guided Analytics with starter recipes, chart overrides, and full CSV dump."""
     datasets = ExplorerAnalytics.list_datasets()
@@ -992,6 +1012,7 @@ def _render_guided_tab(
     @ui.refreshable
     def _guided_builder() -> None:
         _render_guided_builder_card(
+            profile.profile_id,
             datasets,
             ds_map,
             g_state,
@@ -1000,6 +1021,8 @@ def _render_guided_tab(
             _set_view_mode,
             _set_chart_override,
             _download_guided_csv,
+            _build_query,
+            on_view_saved,
             _run_query,
         )
 
@@ -1009,13 +1032,15 @@ def _render_guided_tab(
 
 
 def render_explorer_page(context: AppContext) -> None:
-    """Render the Phase 22 Explorer workspace (82-Surface Data Catalog & Guided Analytics)."""
+    """Render the Phase 22/23 Explorer workspace (Catalog, Guided, Saved Views, Read-Only SQL)."""
     render_domain_workspace(
         context=context,
         route=ROUTES_BY_ID["explorer"],
         workspace_views=(
             "82-Surface Data Catalog",
             "Guided Whitelisted Analytics",
+            "Saved Views",
+            "Advanced Read-Only SQL",
         ),
         upstream_sources=(
             "meta.m_Data_Contracts",
@@ -1035,6 +1060,19 @@ def render_explorer_page(context: AppContext) -> None:
     with ui.tabs().classes("w-full") as tabs:
         cat_tab = ui.tab("Data Catalog (82 Surfaces)", icon="dataset")
         guided_tab = ui.tab("Guided Analytics", icon="query_stats")
+        saved_tab = ui.tab("Saved Views", icon="bookmarks")
+        sql_tab = ui.tab("Advanced SQL (Read-Only)", icon="terminal")
+
+    refresh_saved_ref: list[Callable[[], Any]] = []
+    refresh_sql_ref: list[Callable[[], Any]] = []
+
+    def _notify_saved() -> None:
+        for fn in refresh_saved_ref:
+            fn()
+
+    def _notify_sql() -> None:
+        for fn in refresh_sql_ref:
+            fn()
 
     with ui.tab_panels(tabs, value=cat_tab).classes("w-full bg-transparent p-0"):
         with ui.tab_panel(cat_tab).classes("p-0 gap-3"):
@@ -1046,4 +1084,21 @@ def render_explorer_page(context: AppContext) -> None:
                 catalog_snapshot,
                 global_period=context.period_request,
                 global_filters=context.filters,
+                on_view_saved=_notify_saved,
+            )
+        with ui.tab_panel(saved_tab).classes("p-0 gap-3"):
+            refresh_saved_ref.append(
+                render_saved_views_tab(
+                    profile,
+                    run_id,
+                    catalog_snapshot,
+                    _EXPLORER_CACHE,
+                    global_period=context.period_request,
+                    global_filters=context.filters,
+                    on_views_changed=_notify_sql,
+                )
+            )
+        with ui.tab_panel(sql_tab).classes("p-0 gap-3"):
+            refresh_sql_ref.append(
+                render_sql_tab(profile, run_id, _EXPLORER_CACHE, on_view_saved=_notify_saved)
             )

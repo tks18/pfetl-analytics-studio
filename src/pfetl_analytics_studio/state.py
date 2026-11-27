@@ -6,17 +6,21 @@ Never writes to PFETL DuckDB, Control Plane SQLite, Settings TOML or FinancialRu
 
 from __future__ import annotations
 
+import json
 import sqlite3
+import uuid
 from datetime import UTC, datetime
+from enum import StrEnum
 from pathlib import Path
 from types import TracebackType
+from typing import Any
 
 from platformdirs import user_data_dir
 from pydantic import BaseModel, ConfigDict
 
 from pfetl_analytics_studio.profile import PFETLProfile
 
-CURRENT_SCHEMA_VERSION = 2
+CURRENT_SCHEMA_VERSION = 4
 
 
 def get_studio_state_path() -> Path:
@@ -44,6 +48,149 @@ class RecentProfileRecord(BaseModel):
     last_opened_at: datetime
     is_pinned: bool = False
     notes: str = ""
+
+
+class SavedViewKind(StrEnum):
+    """Supported persisted Explorer view kinds."""
+
+    GUIDED = "guided"
+    SQL = "sql"
+
+
+class SqlDatasource(StrEnum):
+    """Approved read-only datasources for Advanced SQL and SQL Saved Views."""
+
+    DUCKDB = "duckdb"
+    CONTROL_PLANE = "control_plane"
+
+
+class SavedViewDefinition(BaseModel):
+    """Persisted Guided or Expert SQL view definition (never stores result rows)."""
+
+    model_config = ConfigDict(frozen=True)
+
+    view_id: str
+    profile_id: str
+    name: str
+    description: str = ""
+    kind: SavedViewKind
+    datasource: SqlDatasource = SqlDatasource.DUCKDB
+    page: str = "explorer"
+    query_spec: dict[str, Any] | None = None
+    sql_text: str = ""
+    period_override: dict[str, Any] | None = None
+    filter_override: dict[str, Any] | None = None
+    is_starter: bool = False
+    category: str = "Custom"
+    created_at: datetime
+    updated_at: datetime
+
+
+_DEFAULT_SQL_STARTERS: tuple[tuple[str, str, str, SqlDatasource, str], ...] = (
+    (
+        "Net Worth & Savings Attribution",
+        "Wealth",
+        "Monthly market net worth, assets, liabilities, income, expense, and market return flow.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "MONTH_END_DATE", "Total_Net_Worth_Market", "Total_Assets_Market",\n'
+            '       "Total_Liabilities", "Total_Income", "Total_Expense",\n'
+            '       "Net_Savings_Flow", "Market_Return_Flow"\n'
+            'FROM "gold"."core_monthly_fact"\n'
+            'ORDER BY "MONTH_END_DATE" DESC'
+        ),
+    ),
+    (
+        "Cashflow Efficiency & Resilience",
+        "Household",
+        "Savings rate, core expense share, investment rate, emergency coverage, and debt ratio.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "YEAR_MONTH", "Savings_Rate_Pct", "Core_Expense_Share_Pct",\n'
+            '       "Investment_Rate_Pct", "Emergency_Fund_Coverage", "Debt_to_Asset_Ratio"\n'
+            'FROM "gold"."cashflow_efficiency_analytics"\n'
+            'ORDER BY "MONTH_END_DATE" DESC'
+        ),
+    ),
+    (
+        "FIRE Trajectory & Runway (P50)",
+        "FIRE",
+        "FI coverage %, Target/Lean/Coast FI corpora, median months to FI, and portfolio runway.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "YEAR_MONTH", "Current_FI_Coverage_Pct", "Target_FI_Today",\n'
+            '       "Lean_FI_Today", "Coast_FI_Today", "Months_To_FI_Base_P50",\n'
+            '       "Runway_Months_Base_P50"\n'
+            'FROM "gold"."wealth_fire_analytics"\n'
+            'ORDER BY "MONTH_END_DATE" DESC'
+        ),
+    ),
+    (
+        "Top Alpha ISINs (Latest Close)",
+        "Investments",
+        "Latest closing-date ISIN XIRR vs Benchmark XIRR, Active Return, and FX XIRR impact.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "Closing_Date", "ISIN", "Total_Invested_Value", "Total_Current_Value",\n'
+            '       "Unrealized_PL", "XIRR", "BM_XIRR", "Active_Return", "FX_XIRR_Impact"\n'
+            'FROM "gold"."investment_by_isin"\n'
+            'WHERE "Closing_Date" = (SELECT MAX("Closing_Date") FROM "gold"."investment_by_isin")\n'
+            'ORDER BY "Active_Return" DESC'
+        ),
+    ),
+    (
+        "Tax-Loss Harvesting Lots (88-Col)",
+        "Tax",
+        "Open lots with unrealized losses, days to LTCG, and harvest recommendations.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "Lot_ID", "ISIN", "Buy_Date", "Quantity", "Buy_Value",\n'
+            '       "Close_Value", "Unrealized_Loss", "Days_To_LTCG", "Harvest_Recommendation"\n'
+            'FROM "silver"."fact_investment_lot_analytics"\n'
+            'WHERE "Closing_Date" = (SELECT MAX("Closing_Date") FROM "silver"."fact_investment_lot_analytics")\n'
+            '  AND "Unrealized_Loss" < 0\n'
+            'ORDER BY "Unrealized_Loss" ASC'
+        ),
+    ),
+    (
+        "Budget Variance & Runway",
+        "Household",
+        "Actual core/non-core expense vs budget target and zero-income runway months.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "YEAR_MONTH", "Total_Income", "Actual_Core_Expense",\n'
+            '       "Actual_NonCore_Expense", "Budget_Total_Expense_Target",\n'
+            '       "Zero_Income_Runway_Months"\n'
+            'FROM "gold"."forecast_budget_variance"\n'
+            'ORDER BY "MONTH_END_DATE" DESC'
+        ),
+    ),
+    (
+        "Tax Events Summary by Source",
+        "Tax",
+        "Aggregated tax events, INR amounts, and estimated tax grouped by FY, source, and status.",
+        SqlDatasource.DUCKDB,
+        (
+            'SELECT "FY", "Source_Type", "Income_Head", "Tax_Sub_Head", "Tax_Status",\n'
+            '       COUNT(*) AS events, ROUND(SUM("Amount_INR"), 2) AS total_inr,\n'
+            '       ROUND(SUM("Estimated_Tax"), 2) AS est_tax\n'
+            'FROM "silver"."fact_tax_events"\n'
+            "GROUP BY 1, 2, 3, 4, 5\n"
+            "ORDER BY total_inr DESC"
+        ),
+    ),
+    (
+        "PFETL Run & Sync Health (CP)",
+        "Operations",
+        "Control Plane run history with commit state, Core version, and timestamps.",
+        SqlDatasource.CONTROL_PLANE,
+        (
+            "SELECT run_id, started_at, finished_at, status, commit_state, application_version\n"
+            "FROM cp_runs\n"
+            "ORDER BY started_at DESC"
+        ),
+    ),
+)
 
 
 class StudioStateStore:
@@ -129,6 +276,44 @@ class StudioStateStore:
                     "ALTER TABLE recent_profiles ADD COLUMN notes TEXT NOT NULL DEFAULT '';"
                 )
             cursor.execute("PRAGMA user_version = 2;")
+            conn.commit()
+
+        if version < 3:
+            cursor.execute(
+                """
+                CREATE TABLE IF NOT EXISTS saved_views (
+                    view_id TEXT PRIMARY KEY,
+                    profile_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    description TEXT NOT NULL DEFAULT '',
+                    kind TEXT NOT NULL,
+                    datasource TEXT NOT NULL DEFAULT 'duckdb',
+                    page TEXT NOT NULL DEFAULT 'explorer',
+                    context_json TEXT NOT NULL DEFAULT '{}',
+                    spec_json TEXT NOT NULL DEFAULT '{}',
+                    sql_text TEXT NOT NULL DEFAULT '',
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    UNIQUE(profile_id, name)
+                );
+                """
+            )
+            cursor.execute("PRAGMA user_version = 3;")
+            conn.commit()
+
+        if version < 4:
+            sv_cols = {
+                str(r["name"]) for r in cursor.execute("PRAGMA table_info(saved_views);").fetchall()
+            }
+            if "is_starter" not in sv_cols:
+                cursor.execute(
+                    "ALTER TABLE saved_views ADD COLUMN is_starter INTEGER NOT NULL DEFAULT 0;"
+                )
+            if "category" not in sv_cols:
+                cursor.execute(
+                    "ALTER TABLE saved_views ADD COLUMN category TEXT NOT NULL DEFAULT 'Custom';"
+                )
+            cursor.execute("PRAGMA user_version = 4;")
             conn.commit()
 
     def record_profile_opened(
@@ -331,6 +516,237 @@ class StudioStateStore:
         conn = self._get_connection()
         with conn:
             conn.execute("DELETE FROM app_preferences WHERE key = ?;", (key,))
+
+    @staticmethod
+    def _row_to_saved_view(row: sqlite3.Row) -> SavedViewDefinition:
+        ctx_raw = json.loads(str(row["context_json"] or "{}"))
+        spec_raw = json.loads(str(row["spec_json"] or "{}"))
+        return SavedViewDefinition(
+            view_id=str(row["view_id"]),
+            profile_id=str(row["profile_id"]),
+            name=str(row["name"]),
+            description=str(row["description"] or ""),
+            kind=SavedViewKind(str(row["kind"])),
+            datasource=SqlDatasource(str(row["datasource"] or SqlDatasource.DUCKDB.value)),
+            page=str(row["page"] or "explorer"),
+            query_spec=spec_raw if spec_raw else None,
+            sql_text=str(row["sql_text"] or ""),
+            period_override=ctx_raw.get("period_override"),
+            filter_override=ctx_raw.get("filter_override"),
+            is_starter=bool(row["is_starter"]) if "is_starter" in row.keys() else False,
+            category=str(row["category"] or "Custom") if "category" in row.keys() else "Custom",
+            created_at=datetime.fromisoformat(str(row["created_at"])),
+            updated_at=datetime.fromisoformat(str(row["updated_at"])),
+        )
+
+    def create_saved_view(
+        self,
+        profile_id: str,
+        name: str,
+        kind: SavedViewKind,
+        *,
+        description: str = "",
+        datasource: SqlDatasource = SqlDatasource.DUCKDB,
+        page: str = "explorer",
+        query_spec: dict[str, Any] | None = None,
+        sql_text: str = "",
+        period_override: dict[str, Any] | None = None,
+        filter_override: dict[str, Any] | None = None,
+        is_starter: bool = False,
+        category: str = "Custom",
+    ) -> SavedViewDefinition:
+        """Persist a new SavedViewDefinition, rejecting duplicate names per profile."""
+        clean_name = name.strip()
+        if not clean_name:
+            raise ValueError("Saved view name cannot be empty.")
+        if kind == SavedViewKind.GUIDED and not query_spec:
+            raise ValueError("Guided saved view requires a non-empty query_spec.")
+        if kind == SavedViewKind.SQL and not sql_text.strip():
+            raise ValueError("SQL saved view requires non-empty sql_text.")
+
+        now = datetime.now(UTC).isoformat()
+        view_id = f"view-{uuid.uuid4().hex[:12]}"
+        ctx_json = json.dumps(
+            {
+                "period_override": period_override,
+                "filter_override": filter_override,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        spec_json = json.dumps(query_spec or {}, sort_keys=True, default=str)
+
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    INSERT INTO saved_views (
+                        view_id, profile_id, name, description, kind, datasource, page,
+                        context_json, spec_json, sql_text, is_starter, category,
+                        created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+                    """,
+                    (
+                        view_id,
+                        profile_id,
+                        clean_name,
+                        description.strip(),
+                        kind.value,
+                        datasource.value,
+                        page,
+                        ctx_json,
+                        spec_json,
+                        sql_text,
+                        1 if is_starter else 0,
+                        category.strip() or "Custom",
+                        now,
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"A saved view named '{clean_name}' already exists for this profile."
+            ) from exc
+
+        created = self.get_saved_view(view_id)
+        assert created is not None
+        return created
+
+    def get_saved_view(self, view_id: str) -> SavedViewDefinition | None:
+        """Fetch a saved view by `view_id`, or None if missing."""
+        conn = self._get_connection()
+        row = conn.execute("SELECT * FROM saved_views WHERE view_id = ?;", (view_id,)).fetchone()
+        return self._row_to_saved_view(row) if row is not None else None
+
+    def list_saved_views(
+        self,
+        profile_id: str,
+        *,
+        kind: SavedViewKind | None = None,
+    ) -> list[SavedViewDefinition]:
+        """List saved views for `profile_id`, optionally filtered by `kind`."""
+        conn = self._get_connection()
+        if kind is not None:
+            rows = conn.execute(
+                """
+                SELECT * FROM saved_views
+                WHERE profile_id = ? AND kind = ?
+                ORDER BY updated_at DESC, name ASC;
+                """,
+                (profile_id, kind.value),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT * FROM saved_views
+                WHERE profile_id = ?
+                ORDER BY updated_at DESC, name ASC;
+                """,
+                (profile_id,),
+            ).fetchall()
+        return [self._row_to_saved_view(r) for r in rows]
+
+    def update_saved_view(
+        self,
+        view_id: str,
+        *,
+        name: str | None = None,
+        description: str | None = None,
+        datasource: SqlDatasource | None = None,
+        category: str | None = None,
+        query_spec: dict[str, Any] | None = None,
+        sql_text: str | None = None,
+        period_override: dict[str, Any] | None = None,
+        filter_override: dict[str, Any] | None = None,
+    ) -> SavedViewDefinition:
+        """Update mutable fields of an existing saved view and refresh `updated_at`."""
+        existing = self.get_saved_view(view_id)
+        if existing is None:
+            raise KeyError(f"Saved view '{view_id}' not found.")
+
+        new_name = name.strip() if name is not None else existing.name
+        if not new_name:
+            raise ValueError("Saved view name cannot be empty.")
+        new_desc = description.strip() if description is not None else existing.description
+        new_ds = datasource if datasource is not None else existing.datasource
+        new_cat = (category.strip() or "Custom") if category is not None else existing.category
+        new_spec = query_spec if query_spec is not None else (existing.query_spec or {})
+        new_sql = sql_text if sql_text is not None else existing.sql_text
+        new_period = period_override if period_override is not None else existing.period_override
+        new_filter = filter_override if filter_override is not None else existing.filter_override
+        now = datetime.now(UTC).isoformat()
+
+        conn = self._get_connection()
+        try:
+            with conn:
+                conn.execute(
+                    """
+                    UPDATE saved_views
+                    SET name = ?, description = ?, datasource = ?, category = ?,
+                        context_json = ?, spec_json = ?, sql_text = ?, updated_at = ?
+                    WHERE view_id = ?;
+                    """,
+                    (
+                        new_name,
+                        new_desc,
+                        new_ds.value,
+                        new_cat,
+                        json.dumps(
+                            {"period_override": new_period, "filter_override": new_filter},
+                            sort_keys=True,
+                            default=str,
+                        ),
+                        json.dumps(new_spec, sort_keys=True, default=str),
+                        new_sql,
+                        now,
+                        view_id,
+                    ),
+                )
+        except sqlite3.IntegrityError as exc:
+            raise ValueError(
+                f"A saved view named '{new_name}' already exists for this profile."
+            ) from exc
+
+        updated = self.get_saved_view(view_id)
+        assert updated is not None
+        return updated
+
+    def delete_saved_view(self, view_id: str) -> None:
+        """Delete a saved view by `view_id`."""
+        conn = self._get_connection()
+        with conn:
+            conn.execute("DELETE FROM saved_views WHERE view_id = ?;", (view_id,))
+
+    def seed_default_sql_starters(
+        self,
+        profile_id: str,
+        *,
+        force_restore: bool = False,
+    ) -> int:
+        """Seed default SQL starter packs into `saved_views` in `studio.sqlite`."""
+        pref_key = f"sql_starters_seeded:{profile_id}"
+        if not force_restore and self.get_preference(pref_key) == "1":
+            return 0
+
+        existing_names = {v.name for v in self.list_saved_views(profile_id)}
+        inserted = 0
+        for name, category, desc, ds, sql in _DEFAULT_SQL_STARTERS:
+            if name in existing_names:
+                continue
+            self.create_saved_view(
+                profile_id,
+                name,
+                SavedViewKind.SQL,
+                description=desc,
+                datasource=ds,
+                sql_text=sql,
+                is_starter=True,
+                category=category,
+            )
+            inserted += 1
+        self.set_preference(pref_key, "1")
+        return inserted
 
     def close(self) -> None:
         """Close active SQLite connection if open."""

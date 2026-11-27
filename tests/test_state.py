@@ -7,7 +7,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pfetl_analytics_studio.profile import PFETLProfile
-from pfetl_analytics_studio.state import CURRENT_SCHEMA_VERSION, StudioStateStore
+from pfetl_analytics_studio.state import (
+    CURRENT_SCHEMA_VERSION,
+    SavedViewKind,
+    StudioStateStore,
+)
 
 
 def test_state_store_initialization(temp_state_store: StudioStateStore) -> None:
@@ -150,3 +154,96 @@ def test_save_pin_rename_profile_and_session_clear(
     cleared = session.clear_profile()
     assert cleared.profile is None
     assert cleared.provenance is None
+
+
+def test_saved_views_crud_duplicate_rejection_and_no_result_blobs(
+    tmp_path: Path,
+    valid_settings_path: Path,
+    valid_rules_path: Path,
+) -> None:
+    """Verify schema v3 `saved_views` CRUD, unique names per profile, and no result blobs."""
+    import pytest
+
+    from pfetl_analytics_studio.state import SavedViewKind, SqlDatasource
+
+    db_file = tmp_path / "saved_views_v3.sqlite"
+    res = PFETLProfile.load(valid_settings_path, valid_rules_path, label="Views Test")
+    assert res.profile is not None
+    pid = res.profile.profile_id
+
+    with StudioStateStore(db_path=db_file) as store:
+        v1 = store.create_saved_view(
+            pid,
+            "Equity Overview",
+            SavedViewKind.GUIDED,
+            description="Class breakdown",
+            query_spec={"dataset_id": "investment_by_class", "dimensions": ["INSTRUMENT_CLASS"]},
+        )
+        v2 = store.create_saved_view(
+            pid,
+            "Recent Runs",
+            SavedViewKind.SQL,
+            datasource=SqlDatasource.CONTROL_PLANE,
+            sql_text="SELECT run_id, status FROM cp_runs",
+        )
+        assert len(store.list_saved_views(pid)) == 2
+        assert len(store.list_saved_views(pid, kind=SavedViewKind.GUIDED)) == 1
+        assert len(store.list_saved_views(pid, kind=SavedViewKind.SQL)) == 1
+
+        with pytest.raises(ValueError, match="already exists"):
+            store.create_saved_view(
+                pid,
+                "Equity Overview",
+                SavedViewKind.SQL,
+                sql_text="SELECT 1",
+            )
+
+        updated = store.update_saved_view(v1.view_id, name="Equity Renamed", description="Updated")
+        assert updated.name == "Equity Renamed"
+        assert updated.description == "Updated"
+        assert store.get_saved_view(v2.view_id) is not None
+
+        store.delete_saved_view(v2.view_id)
+        assert store.get_saved_view(v2.view_id) is None
+
+    conn = sqlite3.connect(db_file)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(saved_views);").fetchall()}
+    conn.close()
+    assert "results_json" not in cols
+    assert "rows_json" not in cols
+
+
+def test_default_sql_starters_seeded_and_editable_in_sqlite(
+    tmp_path: Path,
+    valid_settings_path: Path,
+    valid_rules_path: Path,
+) -> None:
+    """Verify starter SQL packs live in studio.sqlite and are editable/restorable."""
+    db_file = tmp_path / "starters_v4.sqlite"
+    res = PFETLProfile.load(valid_settings_path, valid_rules_path, label="Starters Test")
+    assert res.profile is not None
+    pid = res.profile.profile_id
+
+    with StudioStateStore(db_path=db_file) as store:
+        inserted = store.seed_default_sql_starters(pid)
+        assert inserted == 8
+        starters = store.list_saved_views(pid, kind=SavedViewKind.SQL)
+        assert len(starters) == 8
+        assert all(v.is_starter for v in starters)
+
+        # Edit a starter SQL query -> persists in SQLite
+        first = starters[0]
+        edited = store.update_saved_view(
+            first.view_id,
+            sql_text="SELECT 42 AS custom_edited_starter",
+        )
+        assert edited.sql_text == "SELECT 42 AS custom_edited_starter"
+
+        # Delete one starter -> re-seeding without force_restore does not overwrite
+        store.delete_saved_view(starters[1].view_id)
+        assert store.seed_default_sql_starters(pid) == 0
+        assert len(store.list_saved_views(pid)) == 7
+
+        # Force restore brings back only the missing starter
+        assert store.seed_default_sql_starters(pid, force_restore=True) == 1
+        assert len(store.list_saved_views(pid)) == 8

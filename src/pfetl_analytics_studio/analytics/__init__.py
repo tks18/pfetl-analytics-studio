@@ -16,6 +16,8 @@ from pfetl_analytics_studio.analytics.explorer_models import (
     GuidedQuery,
     GuidedQueryResult,
     GuidedSortSpec,
+    SqlQueryRequest,
+    SqlQueryResult,
     SurfaceColumnFilter,
     TablePreviewResult,
 )
@@ -193,6 +195,8 @@ __all__ = [
     "GuidedQuery",
     "GuidedQueryResult",
     "GuidedSortSpec",
+    "SqlQueryRequest",
+    "SqlQueryResult",
     "SurfaceColumnFilter",
     "TablePreviewResult",
     "FireAnalytics",

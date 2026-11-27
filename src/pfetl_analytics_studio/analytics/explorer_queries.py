@@ -14,6 +14,8 @@ Does not own
 
 from __future__ import annotations
 
+import re
+import time
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -23,6 +25,8 @@ from pfetl_analytics_studio.analytics.explorer_models import (
     ChartRecommendation,
     ChartSuggestion,
     GuidedQuery,
+    SqlQueryRequest,
+    SqlQueryResult,
     SurfaceColumnFilter,
     TablePreviewResult,
 )
@@ -53,6 +57,7 @@ from pfetl_analytics_studio.semantic import (
     compile_filter_clause,
     format_period_label,
 )
+from pfetl_analytics_studio.state import SqlDatasource
 
 _DATE_LIKE_DIMENSIONS: frozenset[str] = frozenset(
     {
@@ -691,3 +696,197 @@ def recommend_chart(
         x_field=None,
         y_fields=y_fields,
     )
+
+
+_FORBIDDEN_SQL_KEYWORDS: frozenset[str] = frozenset(
+    {
+        "INSERT",
+        "UPDATE",
+        "DELETE",
+        "DROP",
+        "CREATE",
+        "ALTER",
+        "TRUNCATE",
+        "REPLACE",
+        "MERGE",
+        "UPSERT",
+        "PRAGMA",
+        "ATTACH",
+        "DETACH",
+        "COPY",
+        "INSTALL",
+        "LOAD",
+        "EXPORT",
+        "IMPORT",
+        "CALL",
+        "EXECUTE",
+        "VACUUM",
+        "REINDEX",
+        "SET",
+        "RESET",
+        "GRANT",
+        "REVOKE",
+        "BEGIN",
+        "COMMIT",
+        "ROLLBACK",
+    }
+)
+
+
+def _strip_sql_comments_and_literals(sql: str) -> tuple[str, str]:
+    """Strip SQL comments for validation while producing an unquoted-token scan string."""
+    cleaned: list[str] = []
+    unquoted: list[str] = []
+    i = 0
+    n = len(sql)
+    while i < n:
+        ch = sql[i]
+        nxt = sql[i + 1] if i + 1 < n else ""
+        # Single-line comment
+        if ch == "-" and nxt == "-":
+            i += 2
+            while i < n and sql[i] != "\n":
+                i += 1
+            cleaned.append(" ")
+            unquoted.append(" ")
+            continue
+        # Block comment
+        if ch == "/" and nxt == "*":
+            i += 2
+            while i + 1 < n and not (sql[i] == "*" and sql[i + 1] == "/"):
+                i += 1
+            i += 2
+            cleaned.append(" ")
+            unquoted.append(" ")
+            continue
+        # Single-quoted string literal
+        if ch == "'":
+            cleaned.append(ch)
+            unquoted.append(" ")
+            i += 1
+            while i < n:
+                cleaned.append(sql[i])
+                if sql[i] == "'" and i + 1 < n and sql[i + 1] == "'":
+                    cleaned.append("'")
+                    i += 2
+                    continue
+                if sql[i] == "'":
+                    i += 1
+                    break
+                i += 1
+            continue
+        # Double-quoted identifier
+        if ch == '"':
+            cleaned.append(ch)
+            unquoted.append(" ")
+            i += 1
+            while i < n:
+                cleaned.append(sql[i])
+                if sql[i] == '"' and i + 1 < n and sql[i + 1] == '"':
+                    cleaned.append('"')
+                    i += 2
+                    continue
+                if sql[i] == '"':
+                    i += 1
+                    break
+                i += 1
+            continue
+        cleaned.append(ch)
+        unquoted.append(ch)
+        i += 1
+    return "".join(cleaned).strip(), "".join(unquoted).strip()
+
+
+def validate_read_only_sql(raw_sql: str) -> str:
+    """Validate that `raw_sql` is a single read-only SELECT or WITH query."""
+    if not raw_sql or not raw_sql.strip():
+        raise ValueError("SQL query cannot be empty.")
+
+    cleaned, unquoted = _strip_sql_comments_and_literals(raw_sql)
+    if cleaned.endswith(";"):
+        cleaned = cleaned[:-1].strip()
+    if unquoted.endswith(";"):
+        unquoted = unquoted[:-1].strip()
+
+    if not cleaned:
+        raise ValueError("SQL query contains only comments or whitespace.")
+    if ";" in unquoted:
+        raise ValueError("Multiple SQL statements are not permitted (unexpected semicolon).")
+
+    tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", unquoted.upper())
+    if not tokens:
+        raise ValueError("Unable to parse a valid SQL statement.")
+    if tokens[0] not in ("SELECT", "WITH"):
+        raise ValueError(
+            f"Only read-only SELECT or WITH statements are permitted (got '{tokens[0]}')."
+        )
+    if tokens[0] == "WITH" and "SELECT" not in tokens:
+        raise ValueError("CTE query beginning with WITH must contain a SELECT statement.")
+
+    forbidden_hits = [t for t in tokens if t in _FORBIDDEN_SQL_KEYWORDS]
+    if forbidden_hits:
+        raise ValueError(
+            f"Read-only SQL guard rejected forbidden keyword(s): {', '.join(sorted(set(forbidden_hits)))}."
+        )
+    return cleaned
+
+
+def execute_read_only_sql(
+    profile: PFETLProfile,
+    request: SqlQueryRequest,
+) -> SqlQueryResult:
+    """Execute a validated single-statement SELECT/WITH query with a hard LIMIT wrapper."""
+    normalized = validate_read_only_sql(request.sql)
+    safe_limit = max(1, min(request.limit, 10_000))
+    wrapped_sql = f"SELECT * FROM ({normalized}) AS _studio_sql_q LIMIT ?;"
+    probe_limit = safe_limit + 1
+
+    t0 = time.perf_counter()
+    if request.datasource == SqlDatasource.CONTROL_PLANE:
+        df = ControlPlaneReader(profile).fetch_df(wrapped_sql, (probe_limit,))
+    else:
+        df = DuckDBReader(profile).fetch_df(wrapped_sql, (probe_limit,))
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+
+    truncated = df.height > safe_limit
+    if truncated:
+        df = df.head(safe_limit)
+
+    cols = tuple(df.columns)
+    rows = tuple(df.to_dicts())
+    warnings: list[str] = []
+    if truncated:
+        warnings.append(
+            f"Result truncated at {safe_limit:,} rows (use Download Full CSV for all rows)."
+        )
+    if not rows:
+        warnings.append("Query executed successfully and returned 0 rows.")
+
+    return SqlQueryResult(
+        sql=request.sql,
+        normalized_sql=normalized,
+        datasource=request.datasource,
+        columns=cols,
+        rows=rows,
+        row_count=len(rows),
+        truncated=truncated,
+        limit_applied=safe_limit,
+        duration_ms=elapsed_ms,
+        warnings=tuple(warnings),
+    )
+
+
+def export_sql_csv(
+    profile: PFETLProfile,
+    sql: str,
+    datasource: SqlDatasource = SqlDatasource.DUCKDB,
+) -> tuple[bytes, int, str]:
+    """Execute a validated read-only SQL query without row cap and export as CSV bytes."""
+    normalized = validate_read_only_sql(sql)
+    wrapped_sql = f"SELECT * FROM ({normalized}) AS _studio_sql_export;"
+    if datasource == SqlDatasource.CONTROL_PLANE:
+        df = ControlPlaneReader(profile).fetch_df(wrapped_sql)
+    else:
+        df = DuckDBReader(profile).fetch_df(wrapped_sql)
+    fname = f"sql_{datasource.value}_export.csv"
+    return df.write_csv().encode("utf-8"), df.height, fname

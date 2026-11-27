@@ -2,6 +2,20 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.26](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.25...0.1.26) (2026-11-27)
+
+
+### Features 🔥
+
+* **explorer:** add guarded read-only SQL executor and starter packs ([79b9d2c](https://github.com/tks18/pfetl-analytics-studio/commit/79b9d2cc27be9b2e8b8c4060b1026a7ff7fca613))
+* **state:** persist saved views and SQL starter packs in sqlite ([a61396e](https://github.com/tks18/pfetl-analytics-studio/commit/a61396ee420d06d19a4af5de925661b56a2e3723))
+* **ui:** add Saved Views and Advanced SQL tabs with query editing ([0bb201e](https://github.com/tks18/pfetl-analytics-studio/commit/0bb201e38d1cfda801a231bf056f63c85b8203a7))
+
+
+### Tests 🧪
+
+* **explorer:** verify saved views, starter packs, and read-only SQL ([ddfe796](https://github.com/tks18/pfetl-analytics-studio/commit/ddfe79686e5aec7bce212ccb71b295b48a1aba56))
+
 ### [0.1.25](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.24...0.1.25) (2026-11-27)
 
 
