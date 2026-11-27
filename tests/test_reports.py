@@ -550,6 +550,39 @@ def test_phase28_prebuilt_portfolio_performance_currency_reports_render_and_expo
         assert xlsx_out.bytes_written > 1000
 
 
+def test_phase29_prebuilt_tax_and_fire_reports_render_and_export(
+    profile_with_full_atlas: PFETLProfile,
+    tmp_path: Path,
+) -> None:
+    """Investment Tax, Tax Position, and FIRE built-ins render and export PDF/PPTX/XLSX."""
+    seed_overview_gold_tables(profile_with_full_atlas.duckdb_path)
+    app_ctx = AppSessionManager(initial_profile=profile_with_full_atlas).ensure_hydrated()
+    service = ReportService(registry=DEFAULT_REPORT_REGISTRY)
+
+    for report_id in (
+        "investment_tax_harvesting",
+        "tax_position_review",
+        "fire_planning_review",
+    ):
+        defn = DEFAULT_REPORT_REGISTRY.get_definition(report_id)
+        assert defn is not None
+        assert defn.builtin is True
+
+        res = service.render(defn, app_ctx)
+        assert [b.block_id for b in res.blocks] == [b.block_id for b in defn.blocks]
+        prov_blocks = [b for b in res.blocks if isinstance(b, RenderedProvenanceBlock)]
+        assert prov_blocks
+        if report_id in ("investment_tax_harvesting", "tax_position_review"):
+            assert "Indicative" in prov_blocks[0].disclaimer_text
+
+        pdf_out = ReportExporter.export_pdf(res, tmp_path / f"{report_id}.pdf")
+        pptx_out = ReportExporter.export_pptx(res, tmp_path / f"{report_id}.pptx")
+        xlsx_out = ReportExporter.export_xlsx(res, tmp_path / f"{report_id}.xlsx")
+        assert pdf_out.bytes_written > 1000
+        assert pptx_out.bytes_written > 4000
+        assert xlsx_out.bytes_written > 1000
+
+
 def test_exporters_handle_missing_kaleido_prerequisite_gracefully(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
