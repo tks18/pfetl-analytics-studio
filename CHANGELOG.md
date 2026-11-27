@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.0.0](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.35...1.0.0) (2026-11-27)
+
+
+### Docs 📃
+
+* **readme:** document architecture, workspaces, reports, and CLI ([2c3fe94](https://github.com/tks18/pfetl-analytics-studio/commit/2c3fe941f49b1fac48c91b937d366cb79af1e645))
+
+
+### Others 🔧
+
+* **plan:** remove completed planning directory ([e67bb82](https://github.com/tks18/pfetl-analytics-studio/commit/e67bb82c4b8bf7975bb42bf2305d6b218c922cd4))
+
+
+### Code Refactoring 🖌
+
+* **vocab:** replace phase references with domain terminology ([fd731fa](https://github.com/tks18/pfetl-analytics-studio/commit/fd731fa2212e0244cbb96135e725682dab71f95d))
+
+
+### Tests 🧪
+
+* **vocab:** rename phase-numbered tests to semantic domain names ([9aa7a99](https://github.com/tks18/pfetl-analytics-studio/commit/9aa7a9951eec8e71ee765ef1b2c409613e9bca4e))
+
 ### [0.1.35](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.34...0.1.35) (2026-11-27)
 
 
