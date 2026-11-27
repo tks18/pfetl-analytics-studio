@@ -18,6 +18,8 @@ from dataclasses import dataclass
 from datetime import UTC, date, datetime
 from pathlib import Path
 
+from pydantic import BaseModel, ConfigDict
+
 from pfetl_analytics_studio import __version__ as STUDIO_VERSION
 from pfetl_analytics_studio.analytics import ExplorerAnalytics
 from pfetl_analytics_studio.analytics.explorer_models import GuidedQueryResult, SqlQueryResult
@@ -83,6 +85,45 @@ class ReportContextOverrides:
     period_request: PeriodRequest | None = None
     filters: FilterSet | None = None
     currency_mode: CurrencyMode | None = None
+
+
+class ProvenanceChange(BaseModel):
+    """Single provenance field difference between a prior and rerun `ReportContext`."""
+
+    model_config = ConfigDict(frozen=True)
+
+    field: str
+    label: str
+    before: str
+    after: str
+
+
+def compare_report_provenance(
+    prior: ReportContext,
+    current: ReportContext,
+) -> tuple[ProvenanceChange, ...]:
+    """Compare two `ReportContext` stamps and return changed provenance fields."""
+    pairs: tuple[tuple[str, str, str | None, str | None], ...] = (
+        ("pfetl_run_id", "PFETL Run", prior.pfetl_run_id, current.pfetl_run_id),
+        ("core_version", "Core Version", prior.core_version, current.core_version),
+        ("schema_version", "Schema Version", prior.schema_version, current.schema_version),
+        (
+            "settings_snapshot_id",
+            "Settings Snapshot",
+            prior.settings_snapshot_id,
+            current.settings_snapshot_id,
+        ),
+        ("rules_snapshot_id", "Rules Snapshot", prior.rules_snapshot_id, current.rules_snapshot_id),
+        ("period", "Period", prior.period.label, current.period.label),
+        ("currency_mode", "Currency Mode", prior.currency_mode, current.currency_mode),
+    )
+    changes: list[ProvenanceChange] = []
+    for field, label, before_val, after_val in pairs:
+        b_str = before_val or "—"
+        a_str = after_val or "—"
+        if b_str != a_str:
+            changes.append(ProvenanceChange(field=field, label=label, before=b_str, after=a_str))
+    return tuple(changes)
 
 
 def _merge_filters(base: FilterSet, override: FilterSet | None) -> FilterSet:
@@ -252,6 +293,33 @@ class ReportService:
             blocks=tuple(rendered_blocks),
             warnings=tuple(warnings),
             duration_ms=duration_ms,
+        )
+
+    def render_saved_report(
+        self,
+        report_id: str,
+        app_context: AppContext,
+        *,
+        state_db_path: Path | None = None,
+        context_overrides: ReportContextOverrides | None = None,
+        record_history: bool = True,
+        output_format: str = "preview",
+    ) -> ReportResult:
+        """Load a saved custom report by `report_id` and execute it via `render`."""
+        with StudioStateStore(db_path=state_db_path) as store:
+            saved = store.get_report_definition(report_id)
+        if saved is None:
+            raise ReportResolutionError(
+                f"Saved report '{report_id}' was not found in Studio state."
+            )
+        definition = ReportDefinition.model_validate_json(saved.definition_json)
+        return self.render(
+            definition,
+            app_context,
+            context_overrides=context_overrides,
+            record_history=record_history,
+            state_db_path=state_db_path,
+            output_format=output_format,
         )
 
     def _execute_block(
