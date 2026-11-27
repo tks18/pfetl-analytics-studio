@@ -29,9 +29,17 @@ from pfetl_analytics_studio.reports.templates.financial_year import (
     FINANCIAL_YEAR_REVIEW_DEF,
     register_financial_year_sources,
 )
+from pfetl_analytics_studio.reports.templates.fire import (
+    FIRE_PLANNING_REVIEW_DEF,
+    register_fire_sources,
+)
 from pfetl_analytics_studio.reports.templates.income import (
     INCOME_RESILIENCE_REVIEW_DEF,
     register_income_sources,
+)
+from pfetl_analytics_studio.reports.templates.investment_tax import (
+    INVESTMENT_TAX_HARVESTING_DEF,
+    register_investment_tax_sources,
 )
 from pfetl_analytics_studio.reports.templates.monthly import (
     MONTHLY_FINANCIAL_REVIEW_DEF,
@@ -44,6 +52,10 @@ from pfetl_analytics_studio.reports.templates.performance import (
 from pfetl_analytics_studio.reports.templates.portfolio import (
     PORTFOLIO_REVIEW_DEF,
     register_portfolio_sources,
+)
+from pfetl_analytics_studio.reports.templates.tax_position import (
+    TAX_POSITION_REVIEW_DEF,
+    register_tax_position_sources,
 )
 from pfetl_analytics_studio.reports.templates.wealth import (
     NET_WORTH_WEALTH_ATTRIBUTION_DEF,
@@ -75,17 +87,28 @@ def register_investment_reports_templates(registry: ReportRegistry) -> None:
     register_currency_sources(registry)
 
 
+def register_tax_fire_templates(registry: ReportRegistry) -> None:
+    """Register the Phase 29 Investment Tax, Tax Position, and FIRE built-in templates."""
+    register_investment_tax_sources(registry)
+    register_tax_position_sources(registry)
+    register_fire_sources(registry)
+
+
 __all__ = [
     "CASHFLOW_BUDGET_REVIEW_DEF",
     "EXPENSE_LIFESTYLE_REVIEW_DEF",
     "FINANCIAL_YEAR_REVIEW_DEF",
+    "FIRE_PLANNING_REVIEW_DEF",
     "INCOME_RESILIENCE_REVIEW_DEF",
     "INVESTMENT_PERFORMANCE_BENCHMARK_DEF",
+    "INVESTMENT_TAX_HARVESTING_DEF",
     "MONTHLY_FINANCIAL_REVIEW_DEF",
     "MULTI_CURRENCY_EXPOSURE_REVIEW_DEF",
     "NET_WORTH_WEALTH_ATTRIBUTION_DEF",
     "PORTFOLIO_REVIEW_DEF",
+    "TAX_POSITION_REVIEW_DEF",
     "register_cashflow_expense_income_templates",
     "register_investment_reports_templates",
     "register_monthly_fy_wealth_templates",
+    "register_tax_fire_templates",
 ]

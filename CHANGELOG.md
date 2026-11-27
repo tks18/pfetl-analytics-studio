@@ -2,6 +2,19 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [0.1.32](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.31...0.1.32) (2026-11-27)
+
+
+### Features 🔥
+
+* **reports:** add Investment Tax, Tax Position, and FIRE reports ([38b47ef](https://github.com/tks18/pfetl-analytics-studio/commit/38b47ef4a87e3331bea37e4408a94d079c5e6a47))
+* **ui:** paginate Built-in Templates and Custom Reports galleries ([930441b](https://github.com/tks18/pfetl-analytics-studio/commit/930441bf2e20f7fa4ccf9cd58bee1d56df48e1e8))
+
+
+### Tests 🧪
+
+* **reports:** verify Investment Tax, Tax Position, and FIRE reports ([109142d](https://github.com/tks18/pfetl-analytics-studio/commit/109142d5e59ab8101af4f98b33a659f76e5aa8fe))
+
 ### [0.1.31](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.30...0.1.31) (2026-11-27)
 
 
