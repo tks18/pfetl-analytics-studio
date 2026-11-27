@@ -20,6 +20,7 @@ from enum import StrEnum
 from pydantic import BaseModel, ConfigDict, model_validator
 
 from pfetl_analytics_studio.semantic.datasets import DEFAULT_DATASETS, DatasetRegistry
+from pfetl_analytics_studio.semantic.guided_metrics import build_guided_enrichment_metrics
 
 
 class MetricAggregation(StrEnum):
@@ -1404,4 +1405,10 @@ FOUNDATIONAL_METRICS: tuple[MetricSpec, ...] = (
     ),
 )
 
-DEFAULT_METRICS = MetricRegistry(DEFAULT_DATASETS, FOUNDATIONAL_METRICS)
+GUIDED_ENRICHMENT_METRICS: tuple[MetricSpec, ...] = build_guided_enrichment_metrics(
+    _metric, MetricAggregation, MetricFormat
+)
+
+DEFAULT_METRICS = MetricRegistry(
+    DEFAULT_DATASETS, (*FOUNDATIONAL_METRICS, *GUIDED_ENRICHMENT_METRICS)
+)
