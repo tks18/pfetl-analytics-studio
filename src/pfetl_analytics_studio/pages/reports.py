@@ -239,14 +239,61 @@ def _render_report_result(
             _render_single_block(block, on_export_image=on_export_image)
 
 
+_GALLERY_PAGE_SIZE = 6
+
+
+def _render_gallery_pagination(
+    total_items: int,
+    page_state: dict[str, int],
+    key: str,
+    on_change: Callable[[], Any],
+) -> tuple[int, int]:
+    """Render compact pagination controls and return `(start_idx, end_idx)` slice."""
+    total_pages = max(1, (total_items + _GALLERY_PAGE_SIZE - 1) // _GALLERY_PAGE_SIZE)
+    current = min(max(1, page_state[key]), total_pages)
+    page_state[key] = current
+    start = (current - 1) * _GALLERY_PAGE_SIZE
+    end = start + _GALLERY_PAGE_SIZE
+
+    if total_pages > 1:
+        with ui.row().classes("w-full items-center justify-between pt-2"):
+            ui.label(
+                f"Showing {start + 1}–{min(end, total_items)} of {total_items} reports"
+            ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
+            with ui.row().classes("items-center gap-2"):
+                prev_btn = ui.button(
+                    icon="chevron_left",
+                    on_click=lambda _e: (
+                        page_state.update({key: max(1, current - 1)}),
+                        on_change(),
+                    ),
+                ).props("outline dense size=sm")
+                if current <= 1:
+                    prev_btn.disable()
+                ui.label(f"Page {current} / {total_pages}").classes("text-xs font-medium").style(
+                    f"color: {StudioColor.TEXT}"
+                )
+                next_btn = ui.button(
+                    icon="chevron_right",
+                    on_click=lambda _e: (
+                        page_state.update({key: min(total_pages, current + 1)}),
+                        on_change(),
+                    ),
+                ).props("outline dense size=sm")
+                if current >= total_pages:
+                    next_btn.disable()
+    return start, end
+
+
 def _render_catalog_cards(
     builtins: tuple[ReportDefinition, ...],
     saved_reports: list[SavedReportRecord],
     on_preview: Callable[[ReportDefinition], Any],
     selected_id_ref: dict[str, ReportDefinition],
 ) -> None:
-    """Render a scalable, searchable, tabbed 3-column Report Gallery."""
+    """Render a scalable, searchable, paginated 3-column Report Gallery."""
     search_state: dict[str, str] = {"q": ""}
+    page_state: dict[str, int] = {"builtin": 1, "custom": 1}
 
     with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
@@ -257,6 +304,7 @@ def _render_catalog_cards(
                 placeholder="Search reports…",
                 on_change=lambda e: (
                     search_state.update({"q": str(e.value or "").strip().lower()}),
+                    page_state.update({"builtin": 1, "custom": 1}),
                     _gallery_grid.refresh(),
                 ),
             ).props("dense outlined clearable debounce=200").classes("w-64")
@@ -276,8 +324,11 @@ def _render_catalog_cards(
                             "text-sm"
                         ).style(f"color: {StudioColor.MUTED}")
                     else:
-                        with ui.grid(columns=3).classes("w-full gap-3"):
-                            for tmpl in filtered:
+                        start, end = _render_gallery_pagination(
+                            len(filtered), page_state, "builtin", _gallery_grid.refresh
+                        )
+                        with ui.grid(columns=3).classes("w-full gap-3 pt-2"):
+                            for tmpl in filtered[start:end]:
                                 is_active = selected_id_ref["current"].id == tmpl.id
                                 border = (
                                     "1px solid #3B82F6"
@@ -325,8 +376,11 @@ def _render_catalog_cards(
                             "interactive Clone & Custom Report Builder."
                         ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
                     else:
-                        with ui.grid(columns=3).classes("w-full gap-3"):
-                            for rec in filtered_custom:
+                        c_start, c_end = _render_gallery_pagination(
+                            len(filtered_custom), page_state, "custom", _gallery_grid.refresh
+                        )
+                        with ui.grid(columns=3).classes("w-full gap-3 pt-2"):
+                            for rec in filtered_custom[c_start:c_end]:
                                 with ui.card().classes(
                                     "studio-card p-3 rounded-xl justify-between gap-2"
                                 ):
