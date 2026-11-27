@@ -924,10 +924,35 @@ class StudioStateStore:
         return [self._row_to_saved_report(r) for r in rows]
 
     def delete_report_definition(self, report_id: str) -> None:
-        """Delete a saved report definition by `report_id`."""
+        """Delete a saved report definition by `report_id` (preserves `report_runs`)."""
         conn = self._get_connection()
         with conn:
             conn.execute("DELETE FROM saved_reports WHERE report_id = ?;", (report_id,))
+
+    def rename_report_definition(self, report_id: str, new_name: str) -> SavedReportRecord:
+        """Rename a persisted report definition and update its embedded JSON `name`."""
+        clean_name = new_name.strip()
+        if not clean_name:
+            raise ValueError("Report name must not be empty.")
+        existing = self.get_report_definition(report_id)
+        if existing is None:
+            raise ValueError(f"Saved report '{report_id}' was not found.")
+        try:
+            payload = json.loads(existing.definition_json)
+            if isinstance(payload, dict):
+                payload["name"] = clean_name
+                updated_json = json.dumps(payload)
+            else:
+                updated_json = existing.definition_json
+        except json.JSONDecodeError:
+            updated_json = existing.definition_json
+        return self.save_report_definition(
+            existing.profile_id,
+            clean_name,
+            updated_json,
+            report_id=existing.report_id,
+            description=existing.description,
+        )
 
     def record_report_run(
         self,

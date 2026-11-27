@@ -116,6 +116,10 @@ class ReportRegistry:
             items = [s for s in items if s.kind == kind]
         return tuple(sorted(items, key=lambda s: s.source_id))
 
+    def list_editor_catalog(self) -> dict[ReportSourceKind, tuple[RegisteredBlockSource, ...]]:
+        """Return registered block sources grouped by `ReportSourceKind` for the editor."""
+        return {kind: self.list_sources(kind) for kind in ReportSourceKind}
+
     def register_definition(self, definition: ReportDefinition) -> None:
         """Register a built-in/fixture `ReportDefinition`, rejecting duplicate `id`."""
         if definition.id in self._definitions:

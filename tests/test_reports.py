@@ -40,6 +40,7 @@ from pfetl_analytics_studio.reports import (
     ReportContext,
     ReportContextOverrides,
     ReportDefinition,
+    ReportDefinitionDraft,
     ReportExporter,
     ReportKpiItem,
     ReportRegistry,
@@ -51,8 +52,10 @@ from pfetl_analytics_studio.reports import (
     SubtitleBlock,
     TableBlock,
     TitleBlock,
+    clone_definition_as_draft,
     sanitize_excel_sheet_name,
     sanitize_filename,
+    validate_report_draft,
 )
 from pfetl_analytics_studio.semantic import PeriodContext, PeriodPreset, PeriodRequest
 from pfetl_analytics_studio.state import (
@@ -522,6 +525,7 @@ def test_phase27_prebuilt_cashflow_expense_income_reports_render_and_export(
         assert xlsx_out.bytes_written > 1000
 
 
+
 def test_phase28_prebuilt_portfolio_performance_currency_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
@@ -550,6 +554,7 @@ def test_phase28_prebuilt_portfolio_performance_currency_reports_render_and_expo
         assert pdf_out.bytes_written > 1000
         assert pptx_out.bytes_written > 4000
         assert xlsx_out.bytes_written > 1000
+
 
 
 def test_phase29_prebuilt_tax_and_fire_reports_render_and_export(
@@ -583,6 +588,7 @@ def test_phase29_prebuilt_tax_and_fire_reports_render_and_export(
         assert pdf_out.bytes_written > 1000
         assert pptx_out.bytes_written > 4000
         assert xlsx_out.bytes_written > 1000
+
 
 
 def _seed_phase30_control_plane(cp_path: Path) -> None:
@@ -776,6 +782,100 @@ def test_phase30_prebuilt_operations_forensic_evidence_reports_render_and_export
         assert pdf_out.bytes_written > 1000
         assert pptx_out.bytes_written > 4000
         assert xlsx_out.bytes_written > 1000
+
+
+def test_phase31_custom_report_draft_clone_reorder_and_persistence_roundtrip(
+    tmp_path: Path,
+) -> None:
+    """Clone built-in, reorder blocks, persist, rename, and delete preserving report_runs."""
+    catalog = DEFAULT_REPORT_REGISTRY.list_editor_catalog()
+    assert catalog[ReportSourceKind.KPI_GROUP]
+    assert catalog[ReportSourceKind.CHART]
+    assert catalog[ReportSourceKind.TABLE]
+
+    src_builtin = DEFAULT_REPORT_REGISTRY.get_definition("monthly_financial_review")
+    assert src_builtin is not None
+    orig_json = src_builtin.model_dump_json()
+
+    draft = clone_definition_as_draft(src_builtin, existing_names=set(), suffix="Copy")
+    assert draft.id != src_builtin.id
+    assert draft.name == "Monthly Financial Review (Copy)"
+
+    first_id = draft.blocks[0].block_id
+    second_id = draft.blocks[1].block_id
+    assert draft.move_block(0, 1) is True
+    assert draft.blocks[0].block_id == second_id
+    assert draft.blocks[1].block_id == first_id
+
+    defn = draft.to_definition()
+    assert defn.builtin is False
+    # Built-in registry remains untouched.
+    builtin_after = DEFAULT_REPORT_REGISTRY.get_definition("monthly_financial_review")
+    assert builtin_after is not None
+    assert builtin_after.model_dump_json() == orig_json
+
+    db_path = tmp_path / "studio.sqlite"
+    with StudioStateStore(db_path=db_path) as store:
+        saved = store.save_report_definition(
+            "prof-1",
+            defn.name,
+            defn.model_dump_json(),
+            report_id=defn.id,
+            description=defn.description,
+        )
+        reloaded = ReportDefinition.model_validate_json(saved.definition_json)
+        assert reloaded.model_dump_json() == defn.model_dump_json()
+
+        # Profile-scoped name uniqueness enforced.
+        with pytest.raises(ValueError, match="already exists"):
+            store.save_report_definition("prof-1", defn.name, defn.model_dump_json())
+
+        renamed = store.rename_report_definition(saved.report_id, "My Monthly Custom")
+        assert renamed.name == "My Monthly Custom"
+        assert ReportDefinition.model_validate_json(renamed.definition_json).name == "My Monthly Custom"
+
+        store.record_report_run(
+            saved.report_id,
+            "run-001",
+            '{"preset":"latest_complete_month"}',
+            "pdf",
+            output_path="/tmp/out.pdf",
+        )
+        store.delete_report_definition(saved.report_id)
+        assert store.get_report_definition(saved.report_id) is None
+        runs = store.list_report_runs(report_id=saved.report_id)
+        assert len(runs) == 1
+
+
+def test_phase31_broken_saved_view_and_source_validation() -> None:
+    """Broken SavedView or source references stay visible and block save only when required."""
+    defn = ReportDefinition(
+        id="custom_broken_test",
+        name="Broken Ref Check",
+        blocks=(
+            SavedViewBlock(block_id="sv_blk", view_id="deleted-view-id", required=False),
+            TableBlock(block_id="tbl_blk", source_id="nonexistent.source", required=True),
+        ),
+    )
+    draft = ReportDefinitionDraft.from_definition(defn)
+    res = validate_report_draft(
+        draft,
+        registry=DEFAULT_REPORT_REGISTRY,
+        saved_views_by_id={},
+    )
+    assert res.is_valid is False
+    assert res.has_blocking_errors is True
+
+    sv_issues = res.issues_for_block("sv_blk")
+    assert len(sv_issues) == 1
+    assert sv_issues[0].code == "BROKEN_SAVED_VIEW_REF"
+    assert sv_issues[0].blocking is False
+    assert "Saved View" in sv_issues[0].remediation
+
+    tbl_issues = res.issues_for_block("tbl_blk")
+    assert len(tbl_issues) == 1
+    assert tbl_issues[0].code == "MISSING_BLOCK_SOURCE"
+    assert tbl_issues[0].blocking is True
 
 
 def test_exporters_handle_missing_kaleido_prerequisite_gracefully(

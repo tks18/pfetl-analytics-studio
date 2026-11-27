@@ -12,6 +12,11 @@ from nicegui import run, ui
 
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache
+from pfetl_analytics_studio.pages.report_editor_ui import (
+    open_delete_report_dialog,
+    open_rename_report_dialog,
+    render_custom_editor_panel,
+)
 from pfetl_analytics_studio.reports import (
     DEFAULT_REPORT_REGISTRY,
     ExportPrerequisiteError,
@@ -26,13 +31,20 @@ from pfetl_analytics_studio.reports import (
     RenderedTextBlock,
     ReportContextOverrides,
     ReportDefinition,
+    ReportDefinitionDraft,
     ReportExporter,
     ReportResult,
     ReportService,
+    clone_definition_as_draft,
     sanitize_filename,
 )
 from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest, preset_display_name
-from pfetl_analytics_studio.state import ReportRunRecord, SavedReportRecord, StudioStateStore
+from pfetl_analytics_studio.state import (
+    ReportRunRecord,
+    SavedReportRecord,
+    SavedViewDefinition,
+    StudioStateStore,
+)
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     StudioColor,
@@ -290,10 +302,19 @@ def _render_catalog_cards(
     saved_reports: list[SavedReportRecord],
     on_preview: Callable[[ReportDefinition], Any],
     selected_id_ref: dict[str, ReportDefinition],
-) -> None:
+    *,
+    on_new_custom: Callable[[], Any],
+    on_clone_builtin: Callable[[ReportDefinition], Any],
+    on_edit_custom: Callable[[SavedReportRecord], Any],
+    on_rename_custom: Callable[[SavedReportRecord], Any],
+    on_duplicate_custom: Callable[[SavedReportRecord], Any],
+    on_delete_custom: Callable[[SavedReportRecord], Any],
+) -> Callable[[], Any]:
     """Render a scalable, searchable, paginated 3-column Report Gallery."""
     search_state: dict[str, str] = {"q": ""}
     page_state: dict[str, int] = {"builtin": 1, "custom": 1}
+    clone_ref: dict[str, str] = {"id": builtins[0].id if builtins else ""}
+    builtin_by_id = {b.id: b for b in builtins}
 
     with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
         with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
@@ -357,7 +378,12 @@ def _render_catalog_cards(
                                         ui.label(tmpl.description).classes(
                                             "text-xs line-clamp-2"
                                         ).style(f"color: {StudioColor.MUTED}")
-                                    with ui.row().classes("w-full justify-end pt-1"):
+                                    with ui.row().classes("w-full justify-end gap-1 pt-1"):
+                                        ui.button(
+                                            "Clone",
+                                            icon="content_copy",
+                                            on_click=lambda _e, d=tmpl: on_clone_builtin(d),
+                                        ).props("outline dense size=sm")
                                         ui.button(
                                             "Preview",
                                             icon="play_arrow",
@@ -365,6 +391,34 @@ def _render_catalog_cards(
                                         ).props("color=primary dense size=sm")
 
                 with ui.tab_panel(tab_custom).classes("p-0 pt-2"):
+                    with ui.row().classes(
+                        "w-full items-center justify-between flex-wrap gap-2 pb-2"
+                    ):
+                        ui.button(
+                            "New Custom Report",
+                            icon="add",
+                            on_click=lambda _e: on_new_custom(),
+                        ).props("color=primary dense size=sm")
+                        if builtins:
+                            with ui.row().classes("items-center gap-2"):
+                                ui.select(
+                                    options={b.id: b.name for b in builtins},
+                                    value=clone_ref["id"],
+                                    label="Clone Built-in",
+                                    on_change=lambda e: clone_ref.update(
+                                        {"id": str(e.value or "")}
+                                    ),
+                                ).props("dense outlined").classes("w-60")
+                                ui.button(
+                                    "Clone",
+                                    icon="content_copy",
+                                    on_click=lambda _e: (
+                                        on_clone_builtin(builtin_by_id[clone_ref["id"]])
+                                        if clone_ref["id"] in builtin_by_id
+                                        else None
+                                    ),
+                                ).props("outline dense size=sm")
+
                     filtered_custom = [
                         r
                         for r in saved_reports
@@ -372,8 +426,8 @@ def _render_catalog_cards(
                     ]
                     if not filtered_custom:
                         ui.label(
-                            "No custom report definitions saved yet. Phases 31–32 add the "
-                            "interactive Clone & Custom Report Builder."
+                            "No custom report definitions saved yet. Click 'New Custom Report' "
+                            "or clone any Built-in Template to compose your own."
                         ).classes("text-xs").style(f"color: {StudioColor.MUTED}")
                     else:
                         c_start, c_end = _render_gallery_pagination(
@@ -384,14 +438,17 @@ def _render_catalog_cards(
                                 with ui.card().classes(
                                     "studio-card p-3 rounded-xl justify-between gap-2"
                                 ):
-                                    ui.label(rec.name).classes("text-sm font-semibold").style(
-                                        f"color: {StudioColor.TEXT}"
-                                    )
-                                    if rec.description:
-                                        ui.label(rec.description).classes("text-xs").style(
-                                            f"color: {StudioColor.MUTED}"
+                                    with ui.column().classes("gap-1"):
+                                        ui.label(rec.name).classes("text-sm font-semibold").style(
+                                            f"color: {StudioColor.TEXT}"
                                         )
-                                    with ui.row().classes("w-full justify-end pt-1"):
+                                        if rec.description:
+                                            ui.label(rec.description).classes(
+                                                "text-xs line-clamp-2"
+                                            ).style(f"color: {StudioColor.MUTED}")
+                                    with ui.row().classes(
+                                        "w-full justify-end flex-wrap gap-1 pt-1"
+                                    ):
                                         ui.button(
                                             "Preview",
                                             icon="play_arrow",
@@ -400,9 +457,29 @@ def _render_catalog_cards(
                                                     r.definition_json
                                                 )
                                             ),
+                                        ).props("color=primary dense size=sm")
+                                        ui.button(
+                                            "Edit",
+                                            icon="edit",
+                                            on_click=lambda _e, r=rec: on_edit_custom(r),
                                         ).props("outline dense size=sm")
+                                        ui.button(
+                                            icon="drive_file_rename_outline",
+                                            on_click=lambda _e, r=rec: on_rename_custom(r),
+                                        ).props("flat dense size=sm").tooltip("Rename")
+                                        ui.button(
+                                            icon="content_copy",
+                                            on_click=lambda _e, r=rec: on_duplicate_custom(r),
+                                        ).props("flat dense size=sm").tooltip("Duplicate")
+                                        ui.button(
+                                            icon="delete_outline",
+                                            on_click=lambda _e, r=rec: on_delete_custom(r),
+                                        ).props("flat dense size=sm color=negative").tooltip(
+                                            "Delete"
+                                        )
 
         _gallery_grid()
+    return _gallery_grid.refresh
 
 
 def _render_history_table(run_history: list[ReportRunRecord]) -> None:
@@ -514,15 +591,17 @@ _PERIOD_OPTIONS: dict[str, str] = {
 
 def _load_reports_initial_state(
     context: AppContext, state_db_path: Path | None
-) -> tuple[list[SavedReportRecord], list[ReportRunRecord]]:
-    """Load saved custom reports and recent report runs from `studio.sqlite`."""
+) -> tuple[list[SavedReportRecord], list[SavedViewDefinition], list[ReportRunRecord]]:
+    """Load saved custom reports, saved views, and recent report runs from `studio.sqlite`."""
     saved_reports: list[SavedReportRecord] = []
+    saved_views: list[SavedViewDefinition] = []
     run_history: list[ReportRunRecord] = []
     with StudioStateStore(db_path=state_db_path) as store:
         if context.profile_id:
             saved_reports = store.list_report_definitions(context.profile_id)
+            saved_views = store.list_saved_views(context.profile_id)
         run_history = store.list_report_runs(limit=25)
-    return saved_reports, run_history
+    return saved_reports, saved_views, run_history
 
 
 def _build_period_overrides(sel_preset: str, context: AppContext) -> ReportContextOverrides | None:
@@ -578,7 +657,7 @@ def _run_report_export_sync(
     )
 
 
-def render_reports_page(
+def render_reports_page(  # pylint: disable=too-many-statements
     context: AppContext,
     *,
     cache: QueryCache | None = None,
@@ -601,7 +680,11 @@ def render_reports_page(
         rendered_state: dict[str, ReportResult | None] = {"result": None}
         error_state: dict[str, str | None] = {"error": None}
 
-        saved_reports, run_history = _load_reports_initial_state(context, state_db_path)
+        saved_reports, saved_views, run_history = _load_reports_initial_state(
+            context, state_db_path
+        )
+        editor_state: dict[str, ReportDefinitionDraft | None] = {"draft": None}
+        refresh_gallery_ref: dict[str, Callable[[], Any] | None] = {"fn": None}
 
         period_override_state: dict[str, str] = {"preset": "default"}
         export_progress_state: dict[str, str | bool] = {"active": False, "label": ""}
@@ -745,7 +828,128 @@ def render_reports_page(
             if rendered_state["result"] is not None:
                 await _run_preview(selected_def["current"])
 
-        _render_catalog_cards(builtins, saved_reports, _run_preview, selected_def)
+        def _reload_saved_reports() -> None:
+            if not context.profile_id:
+                return
+            with StudioStateStore(db_path=state_db_path) as store:
+                saved_reports[:] = store.list_report_definitions(context.profile_id)
+                saved_views[:] = store.list_saved_views(context.profile_id)
+            refresh_fn = refresh_gallery_ref["fn"]
+            if refresh_fn is not None:
+                refresh_fn()
+
+        def _open_new_custom() -> None:
+            existing_names = {r.name for r in saved_reports}
+            draft = clone_definition_as_draft(
+                ReportDefinition(id="new", name="Custom Report", blocks=()),
+                existing_names,
+                suffix="1",
+            )
+            draft.name = (
+                "Custom Report"
+                if "custom report" not in {n.lower() for n in existing_names}
+                else draft.name
+            )
+            editor_state["draft"] = draft
+            _editor_container.refresh()
+
+        def _open_clone(defn: ReportDefinition) -> None:
+            existing_names = {r.name for r in saved_reports}
+            editor_state["draft"] = clone_definition_as_draft(defn, existing_names, suffix="Copy")
+            _editor_container.refresh()
+
+        def _open_edit_custom(rec: SavedReportRecord) -> None:
+            defn = ReportDefinition.model_validate_json(rec.definition_json)
+            editor_state["draft"] = ReportDefinitionDraft.from_definition(defn)
+            _editor_container.refresh()
+
+        def _save_draft(draft: ReportDefinitionDraft) -> None:
+            if not context.profile_id:
+                ui.notify("Select a PFETL profile before saving.", type="warning")
+                return
+            defn = draft.to_definition()
+            try:
+                with StudioStateStore(db_path=state_db_path) as store:
+                    store.save_report_definition(
+                        context.profile_id,
+                        defn.name,
+                        defn.model_dump_json(),
+                        report_id=defn.id,
+                        description=defn.description,
+                    )
+                _reload_saved_reports()
+                editor_state["draft"] = None
+                _editor_container.refresh()
+                ui.notify(f"Saved custom report '{defn.name}'.", type="positive")
+            except ValueError as exc:
+                ui.notify(str(exc), type="negative")
+
+        def _rename_custom(report_id: str, new_name: str) -> None:
+            try:
+                with StudioStateStore(db_path=state_db_path) as store:
+                    store.rename_report_definition(report_id, new_name)
+                _reload_saved_reports()
+                ui.notify(f"Renamed report to '{new_name.strip()}'.", type="positive")
+            except ValueError as exc:
+                ui.notify(str(exc), type="negative")
+
+        def _duplicate_custom(rec: SavedReportRecord) -> None:
+            if not context.profile_id:
+                return
+            defn = ReportDefinition.model_validate_json(rec.definition_json)
+            dup = clone_definition_as_draft(
+                defn, {r.name for r in saved_reports}, suffix="Copy"
+            ).to_definition()
+            with StudioStateStore(db_path=state_db_path) as store:
+                store.save_report_definition(
+                    context.profile_id,
+                    dup.name,
+                    dup.model_dump_json(),
+                    report_id=dup.id,
+                    description=dup.description,
+                )
+            _reload_saved_reports()
+            ui.notify(f"Duplicated as '{dup.name}'.", type="positive")
+
+        def _delete_custom(report_id: str) -> None:
+            with StudioStateStore(db_path=state_db_path) as store:
+                store.delete_report_definition(report_id)
+            _reload_saved_reports()
+            if editor_state["draft"] is not None and editor_state["draft"].id == report_id:
+                editor_state["draft"] = None
+                _editor_container.refresh()
+            ui.notify("Deleted custom report definition.", type="info")
+
+        @ui.refreshable
+        def _editor_container() -> None:
+            draft = editor_state["draft"]
+            if draft is None:
+                return
+            render_custom_editor_panel(
+                draft,
+                saved_reports=saved_reports,
+                saved_views=saved_views,
+                on_save=_save_draft,
+                on_preview=_run_preview,
+                on_close=lambda: (
+                    editor_state.update({"draft": None}),
+                    _editor_container.refresh(),
+                ),
+            )
+
+        refresh_gallery_ref["fn"] = _render_catalog_cards(
+            builtins,
+            saved_reports,
+            _run_preview,
+            selected_def,
+            on_new_custom=_open_new_custom,
+            on_clone_builtin=_open_clone,
+            on_edit_custom=_open_edit_custom,
+            on_rename_custom=lambda r: open_rename_report_dialog(r, _rename_custom),
+            on_duplicate_custom=_duplicate_custom,
+            on_delete_custom=lambda r: open_delete_report_dialog(r, _delete_custom),
+        )
+        _editor_container()
 
         with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
