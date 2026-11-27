@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from collections.abc import Sequence
+from typing import Literal, cast
 
 from pfetl_analytics_studio.analytics.operations_models import (
     ArtifactEventFilter,
@@ -35,6 +36,7 @@ from pfetl_analytics_studio.analytics.operations_queries import (
     query_artifact_events,
     query_cp_runs_with_sync,
     query_payload_availability,
+    query_payload_availability_map,
     query_provider_requests,
     query_run_failures,
     query_snapshot_payload,
@@ -531,6 +533,28 @@ class OperationsAnalytics:
         if not cp_reader.is_available():
             return False, 0
         return query_payload_availability(cp_reader, file_id)
+
+    @classmethod
+    def retained_payload_sizes(
+        cls,
+        profile: PFETLProfile,
+        *,
+        file_ids: Sequence[str] | None = None,
+        cache: QueryCache | None = None,
+    ) -> dict[str, int]:
+        """Return `{file_id: byte_len}` for retained payloads without loading `file_bytes`."""
+        cp_reader = ControlPlaneReader(profile)
+        if not cp_reader.is_available():
+            return {}
+        if cache is None or file_ids is not None:
+            return query_payload_availability_map(cp_reader, file_ids)
+        key = build_cache_key("ops_retained_payload_sizes", profile.profile_id, "latest")
+        cached = cache.get(key)
+        if isinstance(cached, dict):
+            return cast("dict[str, int]", cached)
+        res = query_payload_availability_map(cp_reader)
+        cache.set(key, res)
+        return res
 
     @classmethod
     def source_payload(cls, profile: PFETLProfile, file_id: str) -> SourcePayloadResult:
