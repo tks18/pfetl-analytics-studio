@@ -16,7 +16,7 @@ from pydantic import BaseModel, ConfigDict
 
 from pfetl_analytics_studio.profile import PFETLProfile
 
-CURRENT_SCHEMA_VERSION = 1
+CURRENT_SCHEMA_VERSION = 2
 
 
 def get_studio_state_path() -> Path:
@@ -33,7 +33,7 @@ def get_studio_state_path() -> Path:
 
 
 class RecentProfileRecord(BaseModel):
-    """Persisted recent profile metadata record."""
+    """Persisted recent or saved profile metadata record."""
 
     model_config = ConfigDict(frozen=True)
 
@@ -42,6 +42,8 @@ class RecentProfileRecord(BaseModel):
     settings_path: Path
     rules_path: Path
     last_opened_at: datetime
+    is_pinned: bool = False
+    notes: str = ""
 
 
 class StudioStateStore:
@@ -113,6 +115,22 @@ class StudioStateStore:
             cursor.execute("PRAGMA user_version = 1;")
             conn.commit()
 
+        if version < 2:
+            cols = {
+                str(r["name"])
+                for r in cursor.execute("PRAGMA table_info(recent_profiles);").fetchall()
+            }
+            if "is_pinned" not in cols:
+                cursor.execute(
+                    "ALTER TABLE recent_profiles ADD COLUMN is_pinned INTEGER NOT NULL DEFAULT 0;"
+                )
+            if "notes" not in cols:
+                cursor.execute(
+                    "ALTER TABLE recent_profiles ADD COLUMN notes TEXT NOT NULL DEFAULT '';"
+                )
+            cursor.execute("PRAGMA user_version = 2;")
+            conn.commit()
+
     def record_profile_opened(
         self,
         profile: PFETLProfile,
@@ -150,26 +168,74 @@ class StudioStateStore:
                 ),
             )
 
-    def get_recent_profiles(self, limit: int = 10) -> list[RecentProfileRecord]:
-        """Fetch list of recently opened profiles ordered by last opened timestamp.
+    def save_profile(
+        self,
+        profile: PFETLProfile,
+        *,
+        label: str | None = None,
+        is_pinned: bool = False,
+        notes: str = "",
+        opened_at: datetime | None = None,
+    ) -> None:
+        """Save or update a profile with optional custom label, pin state, and notes."""
+        timestamp = (opened_at or datetime.now(UTC)).isoformat()
+        resolved_label = (label or profile.label).strip() or profile.label
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                """
+                INSERT INTO recent_profiles (
+                    profile_id, label, settings_path, rules_path, last_opened_at, is_pinned, notes
+                ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(profile_id) DO UPDATE SET
+                    label = excluded.label,
+                    settings_path = excluded.settings_path,
+                    rules_path = excluded.rules_path,
+                    last_opened_at = excluded.last_opened_at,
+                    is_pinned = CASE WHEN excluded.is_pinned = 1 THEN 1 ELSE recent_profiles.is_pinned END,
+                    notes = CASE WHEN excluded.notes <> '' THEN excluded.notes ELSE recent_profiles.notes END;
+                """,
+                (
+                    profile.profile_id,
+                    resolved_label,
+                    str(profile.settings_path),
+                    str(profile.rules_path),
+                    timestamp,
+                    1 if is_pinned else 0,
+                    notes.strip(),
+                ),
+            )
 
-        Parameters
-        ----------
-        limit : int, optional
-            Maximum count of records to return, by default 10.
+    def set_profile_pinned(self, profile_id: str, pinned: bool) -> None:
+        """Pin or unpin a saved profile so it stays at the top of the Profile Hub."""
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                "UPDATE recent_profiles SET is_pinned = ? WHERE profile_id = ?;",
+                (1 if pinned else 0, profile_id),
+            )
 
-        Returns
-        -------
-        list[RecentProfileRecord]
-            List of recent profiles, most recent first.
-        """
+    def rename_profile(self, profile_id: str, new_label: str) -> None:
+        """Rename a saved profile's display label."""
+        clean = new_label.strip()
+        if not clean:
+            raise ValueError("Profile label cannot be empty.")
+        conn = self._get_connection()
+        with conn:
+            conn.execute(
+                "UPDATE recent_profiles SET label = ? WHERE profile_id = ?;",
+                (clean, profile_id),
+            )
+
+    def get_recent_profiles(self, limit: int = 25) -> list[RecentProfileRecord]:
+        """Fetch saved/recent profiles ordered by pinned first, then most recently opened."""
         conn = self._get_connection()
         cursor = conn.cursor()
         cursor.execute(
             """
-            SELECT profile_id, label, settings_path, rules_path, last_opened_at
+            SELECT profile_id, label, settings_path, rules_path, last_opened_at, is_pinned, notes
             FROM recent_profiles
-            ORDER BY last_opened_at DESC
+            ORDER BY is_pinned DESC, last_opened_at DESC
             LIMIT ?;
             """,
             (limit,),
@@ -183,6 +249,8 @@ class StudioStateStore:
                     settings_path=Path(row["settings_path"]),
                     rules_path=Path(row["rules_path"]),
                     last_opened_at=datetime.fromisoformat(row["last_opened_at"]),
+                    is_pinned=bool(row["is_pinned"]),
+                    notes=str(row["notes"] or ""),
                 )
             )
         return records
