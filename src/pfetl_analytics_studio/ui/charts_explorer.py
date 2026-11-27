@@ -1,4 +1,4 @@
-"""Dark-theme Plotly chart builders for Phase 22 Data Catalog & Guided Explorer.
+"""Dark-theme Plotly chart builders for Data Catalog & Guided Explorer.
 
 Forbidden: Does not import `pfetl_analytics_studio.analytics` or `data/`.
 """

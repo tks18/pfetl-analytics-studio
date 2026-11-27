@@ -79,35 +79,35 @@ if TYPE_CHECKING:
 
 
 def register_monthly_fy_wealth_templates(registry: ReportRegistry) -> None:
-    """Register the Phase 26 Monthly, FY, and Wealth built-in templates & sources."""
+    """Register the Monthly, FY, and Wealth built-in templates & sources."""
     register_monthly_sources(registry)
     register_financial_year_sources(registry)
     register_wealth_sources(registry)
 
 
 def register_cashflow_expense_income_templates(registry: ReportRegistry) -> None:
-    """Register the Phase 27 Cashflow, Expense, and Income built-in templates & sources."""
+    """Register the Cashflow, Expense, and Income built-in templates & sources."""
     register_cashflow_sources(registry)
     register_expense_sources(registry)
     register_income_sources(registry)
 
 
 def register_investment_reports_templates(registry: ReportRegistry) -> None:
-    """Register the Phase 28 Portfolio, Performance, and Currency built-in templates."""
+    """Register the Portfolio, Performance, and Currency built-in templates."""
     register_portfolio_sources(registry)
     register_performance_sources(registry)
     register_currency_sources(registry)
 
 
 def register_tax_fire_templates(registry: ReportRegistry) -> None:
-    """Register the Phase 29 Investment Tax, Tax Position, and FIRE built-in templates."""
+    """Register the Investment Tax, Tax Position, and FIRE built-in templates."""
     register_investment_tax_sources(registry)
     register_tax_position_sources(registry)
     register_fire_sources(registry)
 
 
 def register_operations_forensic_evidence_templates(registry: ReportRegistry) -> None:
-    """Register the Phase 30 Operations, Run Forensic, and Source Evidence built-in templates."""
+    """Register the Operations, Run Forensic, and Source Evidence built-in templates."""
     register_operations_sources(registry)
     register_forensic_sources(registry)
     register_evidence_sources(registry)

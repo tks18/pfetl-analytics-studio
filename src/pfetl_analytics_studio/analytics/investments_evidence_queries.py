@@ -1,4 +1,4 @@
-"""Phase 16 Realized, Reconciliation & Market Evidence queries for Investments."""
+"""Realized, Reconciliation & Market Evidence queries for Investments."""
 
 from __future__ import annotations
 

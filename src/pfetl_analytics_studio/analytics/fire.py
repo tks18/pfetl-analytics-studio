@@ -1,4 +1,4 @@
-"""Phase 18 FIRE & Simulation Analytics service."""
+"""FIRE & Simulation Analytics service."""
 
 from __future__ import annotations
 

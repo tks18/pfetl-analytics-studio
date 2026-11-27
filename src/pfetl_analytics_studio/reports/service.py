@@ -8,7 +8,7 @@ Owns
 
 Does not own
 ------------
-- NiceGUI widgets (`pages/reports.py`) or PDF/XLSX export rendering (Phase 25).
+- NiceGUI widgets (`pages/reports.py`) or PDF/PPTX/XLSX export rendering (`exporters.py`).
 """
 
 from __future__ import annotations

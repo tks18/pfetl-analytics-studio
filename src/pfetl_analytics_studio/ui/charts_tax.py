@@ -1,4 +1,4 @@
-"""Phase 17 Plotly chart builders for the Tax Analytics workspace."""
+"""Plotly chart builders for the Tax Analytics workspace."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Phase 16 Plotly chart builders for Realized, Reconciliation & Market Evidence."""
+"""Plotly chart builders for Realized, Reconciliation & Market Evidence."""
 
 from __future__ import annotations
 

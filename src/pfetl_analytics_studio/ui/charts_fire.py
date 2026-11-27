@@ -1,4 +1,4 @@
-"""Phase 18 dark Plotly chart builders for FIRE & Simulation Analytics.
+"""Dark Plotly chart builders for FIRE & Simulation Analytics.
 
 Forbidden: Does not import `pfetl_analytics_studio.analytics` or `data/`.
 """

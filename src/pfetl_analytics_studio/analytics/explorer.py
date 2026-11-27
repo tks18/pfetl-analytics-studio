@@ -66,7 +66,7 @@ from pfetl_analytics_studio.state import (
 
 
 class ExplorerAnalytics:
-    """Read-only analytical facade for Phase 22 Data Catalog & Guided Explorer."""
+    """Read-only analytical facade for Data Catalog & Guided Explorer."""
 
     @staticmethod
     def list_datasets() -> list[DatasetSpec]:

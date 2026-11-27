@@ -1,4 +1,4 @@
-"""Phase 17 Tax Analytics service backed by Gold tax marts & Silver tax events.
+"""Tax Analytics service backed by Gold tax marts & Silver tax events.
 
 All outputs carry `indicative=True` metadata for non-statutory disclaimers.
 """

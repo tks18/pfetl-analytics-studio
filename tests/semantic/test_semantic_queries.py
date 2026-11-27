@@ -526,7 +526,7 @@ def test_extended_period_presets_comparison_modes_and_filter_catalog(
     assert "2026-27" in f_opts.options_for(FilterField.FY)
     assert f_opts.options_for(FilterField.IS_CORE_EXPENSE) == ("true", "false")
 
-    # Phase 10 Budget & Cashflow datasets and metrics are registered
+    # Budget & Cashflow datasets and metrics are registered
     assert DEFAULT_DATASETS.has("forecast_budget_variance")
     assert DEFAULT_DATASETS.has("cashflow_activity_summary")
     assert DEFAULT_DATASETS.has("silver_fact_transfer_transactions")
@@ -536,13 +536,13 @@ def test_extended_period_presets_comparison_modes_and_filter_catalog(
     assert DEFAULT_METRICS.get("unreconciled_difference").additive is True
     assert DEFAULT_METRICS.get("closing_cash_balance").additive is False
 
-    # Phase 12 Wealth datasets and stock vs flow metrics
+    # Wealth datasets and stock vs flow metrics
     assert DEFAULT_DATASETS.has("silver_fact_opening_balances")
     assert DEFAULT_METRICS.get("total_assets_book").additive is False
     assert DEFAULT_METRICS.get("attribution_residual").additive is True
     assert DEFAULT_METRICS.get("asset_market_delta").additive is True
 
-    # Phase 18 FIRE non-additive metrics reject SUM aggregation
+    # FIRE non-additive metrics reject SUM aggregation
     for fire_metric_id in (
         "fire_coast_today",
         "fire_lean_today",

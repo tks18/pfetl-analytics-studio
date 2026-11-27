@@ -1,4 +1,4 @@
-"""DuckDB & Control Plane SQL queries for Phase 18 FIRE & Simulation Analytics."""
+"""DuckDB & Control Plane SQL queries for FIRE & Simulation Analytics."""
 
 from __future__ import annotations
 

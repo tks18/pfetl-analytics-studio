@@ -1,4 +1,4 @@
-"""Tests for Phase 22 Data Catalog, Guided Explorer, chart recommendation, and UI."""
+"""Tests for Data Catalog, Guided Explorer, chart recommendation, and UI."""
 
 from __future__ import annotations
 

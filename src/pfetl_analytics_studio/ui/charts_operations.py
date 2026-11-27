@@ -1,4 +1,4 @@
-"""Phase 19 dark Plotly chart builders for Operations Run History & Sync Health.
+"""Dark Plotly chart builders for Operations Run History & Sync Health.
 
 Forbidden: Does not import `pfetl_analytics_studio.analytics` or `data/`.
 """

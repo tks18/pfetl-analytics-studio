@@ -1,4 +1,4 @@
-"""Typed DTOs for Phase 18 FIRE & Simulation Analytics."""
+"""Typed DTOs for FIRE & Simulation Analytics."""
 
 from __future__ import annotations
 
@@ -76,7 +76,7 @@ class SimulationRunRecord(BaseModel):
 
 
 class FireSummarySnapshot(BaseModel):
-    """Complete Phase 18 FIRE planning snapshot."""
+    """Complete FIRE planning snapshot."""
 
     model_config = ConfigDict(frozen=True)
 

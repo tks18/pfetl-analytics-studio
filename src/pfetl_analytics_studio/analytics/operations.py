@@ -1,4 +1,4 @@
-"""Phase 19 Operations Run History, Sync Health & Warehouse Freshness service."""
+"""Operations Run History, Sync Health & Warehouse Freshness service."""
 
 from __future__ import annotations
 
