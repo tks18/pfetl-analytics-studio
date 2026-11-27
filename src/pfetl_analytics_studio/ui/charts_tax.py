@@ -374,3 +374,153 @@ def build_tax_fy_readiness_figure(
         ],
         "layout": layout,
     }
+
+
+def build_tax_events_status_source_figure(
+    events: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build stacked bar of Ready vs Check Required amounts grouped by Source Type."""
+    if not events:
+        return None
+    by_src: dict[str, tuple[float, float]] = {}
+    for ev in events:
+        src = str(getattr(ev, "source_type", "") or "Unknown")
+        amt = abs(float(getattr(ev, "amount_inr", 0.0) or 0.0))
+        st = str(getattr(ev, "tax_status", "")).upper()
+        r_amt, c_amt = by_src.get(src, (0.0, 0.0))
+        if "READY" in st:
+            by_src[src] = (r_amt + amt, c_amt)
+        else:
+            by_src[src] = (r_amt, c_amt + amt)
+    srcs = sorted(by_src.keys())
+    ready_vals = [by_src[s][0] for s in srcs]
+    check_vals = [by_src[s][1] for s in srcs]
+    y_ticks = currency_ticks(
+        [r + c for r, c in zip(ready_vals, check_vals, strict=True)],
+        currency_id,
+        include_zero=True,
+    )
+    layout = studio_plotly_layout(
+        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": srcs,
+                "y": ready_vals,
+                "name": "Ready",
+                "marker": {"color": "#34D399"},
+            },
+            {
+                "type": "bar",
+                "x": srcs,
+                "y": check_vals,
+                "name": "Check Required / Other",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_harvesting_exposure_figure(
+    harvest_lots: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build horizontal bar comparing Unrealized Loss vs Est. Tax Savings across top harvest lots."""
+    top = sorted(
+        harvest_lots,
+        key=lambda r: float(getattr(r, "unrealized_pl", 0.0) or 0.0),
+    )[:10]
+    if not top:
+        return None
+    ordered = list(reversed(top))
+    labels = [
+        f"{str(getattr(r, 'instrument_name', '') or getattr(r, 'isin', ''))[:20]} ({str(getattr(r, 'lot_id', ''))[-5:]})"
+        for r in ordered
+    ]
+    losses = [abs(float(getattr(r, "unrealized_pl", 0.0) or 0.0)) for r in ordered]
+    savings = [abs(float(getattr(r, "tax_if_sold", 0.0) or 0.0)) for r in ordered]
+    x_ticks = currency_ticks([0.0, *losses, *savings], currency_id, include_zero=True)
+    layout = {
+        **studio_plotly_layout(
+            height=360,
+            barmode="group",
+            horizontal_bars=True,
+            x_currency_ticks=x_ticks,
+            x_axis_type="linear",
+        ),
+        "margin": {"l": 195, "r": 24, "t": 34, "b": 42},
+    }
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "orientation": "h",
+                "y": labels,
+                "x": losses,
+                "name": "Unrealized Loss",
+                "marker": {"color": "#F87171"},
+            },
+            {
+                "type": "bar",
+                "orientation": "h",
+                "y": labels,
+                "x": savings,
+                "name": "Est. Tax Impact",
+                "marker": {"color": "#34D399"},
+            },
+        ],
+        "layout": layout,
+    }
+
+
+def build_tax_harvesting_holding_figure(
+    harvest_lots: Sequence[Any],
+    maturing_lots: Sequence[Any],
+    currency_id: str,
+) -> dict[str, Any] | None:
+    """Build stacked bar of Harvestable Loss & Market Value by Holding Type & LTCG Maturity."""
+    buckets: dict[str, tuple[float, float]] = {}
+    for lot in harvest_lots:
+        ht = str(getattr(lot, "holding_type", "") or "Unknown")
+        mv, loss = buckets.get(ht, (0.0, 0.0))
+        buckets[ht] = (
+            mv + abs(float(getattr(lot, "close_value", 0.0) or 0.0)),
+            loss + abs(float(getattr(lot, "unrealized_pl", 0.0) or 0.0)),
+        )
+    if maturing_lots:
+        m_mv = sum(abs(float(getattr(m, "close_value", 0.0) or 0.0)) for m in maturing_lots)
+        m_pl = sum(abs(float(getattr(m, "unrealized_pl", 0.0) or 0.0)) for m in maturing_lots)
+        buckets["Maturing ≤90d"] = (m_mv, m_pl)
+
+    if not buckets:
+        return None
+    cats = list(buckets.keys())
+    mvs = [buckets[c][0] for c in cats]
+    losses = [buckets[c][1] for c in cats]
+    y_ticks = currency_ticks([0.0, *mvs, *losses], currency_id, include_zero=True)
+    layout = studio_plotly_layout(
+        height=360, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+    )
+    return {
+        "data": [
+            {
+                "type": "bar",
+                "x": cats,
+                "y": mvs,
+                "name": "Market Value",
+                "marker": {"color": "#60A5FA"},
+            },
+            {
+                "type": "bar",
+                "x": cats,
+                "y": losses,
+                "name": "Unrealized Loss / Gain",
+                "marker": {"color": "#FBBF24"},
+            },
+        ],
+        "layout": layout,
+    }

@@ -81,6 +81,95 @@ _PAGE_RENDERERS: dict[str, Callable[[AppContext], None]] = {
     "reports": render_reports_page,
 }
 
+_ROUTE_FILTER_SCOPE: dict[str, tuple[bool, tuple[FilterField, ...], str]] = {
+    "overview": (
+        True,
+        (
+            FilterField.FY,
+            FilterField.INCOME_GROUP,
+            FilterField.EXPENSE_GROUP,
+            FilterField.INSTRUMENT_CLASS,
+            FilterField.CURRENCY_ID,
+        ),
+        "Scope: Global Period + Income/Expense/Investment breakups",
+    ),
+    "household": (
+        True,
+        (
+            FilterField.FY,
+            FilterField.INCOME_GROUP,
+            FilterField.INCOME_CATEGORY,
+            FilterField.EXPENSE_GROUP,
+            FilterField.EXPENSE_CATEGORY,
+            FilterField.IS_CORE_EXPENSE,
+            FilterField.IS_ACTIVE_INCOME,
+            FilterField.IS_PASSIVE_INCOME,
+            FilterField.ASSET_ID,
+            FilterField.CURRENCY_ID,
+        ),
+        "Scope: Global Period + Income, Expense, Budget & Silver Transactions",
+    ),
+    "wealth": (
+        True,
+        (
+            FilterField.FY,
+            FilterField.ASSET_GROUP,
+            FilterField.ASSET_ID,
+            FilterField.CURRENCY_ID,
+        ),
+        "Scope: Global Period + Asset Group, Account & Currency",
+    ),
+    "investments": (
+        True,
+        (
+            FilterField.FY,
+            FilterField.INSTRUMENT_CLASS,
+            FilterField.SECTOR,
+            FilterField.CURRENCY_ID,
+            FilterField.ISIN,
+        ),
+        "Scope: Global Period + Class, Sector, Currency & ISIN",
+    ),
+    "tax": (
+        True,
+        (
+            FilterField.FY,
+            FilterField.INCOME_HEAD,
+            FilterField.TAX_STATUS,
+            FilterField.ISIN,
+        ),
+        "Scope: Financial Year (FY) + Income Head, Tax Status & ISIN",
+    ),
+    "fire": (
+        True,
+        (FilterField.FY,),
+        "Scope: Global Period + Financial Year (FY)",
+    ),
+    "operations": (
+        False,
+        (),
+        "Scope: Run-Date Windows (Operations uses historical run selector above)",
+    ),
+    "explorer": (
+        True,
+        (
+            FilterField.FY,
+            FilterField.INCOME_GROUP,
+            FilterField.EXPENSE_GROUP,
+            FilterField.INSTRUMENT_CLASS,
+            FilterField.SECTOR,
+            FilterField.CURRENCY_ID,
+            FilterField.ISIN,
+        ),
+        "Scope: Guided Analytics respects Global Period & compatible domain filters",
+    ),
+    "reports": (
+        False,
+        (),
+        "Scope: Report Definitions specify their own period and provenance",
+    ),
+}
+
 
 def _strip_quotes(raw_path: str) -> str:
     """Trim whitespace and optional surrounding quotes from pasted file paths."""
@@ -98,6 +187,7 @@ def open_and_persist_profile(
     *,
     state_db_path: Path | None = None,
     hydrate: bool = True,
+    is_pinned: bool = False,
 ) -> ProfileLoadResult:
     """Validate Settings/FinancialRules TOMLs, persist valid pairs, and update session context.
 
@@ -115,6 +205,8 @@ def open_and_persist_profile(
         Optional override path for `StudioStateStore` (isolated tests).
     hydrate : bool, optional
         Whether to immediately inspect databases on load, by default True.
+    is_pinned : bool, optional
+        Whether to pin the opened profile in the Saved Profiles library, by default False.
 
     Returns
     -------
@@ -145,7 +237,10 @@ def open_and_persist_profile(
 
     try:
         with StudioStateStore(db_path=state_db_path) as store:
-            store.record_profile_opened(result.profile)
+            if is_pinned:
+                store.save_profile(result.profile, label=clean_label, is_pinned=True)
+            else:
+                store.record_profile_opened(result.profile)
     except OSError:
         pass
 
@@ -428,6 +523,9 @@ def _render_profile_picker_form(
                 .props("dense outlined dark hide-bottom-space")
                 .classes("w-full text-xs")
             )
+            pin_switch = ui.checkbox("Save & Pin to Profile Library", value=True).props(
+                "dense dark"
+            )
 
         error_box = (
             ui.label("")
@@ -444,6 +542,7 @@ def _render_profile_picker_form(
                 settings_path=str(settings_input.value or ""),
                 rules_path=str(rules_input.value or ""),
                 label=str(label_input.value or ""),
+                is_pinned=bool(pin_switch.value),
             )
             if not res.is_ok or res.profile is None:
                 msg = res.error.message if res.error else "Unable to load profile pair."
@@ -671,6 +770,17 @@ def _render_shell_header(
                     icon="swap_horiz",
                     on_click=lambda: _open_profile_picker_dialog(session, ctx, active_path),
                 ).props("outline dense size=sm color=primary no-caps").classes("px-2.5 text-xs")
+
+                def _on_deselect() -> None:
+                    session.clear_profile()
+                    ui.navigate.to("/overview")
+
+                deselect_btn = ui.button(
+                    icon="link_off",
+                    on_click=_on_deselect,
+                ).props("flat round dense size=sm color=grey-4")
+                with deselect_btn:
+                    ui.tooltip("Unload / Deselect active profile")
                 if ctx.compatibility is not None:
                     cov_text = (
                         f"{ctx.compatibility.total_discovered}/"
@@ -750,9 +860,23 @@ def _render_analytical_toolbar(
     session: AppSessionManager,
     ctx: AppContext,
     active_path: str,
+    route_id: str = "overview",
 ) -> None:
-    """Render interactive semantic period controls and global domain filter bar."""
+    """Render route-aware interactive semantic period controls and global domain filter bar."""
     if ctx.profile is None:
+        return
+
+    uses_period, allowed_fields, scope_hint = _ROUTE_FILTER_SCOPE.get(
+        route_id, (True, tuple(FilterField), "Global Period & Domain Filters")
+    )
+
+    if not uses_period and not allowed_fields:
+        with ui.card().classes("studio-toolbar w-full px-4 py-2.5 rounded-2xl"):
+            with ui.row().classes("w-full items-center justify-between gap-2"):
+                status_badge(scope_hint, tone=BadgeTone.NEUTRAL, outline=True)
+                ui.label(
+                    "Global financial period & domain filters do not apply to this workspace."
+                ).classes("text-xs").style(f"color: {StudioColor.DIM}")
         return
 
     def _on_period_request(req: PeriodRequest) -> None:
@@ -776,13 +900,14 @@ def _render_analytical_toolbar(
     avail_fys = ctx.period_options.financial_years if ctx.period_options is not None else ()
 
     with ui.card().classes("studio-toolbar w-full px-4 py-3.5 rounded-2xl gap-3"):
-        period_selector(
-            current_request=ctx.period_request,
-            on_request_change=_on_period_request,
-            period_options=ctx.period_options,
-            period_context=ctx.period_context,
-            resolved_badge=badge_text,
-        )
+        if uses_period:
+            period_selector(
+                current_request=ctx.period_request,
+                on_request_change=_on_period_request,
+                period_options=ctx.period_options,
+                period_context=ctx.period_context,
+                resolved_badge=badge_text,
+            )
         filter_chips_bar(
             ctx.filters,
             on_remove=_on_remove_filter,
@@ -790,64 +915,135 @@ def _render_analytical_toolbar(
             on_add=_on_add_filter,
             available_fys=avail_fys,
             filter_options=ctx.filter_options,
-            scope_hint="Filters dynamically slice Overview breakups, FY Tax, and drill views",
+            allowed_fields=allowed_fields,
+            scope_hint=scope_hint,
         )
 
 
 def _load_recent_profiles() -> list[RecentProfileRecord]:
-    """Read recently opened profiles from Studio state SQLite safely."""
+    """Read saved & recently opened profiles from Studio state SQLite safely."""
     try:
         with StudioStateStore() as store:
-            return store.get_recent_profiles(limit=5)
+            return store.get_recent_profiles(limit=25)
     except OSError:
         return []
 
 
-def _render_recent_profiles_card(session: AppSessionManager) -> None:
-    """Render the recent PFETL profile list card with one-click switching.
+def _render_recent_profiles_card(
+    session: AppSessionManager,
+    redirect_path: str = "/overview",
+) -> None:
+    """Render saved/pinned PFETL profiles with Pin, Rename, Remove, and one-click Open."""
 
-    Parameters
-    ----------
-    session : AppSessionManager
-        Active application session manager.
-    """
-    recent = _load_recent_profiles()
-    with ui.card().classes("studio-card w-full p-5 rounded-xl h-full gap-2"):
-        ui.label("Recent PFETL Profiles").classes("text-base font-semibold")
-        if not recent:
-            ui.label("No recent profiles recorded in Studio state.").classes(
-                "text-xs italic mt-2"
-            ).style(f"color: {StudioColor.MUTED}")
-            return
+    @ui.refreshable
+    def _profiles_list() -> None:
+        recent = _load_recent_profiles()
+        with ui.card().classes("studio-card w-full p-5 rounded-xl h-full gap-2"):
+            with ui.row().classes("w-full items-center justify-between"):
+                ui.label("Saved & Recent PFETL Profiles").classes("text-base font-semibold")
+                status_badge(f"{len(recent)} saved", tone=BadgeTone.INFO, outline=True)
+            if not recent:
+                ui.label(
+                    "No saved profiles yet. Connect a TOML pair on the left to save one."
+                ).classes("text-xs italic mt-2").style(f"color: {StudioColor.MUTED}")
+                return
 
-        with (
-            ui.column().classes("w-full divide-y mt-1").style(f"border-color: {StudioColor.BORDER}")
-        ):
-            for item in recent:
+            with (
+                ui.column()
+                .classes("w-full divide-y mt-1")
+                .style(f"border-color: {StudioColor.BORDER}")
+            ):
+                for item in recent:
 
-                def _make_switch(rec: RecentProfileRecord) -> Callable[[], None]:
-                    def _do_switch() -> None:
-                        open_and_persist_profile(
-                            session,
-                            settings_path=str(rec.settings_path),
-                            rules_path=str(rec.rules_path),
-                            label=rec.label,
-                        )
-                        ui.navigate.to("/overview")
+                    def _make_switch(rec: RecentProfileRecord) -> Callable[[], None]:
+                        def _do_switch() -> None:
+                            open_and_persist_profile(
+                                session,
+                                settings_path=str(rec.settings_path),
+                                rules_path=str(rec.rules_path),
+                                label=rec.label,
+                            )
+                            ui.navigate.to(redirect_path)
 
-                    return _do_switch
+                        return _do_switch
 
-                with ui.row().classes("w-full items-center justify-between py-2 gap-2"):
-                    with ui.column().classes("gap-0 min-w-0 flex-1"):
-                        ui.label(item.label).classes("text-sm font-medium truncate")
-                        ui.label(f"{item.settings_path.name} | {item.rules_path.name}").classes(
-                            "text-xs font-mono truncate"
-                        ).style(f"color: {StudioColor.MUTED}")
-                    with ui.row().classes("items-center gap-2 shrink-0"):
-                        status_badge(item.profile_id[:8], outline=True)
-                        ui.button("Open", on_click=_make_switch(item)).props(
-                            "outline dense size=sm no-caps"
-                        )
+                    def _make_pin(rec: RecentProfileRecord) -> Callable[[], None]:
+                        def _do_pin() -> None:
+                            with StudioStateStore() as store:
+                                store.set_profile_pinned(rec.profile_id, not rec.is_pinned)
+                            _profiles_list.refresh()
+
+                        return _do_pin
+
+                    def _make_remove(rec: RecentProfileRecord) -> Callable[[], None]:
+                        def _do_remove() -> None:
+                            with StudioStateStore() as store:
+                                store.remove_recent_profile(rec.profile_id)
+                            _profiles_list.refresh()
+
+                        return _do_remove
+
+                    def _make_rename(rec: RecentProfileRecord) -> Callable[[], None]:
+                        def _do_rename() -> None:
+                            dlg = ui.dialog()
+                            with dlg, ui.card().classes("studio-card w-80 p-4 gap-3"):
+                                ui.label("Rename Profile").classes("text-sm font-semibold")
+                                name_in = ui.input(value=rec.label, label="Profile Name").props(
+                                    "dense outlined dark"
+                                )
+
+                                def _save_name() -> None:
+                                    val = str(name_in.value or "").strip()
+                                    if val:
+                                        with StudioStateStore() as store:
+                                            store.rename_profile(rec.profile_id, val)
+                                        dlg.close()
+                                        _profiles_list.refresh()
+
+                                with ui.row().classes("w-full justify-end gap-2"):
+                                    ui.button("Cancel", on_click=dlg.close).props("flat dense")
+                                    ui.button("Save", on_click=_save_name).props(
+                                        "dense color=primary"
+                                    )
+                            dlg.open()
+
+                        return _do_rename
+
+                    files_ok = item.settings_path.exists() and item.rules_path.exists()
+                    with ui.row().classes("w-full items-center justify-between py-2 gap-2"):
+                        with ui.column().classes("gap-0 min-w-0 flex-1"):
+                            with ui.row().classes("items-center gap-1.5"):
+                                if item.is_pinned:
+                                    ui.icon("push_pin", size="14px").style(
+                                        f"color: {StudioColor.ACCENT}"
+                                    )
+                                ui.label(item.label).classes("text-sm font-medium truncate")
+                            ui.label(f"{item.settings_path.name} | {item.rules_path.name}").classes(
+                                "text-xs font-mono truncate"
+                            ).style(f"color: {StudioColor.MUTED}")
+                        with ui.row().classes("items-center gap-1 shrink-0"):
+                            status_badge(
+                                "Ready" if files_ok else "Missing",
+                                tone=BadgeTone.SUCCESS if files_ok else BadgeTone.ERROR,
+                                outline=True,
+                            )
+                            ui.button(
+                                icon="push_pin",
+                                on_click=_make_pin(item),
+                            ).props(
+                                f"flat round dense size=xs color={'primary' if item.is_pinned else 'grey-5'}"
+                            )
+                            ui.button(icon="edit", on_click=_make_rename(item)).props(
+                                "flat round dense size=xs color=grey-5"
+                            )
+                            ui.button(icon="delete_outline", on_click=_make_remove(item)).props(
+                                "flat round dense size=xs color=negative"
+                            )
+                            ui.button("Open", on_click=_make_switch(item)).props(
+                                "outline dense size=sm no-caps color=primary"
+                            )
+
+    _profiles_list()
 
 
 def _render_overview_context_cards(session: AppSessionManager, ctx: AppContext) -> None:
@@ -911,7 +1107,7 @@ def create_app(profile: PFETLProfile | None = None) -> None:
             if ctx.is_warehouse_locked:
                 locked_warehouse_banner()
 
-            _render_analytical_toolbar(session, ctx, active_path)
+            _render_analytical_toolbar(session, ctx, active_path, route.route_id)
 
             if route.route_id == "overview":
                 render_overview_page(ctx, cache=session.cache)
@@ -956,7 +1152,7 @@ def create_app(profile: PFETLProfile | None = None) -> None:
                 renderer = _PAGE_RENDERERS[route.route_id]
                 renderer(ctx)
 
-            if show_profile_cards:
+            if show_profile_cards or ctx.profile is None:
                 _render_overview_context_cards(session, ctx)
 
     @ui.page("/")

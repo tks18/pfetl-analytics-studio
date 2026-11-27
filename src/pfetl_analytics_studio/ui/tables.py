@@ -2,15 +2,19 @@
 
 Owns
 ----
-- `TableColumn` descriptor and `bounded_data_table()` paginated wrapper.
+- `TableColumn` descriptor and `bounded_data_table()` paginated wrapper with 500-row UI cap
+  and full-dataset CSV export.
 
 Does not own
 ------------
-- SQL execution, DuckDB pagination cursors, or file exports.
+- SQL execution, DuckDB pagination cursors, or PDF/XLSX report orchestration.
 """
 
 from __future__ import annotations
 
+import csv
+import io
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, cast
@@ -67,6 +71,28 @@ class TableColumn:
         return col
 
 
+def rows_to_csv_bytes(
+    columns: Sequence[TableColumn],
+    rows: Sequence[Mapping[str, Any]],
+) -> bytes:
+    """Serialize all `rows` (unbounded) into UTF-8 CSV bytes using `columns`."""
+    buf = io.StringIO()
+    fieldnames = [c.field for c in columns]
+    headers = {c.field: c.label for c in columns}
+    writer = csv.DictWriter(buf, fieldnames=fieldnames, extrasaction="ignore")
+    writer.writerow(headers)
+    for row in rows:
+        writer.writerow({f: ("" if row.get(f) is None else str(row.get(f))) for f in fieldnames})
+    return buf.getvalue().encode("utf-8")
+
+
+def _default_export_filename(title: str | None) -> str:
+    if not title:
+        return "table_export.csv"
+    slug = re.sub(r"[^a-z0-9]+", "_", title.lower()).strip("_")
+    return f"{slug[:48] or 'table_export'}.csv"
+
+
 def bounded_data_table(
     columns: Sequence[TableColumn],
     rows: Sequence[Mapping[str, Any]],
@@ -76,19 +102,22 @@ def bounded_data_table(
     title: str | None = None,
     empty_message: str = "No records match the current selection.",
     on_row_click: Callable[[dict[str, Any]], Any] | None = None,
+    export_filename: str | None = None,
+    on_export_full: Callable[[], Any] | None = None,
+    show_export: bool = True,
 ) -> ui.card:
-    """Render a bounded, client-paginated dark data table safely without raw HTML injection.
+    """Render a 500-row-capped dark data table with optional full-dataset CSV export.
 
     Parameters
     ----------
     columns : Sequence[TableColumn]
         Ordered column definitions to display.
     rows : Sequence[Mapping[str, Any]]
-        Row mappings sliced cleanly to `max_rows`.
+        Row mappings sliced cleanly to `max_rows` (hard UI cap 500).
     row_key : str | None, optional
         Unique identifier field across rows, by default uses first column or synthetic index.
     max_rows : int, optional
-        Hard maximum rows materialized in browser DOM, clamped to >= 1.
+        Hard maximum rows materialized in browser DOM, clamped to 1..500.
     pagination : int, optional
         Page size per table view, by default 25.
     title : str | None, optional
@@ -97,13 +126,19 @@ def bounded_data_table(
         Message rendered when `rows` is empty.
     on_row_click : Callable[[dict[str, Any]], Any] | None, optional
         Optional callback invoked with the clicked row dictionary.
+    export_filename : str | None, optional
+        CSV download filename when using in-memory `rows`.
+    on_export_full : Callable[[], Any] | None, optional
+        Optional callback for server-side paginated/capped tables to export all DB rows.
+    show_export : bool, optional
+        Whether to display the Export CSV button in the table header, by default True.
 
     Returns
     -------
     ui.card
         Constructed container wrapping the table or an empty-state panel.
     """
-    safe_limit = max(1, min(max_rows, 5000))
+    safe_limit = max(1, min(max_rows, 500))
     total_rows = len(rows)
     if total_rows == 0:
         return empty_state_panel(
@@ -120,18 +155,33 @@ def bounded_data_table(
 
     col_dicts = [c.to_quasar_dict() for c in columns]
 
+    def _export_in_memory() -> None:
+        fname = export_filename or _default_export_filename(title)
+        csv_bytes = rows_to_csv_bytes(columns, rows)
+        ui.download(csv_bytes, filename=fname)
+        ui.notify(f"Exported {total_rows:,} rows to {fname}", type="positive")
+
     card = ui.card().classes("studio-card w-full p-4 rounded-lg")
     with card:
-        if title or total_rows > safe_limit:
-            with ui.row().classes("w-full items-center justify-between mb-2"):
-                if title:
-                    ui.label(title).classes("text-sm font-semibold").style(
-                        f"color: {StudioColor.TEXT}"
-                    )
-                if total_rows > safe_limit:
-                    ui.label(f"Showing bounded preview: {safe_limit} of {total_rows} rows").classes(
-                        "text-xs"
-                    ).style(f"color: {StudioColor.WARNING}")
+        if title or total_rows > safe_limit or show_export:
+            with ui.row().classes("w-full items-center justify-between gap-2 mb-2 flex-wrap"):
+                with ui.row().classes("items-center gap-3 flex-wrap"):
+                    if title:
+                        ui.label(title).classes("text-sm font-semibold").style(
+                            f"color: {StudioColor.TEXT}"
+                        )
+                    if total_rows > safe_limit:
+                        ui.label(
+                            f"Showing bounded preview: {safe_limit} of {total_rows} rows (Export CSV for full data)"
+                        ).classes("text-xs").style(f"color: {StudioColor.WARNING}")
+                if show_export:
+                    ui.button(
+                        "Export CSV",
+                        icon="download",
+                        on_click=on_export_full
+                        if on_export_full is not None
+                        else _export_in_memory,
+                    ).props("flat dense size=sm color=primary")
 
         tbl = (
             ui.table(

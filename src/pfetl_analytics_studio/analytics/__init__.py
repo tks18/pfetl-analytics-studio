@@ -6,6 +6,19 @@ Forbidden: Does not import NiceGUI widgets or mutate warehouse/state data.
 
 from __future__ import annotations
 
+from pfetl_analytics_studio.analytics.explorer import ExplorerAnalytics
+from pfetl_analytics_studio.analytics.explorer_models import (
+    CatalogBrowseResult,
+    CatalogCoverageSummary,
+    CatalogFilter,
+    ChartRecommendation,
+    ChartSuggestion,
+    GuidedQuery,
+    GuidedQueryResult,
+    GuidedSortSpec,
+    SurfaceColumnFilter,
+    TablePreviewResult,
+)
 from pfetl_analytics_studio.analytics.fire import FireAnalytics
 from pfetl_analytics_studio.analytics.fire_models import (
     FireMonthlyPoint,
@@ -171,6 +184,17 @@ __all__ = [
     "ExpenseMonthlyPoint",
     "ExpenseTransactionPage",
     "ExpenseTransactionRow",
+    "CatalogBrowseResult",
+    "CatalogCoverageSummary",
+    "CatalogFilter",
+    "ChartRecommendation",
+    "ChartSuggestion",
+    "ExplorerAnalytics",
+    "GuidedQuery",
+    "GuidedQueryResult",
+    "GuidedSortSpec",
+    "SurfaceColumnFilter",
+    "TablePreviewResult",
     "FireAnalytics",
     "FireMonthlyPoint",
     "FirePoint",

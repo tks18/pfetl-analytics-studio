@@ -8,6 +8,7 @@ from typing import Any
 from nicegui import ui
 
 from pfetl_analytics_studio.analytics import (
+    InvestmentAnalytics,
     OverviewKPI,
     TaxAnalytics,
     TaxEventFilter,
@@ -16,15 +17,19 @@ from pfetl_analytics_studio.analytics import (
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.pages import render_domain_workspace
+from pfetl_analytics_studio.semantic import FilterField
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     TableColumn,
     bounded_data_table,
     build_tax_completeness_figure,
     build_tax_composition_donut_figure,
+    build_tax_events_status_source_figure,
     build_tax_events_timeline_figure,
     build_tax_fy_readiness_figure,
     build_tax_fy_trend_figure,
+    build_tax_harvesting_exposure_figure,
+    build_tax_harvesting_holding_figure,
     build_tax_head_breakdown_figure,
     build_tax_indicative_exposure_figure,
     build_tax_recon_bridge_figure,
@@ -36,6 +41,7 @@ from pfetl_analytics_studio.ui import (
     format_metric_value,
     format_percent,
     kpi_card,
+    open_lot_detail_dialog,
     status_badge,
 )
 
@@ -385,15 +391,52 @@ def _render_events_and_harvest_section(
     profile = context.profile
     if profile is None or not fy:
         return
+
+    def _global_val(field: FilterField) -> str | None:
+        for spec in context.filters.filters:
+            if spec.field == field and spec.value is not None:
+                return str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+        return None
+
+    ev_filter = TaxEventFilter(
+        income_head=_global_val(FilterField.INCOME_HEAD),
+        tax_status=_global_val(FilterField.TAX_STATUS),
+        search=_global_val(FilterField.ISIN),
+    )
     ev_snap = TaxAnalytics.tax_events(
         profile,
         fy,
-        TaxEventFilter(),
+        ev_filter,
         run_id=context.provenance.run_id if context.provenance else None,
         provenance=context.provenance,
         catalog_snapshot=context.catalog_snapshot,
         cache=cache,
     )
+    lot_drawer_box = ui.column().classes("w-full")
+
+    def _open_lot(lot_id: str, closing_dt: Any) -> None:
+        if not lot_id:
+            ui.notify("No Lot ID attached to this row.", type="info")
+            return
+        detail = InvestmentAnalytics.lot_detail(
+            profile,
+            lot_id,
+            closing_dt,
+            catalog_snapshot=context.catalog_snapshot,
+        )
+        lot_drawer_box.clear()
+        with lot_drawer_box:
+            open_lot_detail_dialog(detail, lot_id)
+
+    harv = TaxAnalytics.harvesting_snapshot(
+        profile,
+        context.period_context,
+        run_id=context.provenance.run_id if context.provenance else None,
+        provenance=context.provenance,
+        catalog_snapshot=context.catalog_snapshot,
+        cache=cache,
+    )
+
     if ev_snap.state == "ready":
         with ui.element("div").classes("studio-chart-grid w-full mb-4"):
             _render_chart_card(
@@ -401,37 +444,48 @@ def _render_events_and_harvest_section(
                 build_tax_events_timeline_figure(ev_snap.rows, currency_id),
                 "silver.fact_tax_events",
             )
+            _render_chart_card(
+                f"FY {fy} Status & Source Breakdown",
+                build_tax_events_status_source_figure(ev_snap.rows, currency_id),
+                "silver.fact_tax_events",
+            )
         cols = [
             TableColumn(name="id", label="Event ID", field="id", align="left"),
             TableColumn(name="dt", label="Date", field="dt", align="left"),
             TableColumn(name="src", label="Source", field="src", align="left"),
+            TableColumn(name="isin", label="ISIN", field="isin", align="left"),
+            TableColumn(name="lot_id", label="Lot ID", field="lot_id", align="left"),
             TableColumn(name="head", label="Head", field="head", align="left"),
             TableColumn(name="sub", label="Sub-Head", field="sub", align="left"),
             TableColumn(name="amt", label="Amount", field="amt", align="right"),
             TableColumn(name="rate", label="Rate", field="rate", align="right"),
             TableColumn(name="tax", label="Est. Tax", field="tax", align="right"),
             TableColumn(name="st", label="Status", field="st", align="left"),
+            TableColumn(name="reason", label="Status Reason", field="reason", align="left"),
         ]
         rows = [
             {
                 "id": r.tax_event_id,
                 "dt": r.event_date.isoformat() if r.event_date else "—",
                 "src": r.source_type,
+                "isin": r.isin or "—",
+                "lot_id": r.lot_id or "",
                 "head": r.income_head,
                 "sub": r.tax_sub_head,
-                "amt": format_currency(r.amount_inr, currency_id),
+                "amt": format_currency(r.amount_inr, r.currency_id or currency_id),
                 "rate": format_percent(r.applied_rate) if r.applied_rate is not None else "—",
-                "tax": format_currency(r.estimated_tax, currency_id)
+                "tax": format_currency(r.estimated_tax, r.currency_id or currency_id)
                 if r.estimated_tax is not None
                 else "—",
                 "st": r.tax_status,
+                "reason": r.tax_status_reason or "—",
             }
             for r in ev_snap.rows
         ]
         search_in = (
-            ui.input(placeholder="Search Event ID, Sub-Head, Source, Status...")
+            ui.input(placeholder="Search Event ID, ISIN, Lot ID, Sub-Head, Source, Status...")
             .props("dense outlined dark clearable")
-            .classes("w-80 mb-2")
+            .classes("w-96 mb-2")
         )
         tbl_box = ui.column().classes("w-full")
 
@@ -442,6 +496,8 @@ def _render_events_and_harvest_section(
                     r
                     for r in rows
                     if ql in str(r["id"]).lower()
+                    or ql in str(r["isin"]).lower()
+                    or ql in str(r["lot_id"]).lower()
                     or ql in str(r["sub"]).lower()
                     or ql in str(r["src"]).lower()
                     or ql in str(r["st"]).lower()
@@ -452,46 +508,72 @@ def _render_events_and_harvest_section(
             tbl_box.clear()
             with tbl_box:
                 bounded_data_table(
-                    title=f"Canonical Tax Events — FY {fy} ({len(filtered)})",
+                    title=(
+                        f"Canonical Tax Events — FY {fy} ({len(filtered)} · "
+                        "click investment rows with Lot ID for 88-col detail)"
+                    ),
                     columns=cols,
                     rows=filtered,
                     pagination=15,
+                    on_row_click=lambda row: _open_lot(str(row.get("lot_id", "")), harv.as_of_date),
                 )
 
         search_in.on_value_change(lambda e: _render_ev_tbl(str(e.value or "")))
         _render_ev_tbl("")
 
-    harv = TaxAnalytics.harvesting_snapshot(
-        profile,
-        context.period_context,
-        run_id=context.provenance.run_id if context.provenance else None,
-        provenance=context.provenance,
-        catalog_snapshot=context.catalog_snapshot,
-        cache=cache,
-    )
     if harv.state == "ready" and harv.harvest_lots:
+        with ui.element("div").classes("studio-chart-grid w-full my-4"):
+            _render_chart_card(
+                "Harvestable Loss vs Est. Tax Savings (Top Lots)",
+                build_tax_harvesting_exposure_figure(harv.harvest_lots, currency_id),
+                "silver.fact_investment_lot_analytics",
+            )
+            _render_chart_card(
+                "Harvesting Exposure by Holding Type & LTCG Maturity",
+                build_tax_harvesting_holding_figure(
+                    harv.harvest_lots, harv.maturing_lots, currency_id
+                ),
+                "silver.fact_investment_lot_analytics",
+            )
         h_cols = [
             TableColumn(name="lot", label="Lot ID", field="lot", align="left"),
+            TableColumn(name="isin", label="ISIN", field="isin", align="left"),
             TableColumn(name="inst", label="Instrument", field="inst", align="left"),
+            TableColumn(name="buy_dt", label="Buy Date", field="buy_dt", align="left"),
+            TableColumn(name="qty", label="Qty", field="qty", align="right"),
+            TableColumn(name="cost", label="Cost Basis", field="cost", align="right"),
             TableColumn(name="val", label="Market Value", field="val", align="right"),
             TableColumn(name="pl", label="Unrealized Loss", field="pl", align="right"),
+            TableColumn(name="hold", label="Holding", field="hold", align="left"),
+            TableColumn(name="d_ltcg", label="Days LTCG", field="d_ltcg", align="right"),
+            TableColumn(name="xirr", label="XIRR", field="xirr", align="right"),
+            TableColumn(name="tax", label="Tax If Sold", field="tax", align="right"),
             TableColumn(name="rec", label="Recommendation", field="rec", align="left"),
         ]
         h_rows = [
             {
                 "lot": r.lot_id,
-                "inst": r.instrument_name[:30],
+                "isin": r.isin,
+                "inst": r.instrument_name[:28],
+                "buy_dt": r.buy_date.isoformat() if r.buy_date else "—",
+                "qty": f"{r.quantity:,.2f}",
+                "cost": format_currency(r.buy_value, currency_id),
                 "val": format_currency(r.close_value, currency_id),
                 "pl": format_currency(r.unrealized_pl, currency_id),
+                "hold": r.holding_type,
+                "d_ltcg": str(r.days_to_ltcg) if r.days_to_ltcg is not None else "—",
+                "xirr": format_percent(r.xirr) if r.xirr is not None else "—",
+                "tax": format_currency(r.tax_if_sold, currency_id),
                 "rec": r.harvest_recommendation,
             }
             for r in harv.harvest_lots
         ]
         bounded_data_table(
-            title=f"Indicative Harvestable Loss Lots ({len(h_rows)})",
+            title=f"Indicative Harvestable Loss Lots ({len(h_rows)} · click any row for 88-col lot detail)",
             columns=h_cols,
             rows=h_rows,
             pagination=10,
+            on_row_click=lambda row: _open_lot(str(row.get("lot", "")), harv.as_of_date),
         )
 
 

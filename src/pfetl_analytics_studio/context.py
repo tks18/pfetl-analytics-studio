@@ -278,6 +278,10 @@ class AppSessionManager:
             self._hydrate_from_stores()
         return self._context
 
+    def clear_profile(self) -> AppContext:
+        """Deselect/unload the active profile and reset run/period/filter context."""
+        return self.switch_profile(None, hydrate=False)
+
     def select_run(
         self,
         run_id: str | None,

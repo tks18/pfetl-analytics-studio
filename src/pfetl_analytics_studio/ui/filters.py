@@ -50,6 +50,8 @@ _COMPARISON_LABELS: dict[ComparisonMode, str] = {
 
 _FILTER_FIELD_LABELS: dict[FilterField, str] = {
     FilterField.FY: "Financial Year (FY)",
+    FilterField.ASSET_GROUP: "Asset Group",
+    FilterField.ASSET_ID: "Asset / Account",
     FilterField.INCOME_GROUP: "Income Group",
     FilterField.INCOME_CATEGORY: "Income Category",
     FilterField.EXPENSE_GROUP: "Expense Category / Group",
@@ -61,6 +63,8 @@ _FILTER_FIELD_LABELS: dict[FilterField, str] = {
     FilterField.SECTOR: "Sector / Asset Category",
     FilterField.CURRENCY_ID: "Currency",
     FilterField.ISIN: "ISIN",
+    FilterField.INCOME_HEAD: "Tax Income Head",
+    FilterField.TAX_STATUS: "Tax Status",
 }
 
 
@@ -448,6 +452,7 @@ def _open_add_filter_dialog(
     on_add: Callable[[FilterSpec], None],
     filter_options: FilterCatalogOptions | None,
     available_fys: Sequence[str],
+    allowed_fields: Sequence[FilterField] | None = None,
 ) -> None:
     """Open interactive dark modal with searchable data-backed value dropdowns per dimension."""
     dialog = ui.dialog()
@@ -456,7 +461,15 @@ def _open_add_filter_dialog(
             ui.label("Add Data Filter").classes("text-base font-semibold")
             ui.button(icon="close", on_click=dialog.close).props("flat round dense color=white")
 
-        field_opts = {f.value: lbl for f, lbl in _FILTER_FIELD_LABELS.items()}
+        allowed_set = set(allowed_fields) if allowed_fields else None
+        field_opts = {
+            f.value: lbl
+            for f, lbl in _FILTER_FIELD_LABELS.items()
+            if allowed_set is None or f in allowed_set
+        }
+        if not field_opts:
+            field_opts = {f.value: lbl for f, lbl in _FILTER_FIELD_LABELS.items()}
+        default_field = next(iter(field_opts))
         state: dict[str, str | list[str]] = {"single": "", "multi": []}
 
         value_slot = ui.column().classes("w-full gap-1")
@@ -531,7 +544,7 @@ def _open_add_filter_dialog(
         field_select = (
             ui.select(
                 options=field_opts,
-                value=FilterField.FY.value,
+                value=default_field,
                 label="Filter Dimension",
                 on_change=lambda _e: _rebuild_value_control(),
             )
@@ -604,6 +617,7 @@ def filter_chips_bar(
     on_add: Callable[[FilterSpec], None] | None = None,
     available_fys: Sequence[str] = (),
     filter_options: FilterCatalogOptions | None = None,
+    allowed_fields: Sequence[FilterField] | None = None,
     scope_hint: str | None = None,
 ) -> ui.row:
     """Render interactive data-backed domain filter controls, removable chips, and clear action."""
@@ -613,7 +627,9 @@ def filter_chips_bar(
             if on_add is not None:
 
                 def _open_modal() -> None:
-                    _open_add_filter_dialog(on_add, filter_options, available_fys)
+                    _open_add_filter_dialog(
+                        on_add, filter_options, available_fys, allowed_fields=allowed_fields
+                    )
 
                 ui.button("Filter Data", icon="filter_list", on_click=_open_modal).props(
                     "outline dense size=sm no-caps color=primary"

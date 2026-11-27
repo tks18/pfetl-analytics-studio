@@ -7,11 +7,11 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from pfetl_analytics_studio.profile import PFETLProfile
-from pfetl_analytics_studio.state import StudioStateStore
+from pfetl_analytics_studio.state import CURRENT_SCHEMA_VERSION, StudioStateStore
 
 
 def test_state_store_initialization(temp_state_store: StudioStateStore) -> None:
-    """Verify that StudioStateStore creates database file and initializes schema version 1."""
+    """Verify that StudioStateStore creates database file and initializes latest schema."""
     assert temp_state_store.db_path.exists()
 
     conn = sqlite3.connect(temp_state_store.db_path)
@@ -20,7 +20,7 @@ def test_state_store_initialization(temp_state_store: StudioStateStore) -> None:
     version = cursor.fetchone()[0]
     conn.close()
 
-    assert version == 1
+    assert version == CURRENT_SCHEMA_VERSION
 
 
 def test_recent_profiles_crud(
@@ -116,3 +116,37 @@ def test_state_persistence_across_connections(
         assert len(recents) == 1
         assert recents[0].profile_id == profile.profile_id
         assert store2.get_preference("theme.mode") == "dark"
+
+
+def test_save_pin_rename_profile_and_session_clear(
+    tmp_path: Path,
+    valid_settings_path: Path,
+    valid_rules_path: Path,
+) -> None:
+    """Verify saved profile pinning, renaming, and `AppSessionManager.clear_profile()`."""
+    from pfetl_analytics_studio.context import AppSessionManager
+
+    db_file = tmp_path / "profiles_v2.sqlite"
+    res = PFETLProfile.load(valid_settings_path, valid_rules_path, label="Initial")
+    assert res.profile is not None
+    profile = res.profile
+
+    with StudioStateStore(db_path=db_file) as store:
+        store.save_profile(profile, label="Shan Prod", is_pinned=True, notes="Main warehouse")
+        saved = store.get_recent_profiles()
+        assert len(saved) == 1
+        assert saved[0].label == "Shan Prod"
+        assert saved[0].is_pinned is True
+        assert saved[0].notes == "Main warehouse"
+
+        store.rename_profile(profile.profile_id, "Shan Renamed")
+        store.set_profile_pinned(profile.profile_id, False)
+        updated = store.get_recent_profiles()
+        assert updated[0].label == "Shan Renamed"
+        assert updated[0].is_pinned is False
+
+    session = AppSessionManager(initial_profile=profile)
+    assert session.context.profile is not None
+    cleared = session.clear_profile()
+    assert cleared.profile is None
+    assert cleared.provenance is None

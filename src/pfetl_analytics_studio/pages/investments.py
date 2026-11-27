@@ -59,6 +59,8 @@ from pfetl_analytics_studio.ui import (
     format_metric_value,
     format_percent,
     kpi_card,
+    open_lot_detail_dialog,
+    rows_to_csv_bytes,
     status_badge,
 )
 
@@ -922,78 +924,7 @@ def _render_lots_tab(
         )
         drawer_box.clear()
         with drawer_box:
-            with (
-                ui.dialog() as dlg,
-                ui.card()
-                .classes("w-full max-w-4xl p-5")
-                .style(
-                    "background: #0F172A; border: 1px solid rgba(148, 163, 184, 0.25); color: #F8FAFC; max-height: 85vh; overflow-y: auto;"
-                ),
-            ):
-                if detail is None:
-                    ui.label(f"Lot {lot_id} not found").classes("text-subtitle1 font-semibold")
-                    ui.button("Close", on_click=dlg.close).props("flat")
-                else:
-                    with ui.row().classes("w-full items-center justify-between mb-3"):
-                        with ui.column().classes("gap-0"):
-                            ui.label(detail.instrument_name or detail.isin).classes(
-                                "text-h6 font-semibold"
-                            ).style("color: var(--studio-text-primary);")
-                            ui.label(
-                                f"Lot: {detail.lot_id} · ISIN: {detail.isin} · Close: {detail.closing_date.isoformat()}"
-                            ).classes("text-caption").style("color: var(--studio-text-muted);")
-                        with ui.row().classes("items-center gap-2"):
-                            raw_toggle = ui.switch("Raw Source Fields", value=False).props("dense")
-                            ui.button(icon="close", on_click=dlg.close).props("flat round dense")
-
-                    sections_box = ui.column().classes("w-full gap-3")
-
-                    def _render_sections(show_raw: bool = False) -> None:
-                        sections_box.clear()
-                        with sections_box:
-                            if show_raw:
-                                raw_cols = [
-                                    TableColumn(
-                                        name="col", label="Source Column", field="col", align="left"
-                                    ),
-                                    TableColumn(
-                                        name="val", label="Raw Value", field="val", align="left"
-                                    ),
-                                ]
-                                raw_rows = [
-                                    {"col": k, "val": str(v) if v is not None else "—"}
-                                    for k, v in detail.raw_columns.items()
-                                ]
-                                bounded_data_table(
-                                    title=f"All Source Columns ({len(raw_rows)})",
-                                    columns=raw_cols,
-                                    rows=raw_rows,
-                                    pagination=20,
-                                )
-                            else:
-                                for sec in detail.sections:
-                                    with (
-                                        ui.card()
-                                        .classes("w-full p-3")
-                                        .style(
-                                            "background: rgba(15, 23, 42, 0.65); border: 1px solid rgba(148, 163, 184, 0.16);"
-                                        )
-                                    ):
-                                        ui.label(sec.title.upper()).classes(
-                                            "text-caption font-semibold tracking-wider mb-2"
-                                        ).style("color: var(--studio-accent);")
-                                        with ui.grid(columns=3).classes("w-full gap-2"):
-                                            for lbl, _raw_name, val in sec.fields:
-                                                disp = (
-                                                    f"{val:,.4f}"
-                                                    if isinstance(val, float)
-                                                    else (str(val) if val is not None else "—")
-                                                )
-                                                _detail_stat(lbl, disp)
-
-                    raw_toggle.on_value_change(lambda e: _render_sections(bool(e.value)))
-                    _render_sections(False)
-            dlg.open()
+            open_lot_detail_dialog(detail, lot_id)
 
     def _build_filter() -> LotFilter:
         max_d = int(state["max_days"]) if state["max_days"] != "ALL" else None
@@ -1106,11 +1037,50 @@ def _render_lots_tab(
                 }
                 for r in snap.chart_rows
             ]
+
+            def _export_all_lots() -> None:
+                full_snap = InvestmentAnalytics.lot_rows(
+                    profile,
+                    lf,
+                    context.period_context,
+                    limit=max(snap.total_count, 100_000),
+                    offset=0,
+                    run_id=context.provenance.run_id if context.provenance else None,
+                    provenance=context.provenance,
+                    catalog_snapshot=context.catalog_snapshot,
+                    cache=cache,
+                )
+                full_t_rows = [
+                    {
+                        "lot_id": r.lot_id,
+                        "inst": r.instrument_name[:30],
+                        "buy_dt": r.buy_date.isoformat() if r.buy_date else "—",
+                        "qty": f"{r.quantity:,.2f}",
+                        "buy_val": format_currency(r.buy_value, currency_id),
+                        "close_val": format_currency(r.close_value, currency_id),
+                        "pl": format_currency(r.unrealized_pl, currency_id),
+                        "xirr": format_percent(r.xirr) if r.xirr is not None else "—",
+                        "hold": r.holding_type,
+                        "d_ltcg": str(r.days_to_ltcg) if r.days_to_ltcg is not None else "—",
+                        "tax": format_currency(r.tax_if_sold, currency_id),
+                        "rec": r.harvest_recommendation,
+                    }
+                    for r in full_snap.rows
+                ]
+                csv_bytes = rows_to_csv_bytes(cols, full_t_rows)
+                ui.download(csv_bytes, filename="investment_lots.csv")
+                ui.notify(
+                    f"Exported {len(full_t_rows):,} lots to investment_lots.csv",
+                    type="positive",
+                )
+
             bounded_data_table(
                 title=f"Lot Explorer ({snap.total_count} lots · click any row for 88-col detail)",
                 columns=cols,
                 rows=t_rows,
                 pagination=int(state["limit"]),
+                export_filename="investment_lots.csv",
+                on_export_full=_export_all_lots,
                 on_row_click=lambda row: _open_lot_detail(
                     str(row.get("lot_id", "")), snap.closing_date
                 ),
