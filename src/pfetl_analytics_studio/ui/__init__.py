@@ -51,6 +51,11 @@ from pfetl_analytics_studio.ui.charts_expense import (
     build_expense_real_vs_nominal_figure,
     build_expense_treemap_figure,
 )
+from pfetl_analytics_studio.ui.charts_explorer import (
+    build_catalog_layer_usage_figure,
+    build_catalog_top_tables_figure,
+    build_guided_explorer_figure,
+)
 from pfetl_analytics_studio.ui.charts_fire import (
     build_fire_acceleration_cagr_figure,
     build_fire_corpus_targets_figure,
@@ -136,9 +141,12 @@ from pfetl_analytics_studio.ui.charts_operations import (
 from pfetl_analytics_studio.ui.charts_tax import (
     build_tax_completeness_figure,
     build_tax_composition_donut_figure,
+    build_tax_events_status_source_figure,
     build_tax_events_timeline_figure,
     build_tax_fy_readiness_figure,
     build_tax_fy_trend_figure,
+    build_tax_harvesting_exposure_figure,
+    build_tax_harvesting_holding_figure,
     build_tax_head_breakdown_figure,
     build_tax_indicative_exposure_figure,
     build_tax_recon_bridge_figure,
@@ -172,7 +180,8 @@ from pfetl_analytics_studio.ui.formatting import (
     format_percent,
     format_ratio,
 )
-from pfetl_analytics_studio.ui.tables import TableColumn, bounded_data_table
+from pfetl_analytics_studio.ui.lot_detail_dialog import open_lot_detail_dialog
+from pfetl_analytics_studio.ui.tables import TableColumn, bounded_data_table, rows_to_csv_bytes
 from pfetl_analytics_studio.ui.theme import (
     CHART_ROLE_COLORS,
     CHART_SERIES_COLORS,
@@ -197,6 +206,9 @@ __all__ = [
     "build_budget_allocation_trend_figure",
     "build_budget_health_heatmap_figure",
     "build_budget_target_vs_actual_figure",
+    "build_catalog_layer_usage_figure",
+    "build_catalog_top_tables_figure",
+    "build_guided_explorer_figure",
     "build_cashflow_activity_trend_figure",
     "build_cashflow_efficiency_figure",
     "build_cashflow_waterfall_figure",
@@ -288,9 +300,12 @@ __all__ = [
     "build_portfolio_return_figure",
     "build_tax_completeness_figure",
     "build_tax_composition_donut_figure",
+    "build_tax_events_status_source_figure",
     "build_tax_events_timeline_figure",
     "build_tax_fy_readiness_figure",
     "build_tax_fy_trend_figure",
+    "build_tax_harvesting_exposure_figure",
+    "build_tax_harvesting_holding_figure",
     "build_tax_head_breakdown_figure",
     "build_tax_indicative_exposure_figure",
     "build_tax_recon_bridge_figure",
@@ -327,7 +342,9 @@ __all__ = [
     "kpi_card",
     "loading_state_card",
     "locked_warehouse_banner",
+    "open_lot_detail_dialog",
     "period_selector",
+    "rows_to_csv_bytes",
     "status_badge",
     "studio_plotly_layout",
 ]

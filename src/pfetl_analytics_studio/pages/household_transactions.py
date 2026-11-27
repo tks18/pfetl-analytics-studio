@@ -25,6 +25,7 @@ from pfetl_analytics_studio.analytics import (
     HouseholdTransactionRow,
 )
 from pfetl_analytics_studio.context import AppContext
+from pfetl_analytics_studio.semantic import FilterField, FilterSet
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     StudioColor,
@@ -38,8 +39,97 @@ from pfetl_analytics_studio.ui import (
     format_currency,
     kpi_card,
     loading_state_card,
+    rows_to_csv_bytes,
     status_badge,
 )
+
+
+def _global_tx_filter_str(filters: FilterSet, field: FilterField) -> str:
+    """Extract first scalar string value for `field` from global `FilterSet`."""
+    for spec in filters.filters:
+        if spec.field == field and spec.value is not None:
+            val = spec.value
+            return str(val[0]) if isinstance(val, tuple) else str(val)
+    return ""
+
+
+def _initial_tx_state(
+    filters: FilterSet,
+    initial_page: HouseholdTransactionPage,
+) -> dict[str, Any]:
+    """Build initial transaction filter state seeded from global `FilterSet`."""
+    init_flag = "all"
+    core_val = _global_tx_filter_str(filters, FilterField.IS_CORE_EXPENSE).lower()
+    if core_val == "true":
+        init_flag = "core"
+    elif core_val == "false":
+        init_flag = "non_core"
+    return {
+        "kind": "all",
+        "flag": init_flag,
+        "category_name": _global_tx_filter_str(filters, FilterField.EXPENSE_CATEGORY)
+        or _global_tx_filter_str(filters, FilterField.INCOME_CATEGORY),
+        "subcategory_name": "",
+        "asset_id": _global_tx_filter_str(filters, FilterField.ASSET_ID),
+        "currency_id": _global_tx_filter_str(filters, FilterField.CURRENCY_ID),
+        "transfer_type": "",
+        "min_amount": "",
+        "max_amount": "",
+        "search": "",
+        "has_transfer_only": False,
+        "offset": 0,
+        "limit": 50,
+        "current_page": initial_page,
+    }
+
+
+def _format_tx_rows(rows_in: Sequence[HouseholdTransactionRow]) -> list[dict[str, Any]]:
+    """Format Silver transaction rows into display dictionaries for `bounded_data_table`."""
+    return [
+        {
+            "row_uid": f"{r.transaction_kind}:{r.uid}",
+            "date": r.tx_date.isoformat(),
+            "kind": r.transaction_kind.title(),
+            "account": r.asset_name,
+            "category": r.category_name or "—",
+            "subcat": r.subcategory_name or "—",
+            "classif": r.classification_summary,
+            "base_amt": format_currency(r.base_amount, r.currency_id, signed=True),
+            "acc_amt": format_currency(r.amount_account, r.currency_id, signed=True)
+            if r.amount_account is not None
+            else "—",
+            "loc_amt": format_currency(r.local_amount, r.currency_id, signed=True)
+            if r.local_amount is not None
+            else "—",
+            "desc": r.description or r.paid or "—",
+        }
+        for r in rows_in
+    ]
+
+
+def _export_transactions_csv(
+    context: AppContext,
+    tx_query: HouseholdTransactionQuery,
+    cols: Sequence[TableColumn],
+    total_count: int,
+) -> None:
+    """Export all matching Silver transactions (unbounded) as CSV."""
+    if context.profile is None:
+        return
+    full_res = HouseholdAnalytics.household_transactions(
+        context.profile,
+        tx_query,
+        limit=max(total_count, 100_000),
+        offset=0,
+        catalog_snapshot=context.catalog_snapshot,
+    )
+    full_rows = _format_tx_rows(full_res.rows)
+    csv_bytes = rows_to_csv_bytes(cols, full_rows)
+    ui.download(csv_bytes, filename="household_transactions.csv")
+    ui.notify(
+        f"Exported {len(full_rows):,} transactions to household_transactions.csv",
+        type="positive",
+    )
 
 
 def _open_tx_detail_dialog(
@@ -143,22 +233,8 @@ def _render_transactions_body(context: AppContext, initial_page: HouseholdTransa
     assert context.profile is not None
     p_ctx = context.period_context
     cid = initial_page.currency_id
-    state: dict[str, Any] = {
-        "kind": "all",
-        "flag": "all",
-        "category_name": "",
-        "subcategory_name": "",
-        "asset_id": "",
-        "currency_id": "",
-        "transfer_type": "",
-        "min_amount": "",
-        "max_amount": "",
-        "search": "",
-        "has_transfer_only": False,
-        "offset": 0,
-        "limit": 50,
-        "current_page": initial_page,
-    }
+
+    state = _initial_tx_state(context.filters, initial_page)
     controls: dict[str, Any] = {}
 
     def _build_query() -> HouseholdTransactionQuery:
@@ -317,32 +393,20 @@ def _render_transactions_body(context: AppContext, initial_page: HouseholdTransa
                 TableColumn(name="loc_amt", label="Local Amt", field="loc_amt", align="right"),
                 TableColumn(name="desc", label="Paid / Description", field="desc", align="left"),
             ]
-            row_lookup: dict[str, HouseholdTransactionRow] = {}
-            rows: list[dict[str, Any]] = []
-            for r in page_res.rows:
-                key = f"{r.transaction_kind}:{r.uid}"
-                row_lookup[key] = r
-                rows.append(
-                    {
-                        "row_uid": key,
-                        "date": r.tx_date.isoformat(),
-                        "kind": r.transaction_kind.title(),
-                        "account": r.asset_name,
-                        "category": r.category_name or "—",
-                        "subcat": r.subcategory_name or "—",
-                        "classif": r.classification_summary,
-                        "base_amt": format_currency(r.base_amount, r.currency_id, signed=True),
-                        "acc_amt": format_currency(r.amount_account, r.currency_id, signed=True)
-                        if r.amount_account is not None
-                        else "—",
-                        "loc_amt": format_currency(r.local_amount, r.currency_id, signed=True)
-                        if r.local_amount is not None
-                        else "—",
-                        "desc": r.description or r.paid or "—",
-                    }
-                )
+            row_lookup = {f"{r.transaction_kind}:{r.uid}": r for r in page_res.rows}
+            rows = _format_tx_rows(page_res.rows)
 
-            table_card = bounded_data_table(cols, rows, row_key="row_uid", pagination=50)
+            table_card = bounded_data_table(
+                cols,
+                rows,
+                row_key="row_uid",
+                pagination=50,
+                title=f"Household Transactions ({s.total_count:,} matching)",
+                export_filename="household_transactions.csv",
+                on_export_full=lambda: _export_transactions_csv(
+                    context, _build_query(), cols, s.total_count
+                ),
+            )
             for child in table_card.default_slot.children:
                 if isinstance(child, ui.table):
 
