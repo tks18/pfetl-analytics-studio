@@ -2,6 +2,36 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.0.1](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.0...1.0.1) (2026-11-28)
+
+
+### Docs 📃
+
+* add hardening plan ([e5b782b](https://github.com/tks18/pfetl-analytics-studio/commit/e5b782bfa1d095ce15cbf0eec575f7df8e8162d2))
+
+
+### Performance Improvements 🏎
+
+* **data:** stream CSV exports via DuckDB COPY and temp files ([3a01e41](https://github.com/tks18/pfetl-analytics-studio/commit/3a01e415ae0c8adae21045be67c708d3d0af776f))
+* **pages:** offload analytical I/O, make tabs lazy, and guard loads ([74d2d61](https://github.com/tks18/pfetl-analytics-studio/commit/74d2d61ba1da53941f7203abaca6aed535620c94))
+
+
+### Bug Fixes 🛠
+
+* **downloads:** use multi-request TTL download route for exports ([91da7fc](https://github.com/tks18/pfetl-analytics-studio/commit/91da7fc0df22d6dde11218c189d92fe395088bb7))
+
+
+### Features 🔥
+
+* **charts:** fix axis collisions and add labels to report exports ([469b238](https://github.com/tks18/pfetl-analytics-studio/commit/469b2389535c171aa3a9fe7b6b7f0d7fbc9fb7de))
+* **filters:** propagate global filters across Investments and Tax ([c7c5acd](https://github.com/tks18/pfetl-analytics-studio/commit/c7c5acda14d46fdc64cb60fd946757dd8df61630))
+* **reports:** add comparison parity, KPIs, and enrich 15 reports ([22a4b31](https://github.com/tks18/pfetl-analytics-studio/commit/22a4b317dce35b745191b609529ff014c383020f))
+
+
+### Tests 🧪
+
+* **studio:** add download route, KPI, label, filter, and report tests ([52466b3](https://github.com/tks18/pfetl-analytics-studio/commit/52466b3ced75e3a82c491d6ba0148fee60371fd0))
+
 ## [1.0.0](https://github.com/tks18/pfetl-analytics-studio/compare/0.1.35...1.0.0) (2026-11-27)
 
 
