@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.1.1](https://github.com/tks18/pfetl-analytics-studio/compare/1.1.0...1.1.1) (2026-11-28)
+
+
+### Docs 📃
+
+* update readme to reflect recent changes ([fe040cf](https://github.com/tks18/pfetl-analytics-studio/commit/fe040cf48ed1a41d59a5ce90c87b60f9a3137edb))
+
 ## [1.1.0](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.5...1.1.0) (2026-11-28)
 
 
