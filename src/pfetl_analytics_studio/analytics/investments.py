@@ -13,7 +13,10 @@ Does not own
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator, Sequence
 from datetime import date
+from pathlib import Path
+from typing import Any
 
 from pfetl_analytics_studio.analytics.investments_evidence_queries import (
     build_realized_recon_kpis,
@@ -49,6 +52,7 @@ from pfetl_analytics_studio.analytics.investments_queries import (
     query_portfolio_holdings,
     query_portfolio_performance_history,
     resolve_lot_closing_date,
+    stream_lot_rows,
 )
 from pfetl_analytics_studio.analytics.overview import OverviewService
 from pfetl_analytics_studio.analytics.overview_models import as_date, as_float
@@ -66,6 +70,7 @@ from pfetl_analytics_studio.data import (
     WarehouseState,
     build_cache_key,
 )
+from pfetl_analytics_studio.data.exports import create_temp_export_path, write_rows_csv_file
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import FilterSet, PeriodContext
 
@@ -542,6 +547,52 @@ class InvestmentAnalytics:
         snap = _execute()
         cache.set(key, snap)
         return snap
+
+    @classmethod
+    def export_lots_csv_file(
+        cls,
+        profile: PFETLProfile,
+        lot_filter: LotFilter,
+        period_context: PeriodContext | None = None,
+        *,
+        columns: Sequence[str],
+        row_formatter: Callable[[Sequence[Any], str], Sequence[Sequence[Any]]],
+        target_path: Path | None = None,
+        provenance: RunProvenance | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        chunk_size: int = 2000,
+    ) -> tuple[Path, int]:
+        """Stream all matching Silver investment lots directly to a temporary CSV file."""
+        out_path = target_path or create_temp_export_path(
+            "investment_lots.csv", default_stem="investment_lots"
+        )
+        currency_id = OverviewService.resolve_currency_id(profile, provenance)
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() != WarehouseState.AVAILABLE:
+            write_rows_csv_file(columns, [], out_path)
+            return out_path, 0
+
+        end_bound = period_context.end_date if period_context else None
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+                resolved_dt, _ = resolve_lot_closing_date(
+                    session_reader, lot_filter.closing_date, end_bound
+                )
+                if resolved_dt is None:
+                    write_rows_csv_file(columns, [], out_path)
+                    return out_path, 0
+
+                def _iter_formatted() -> Generator[Sequence[Sequence[Any]]]:
+                    for chunk in stream_lot_rows(
+                        session_reader, lot_filter, resolved_dt, chunk_size=chunk_size
+                    ):
+                        yield row_formatter(chunk, currency_id)
+
+                count = write_rows_csv_file(columns, _iter_formatted(), out_path)
+                return out_path, count
+            finally:
+                reset_catalog_snapshot(tok)
 
     @classmethod
     def lot_detail(

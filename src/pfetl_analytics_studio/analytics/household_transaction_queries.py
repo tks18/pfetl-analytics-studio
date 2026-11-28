@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import csv
 import io
+from collections.abc import Generator
 from typing import Any, Literal, cast
 
 from pfetl_analytics_studio.analytics.household_models import (
@@ -30,6 +31,7 @@ from pfetl_analytics_studio.analytics.household_models import (
 from pfetl_analytics_studio.analytics.overview_models import as_date, as_float
 from pfetl_analytics_studio.analytics.overview_queries import table_exists, table_has_column
 from pfetl_analytics_studio.data import DuckDBQueryPort
+from pfetl_analytics_studio.data.duckdb_reader import DuckDBSession
 
 
 def _asset_name_col(duck_reader: DuckDBQueryPort) -> str | None:
@@ -368,6 +370,34 @@ def _row_from_dict(row: dict[str, Any]) -> HouseholdTransactionRow | None:
         description=str(row.get("description") or ""),
         classification_summary=_classification_summary(row),
     )
+
+
+def stream_household_transactions(
+    duck_reader: DuckDBSession,
+    query: HouseholdTransactionQuery,
+    *,
+    chunk_size: int = 2000,
+) -> Generator[list[HouseholdTransactionRow]]:
+    """Stream all matching Silver transactions in bounded cursor chunks without LIMIT."""
+    union_sql = _build_union_sql(duck_reader)
+    if union_sql is None:
+        return
+    where_sql, params = _compile_where(query)
+    sql = f"""
+        WITH all_tx AS ({union_sql})
+        SELECT *
+        FROM all_tx
+        WHERE {where_sql}
+        ORDER BY tx_date DESC, COALESCE(tx_time, '') DESC, uid DESC;
+    """
+    for raw_chunk in duck_reader.iter_dict_chunks(sql, tuple(params), chunk_size=chunk_size):
+        rows: list[HouseholdTransactionRow] = []
+        for raw in raw_chunk:
+            parsed = _row_from_dict(raw)
+            if parsed is not None:
+                rows.append(parsed)
+        if rows:
+            yield rows
 
 
 def query_household_transactions(

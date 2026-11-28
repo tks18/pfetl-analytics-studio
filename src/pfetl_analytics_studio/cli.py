@@ -13,19 +13,27 @@ from pfetl_analytics_studio.server import (
     run_server,
     validate_loopback_host,
 )
+from pfetl_analytics_studio.tray import run_tray
 
 __all__ = [
     "ALLOWED_LOOPBACKS",
     "main",
+    "main_server",
+    "main_tray",
     "validate_loopback_host",
 ]
 
 
-def main(args: list[str] | None = None) -> int:
-    """Parse CLI arguments and delegate launch to `run_server()`."""
+def _parse_config(args: list[str] | None = None) -> tuple[StudioServerConfig, bool]:
+    """Parse CLI arguments into `(StudioServerConfig, cli_mode)`."""
     parser = argparse.ArgumentParser(
         prog="pfetl-studio",
         description="PFETL Analytics Studio — Local-First Analytical Console",
+    )
+    parser.add_argument(
+        "--cli",
+        action="store_true",
+        help="Run headless/direct server mode in the current process instead of the tray host",
     )
     parser.add_argument(
         "--host",
@@ -89,7 +97,27 @@ def main(args: list[str] | None = None) -> int:
         reload=bool(parsed.reload),
         runtime_file=Path(parsed.runtime_file) if parsed.runtime_file else None,
     )
+    return config, bool(parsed.cli)
+
+
+def main(args: list[str] | None = None) -> int:
+    """Launch the tray host by default, or direct server when `--cli` is supplied."""
+    config, cli_mode = _parse_config(args)
+    if cli_mode:
+        return run_server(config)
+    return run_tray(config, open_browser_on_start=config.open_browser)
+
+
+def main_server(args: list[str] | None = None) -> int:
+    """Direct server entrypoint (`pfetl-studio-server`)."""
+    config, _ = _parse_config(args)
     return run_server(config)
+
+
+def main_tray(args: list[str] | None = None) -> int:
+    """GUI tray entrypoint (`pfetl-studio-tray`)."""
+    config, _ = _parse_config(args)
+    return run_tray(config, open_browser_on_start=config.open_browser)
 
 
 if __name__ in {"__main__", "__mp_main__"}:

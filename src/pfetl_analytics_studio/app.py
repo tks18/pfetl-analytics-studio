@@ -10,7 +10,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
-from nicegui import run, ui
+from nicegui import app, run, ui
 from nicegui.events import ValueChangeEventArguments
 
 from pfetl_analytics_studio import __version__
@@ -38,6 +38,7 @@ from pfetl_analytics_studio.profile import (
     ProfileLoadErrorCode,
     ProfileLoadResult,
 )
+from pfetl_analytics_studio.resources import resolve_resource_path
 from pfetl_analytics_studio.semantic import (
     FilterField,
     FilterSet,
@@ -756,6 +757,7 @@ def _render_shell_header(
     ctx: AppContext,
     drawer: ui.left_drawer,
     active_path: str,
+    logo_url: str | None = None,
 ) -> None:
     """Render sleek single-row top bar with profile switcher, run selector, and health pills."""
     with ui.header().classes("items-center justify-between px-4 py-2 gap-3 no-wrap"):
@@ -775,10 +777,19 @@ def _render_shell_header(
             toggle_btn.on_click(_toggle_sidebar)
             with toggle_btn:
                 ui.tooltip("Toggle sidebar rail")
-            ui.icon("analytics", size="sm").style(f"color: {StudioColor.ACCENT}")
-            ui.label("PFETL Analytics Studio").classes(
-                "text-sm font-bold tracking-tight whitespace-nowrap"
-            )
+            with ui.link(target="/overview").classes(
+                "no-underline text-inherit hover:opacity-90 transition-opacity"
+            ):
+                with ui.row().classes("items-center gap-2 cursor-pointer no-wrap select-none"):
+                    if logo_url:
+                        ui.image(logo_url).props("fit=contain no-spinner").classes(
+                            "w-6 h-6 rounded shrink-0"
+                        )
+                    else:
+                        ui.icon("analytics", size="sm").style(f"color: {StudioColor.ACCENT}")
+                    ui.label("PFETL Analytics Studio").classes(
+                        "text-sm font-bold tracking-tight whitespace-nowrap"
+                    )
 
             if ctx.profile is not None:
                 ui.button(
@@ -1119,6 +1130,12 @@ def create_app(profile: PFETLProfile | None = None) -> None:
     Registers routes cleanly without opening DuckDB or SQLite during initialization.
     """
     session = AppSessionManager(initial_profile=profile)
+    logo_path = resolve_resource_path("logo.png")
+    logo_url = (
+        app.add_static_file(local_file=logo_path, url_path="/assets/pfetl-logo.png")
+        if logo_path is not None
+        else None
+    )
 
     def _render_route(route: NavRoute, active_path: str, show_profile_cards: bool) -> None:
         apply_studio_theme()
@@ -1126,7 +1143,7 @@ def create_app(profile: PFETLProfile | None = None) -> None:
         if session.check_run_freshness():
             ctx = session.context
         drawer = render_navigation_drawer(route.route_id, ctx)
-        _render_shell_header(session, ctx, drawer, active_path)
+        _render_shell_header(session, ctx, drawer, active_path, logo_url=logo_url)
 
         with ui.column().classes("w-full max-w-[1440px] mx-auto px-6 py-5 gap-4"):
             if ctx.is_warehouse_locked:
@@ -1180,7 +1197,9 @@ def create_app(profile: PFETLProfile | None = None) -> None:
             if show_profile_cards or ctx.profile is None:
                 _render_overview_context_cards(session, ctx)
 
-    @ui.page("/")
+    favicon_path = resolve_resource_path("logo.ico") or logo_path
+
+    @ui.page("/", favicon=favicon_path)
     def index_route() -> None:
         """Render landing Overview route cleanly inside shared shell."""
         _render_route(NAV_ROUTES[0], "/", show_profile_cards=True)
@@ -1197,4 +1216,4 @@ def create_app(profile: PFETLProfile | None = None) -> None:
 
             return _page_handler
 
-        ui.page(route.path)(_make_handler(route))
+        ui.page(route.path, favicon=favicon_path)(_make_handler(route))

@@ -71,6 +71,10 @@ class ControlPlaneReader:
         """
         return self.get_state() == ControlPlaneState.AVAILABLE
 
+    def open_connection(self) -> sqlite3.Connection:
+        """Open a read-only SQLite connection using URI mode."""
+        return self._open_connection()
+
     def _open_connection(self) -> sqlite3.Connection:
         """Open a read-only SQLite connection using URI mode.
 

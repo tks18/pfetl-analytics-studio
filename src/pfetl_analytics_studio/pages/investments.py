@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -19,7 +19,7 @@ from pfetl_analytics_studio.analytics import (
     OverviewKPI,
 )
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
-from pfetl_analytics_studio.data import QueryCache, create_temp_export_path, write_rows_csv_file
+from pfetl_analytics_studio.data import QueryCache
 from pfetl_analytics_studio.pages import render_domain_workspace
 from pfetl_analytics_studio.pages.investments_evidence import (
     render_evidence_tab,
@@ -1217,41 +1217,36 @@ def _render_lots_tab(  # pylint: disable=too-many-statements
                 for r in snap.chart_rows
             ]
 
-            def _export_lots_to_file_sync() -> tuple[Path, int]:
-                full_snap = InvestmentAnalytics.lot_rows(
-                    profile,
-                    lf,
-                    context.period_context,
-                    limit=max(snap.total_count, 100_000),
-                    offset=0,
-                    run_id=context.provenance.run_id if context.provenance else None,
-                    provenance=context.provenance,
-                    catalog_snapshot=context.catalog_snapshot,
-                    cache=cache,
-                )
-                target_path = create_temp_export_path(
-                    "investment_lots.csv", default_stem="investment_lots"
-                )
-                headers = [c.label for c in cols]
-                row_iter = (
+            def _format_lot_chunk(chunk_rows: Sequence[Any], curr_id: str) -> list[tuple[Any, ...]]:
+                return [
                     (
                         r.lot_id,
                         r.instrument_name[:30],
                         r.buy_date.isoformat() if r.buy_date else "—",
                         f"{r.quantity:,.2f}",
-                        format_currency(r.buy_value, currency_id),
-                        format_currency(r.close_value, currency_id),
-                        format_currency(r.unrealized_pl, currency_id),
+                        format_currency(r.buy_value, curr_id),
+                        format_currency(r.close_value, curr_id),
+                        format_currency(r.unrealized_pl, curr_id),
                         format_percent(r.xirr) if r.xirr is not None else "—",
                         r.holding_type,
                         str(r.days_to_ltcg) if r.days_to_ltcg is not None else "—",
-                        format_currency(r.tax_if_sold, currency_id),
+                        format_currency(r.tax_if_sold, curr_id),
                         r.harvest_recommendation,
                     )
-                    for r in full_snap.rows
+                    for r in chunk_rows
+                ]
+
+            def _export_lots_to_file_sync() -> tuple[Path, int]:
+                headers = [c.label for c in cols]
+                return InvestmentAnalytics.export_lots_csv_file(
+                    profile,
+                    lf,
+                    context.period_context,
+                    columns=headers,
+                    row_formatter=_format_lot_chunk,
+                    provenance=context.provenance,
+                    catalog_snapshot=context.catalog_snapshot,
                 )
-                count = write_rows_csv_file(headers, [list(row_iter)], target_path)
-                return target_path, count
 
             async def _export_all_lots() -> None:
                 if not _has_running_loop():

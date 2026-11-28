@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Literal, cast
 
 from pfetl_analytics_studio.analytics.operations_models import (
@@ -44,6 +45,7 @@ from pfetl_analytics_studio.analytics.operations_queries import (
     query_source_registry,
     query_warehouse_contracts,
     query_warehouse_row_counts,
+    stream_source_payload_to_file,
 )
 from pfetl_analytics_studio.analytics.overview_queries import (
     reset_catalog_snapshot,
@@ -567,3 +569,27 @@ class OperationsAnalytics:
                 diagnostics=("Control Plane SQLite database is unavailable.",),
             )
         return query_source_payload_bytes(cp_reader, file_id)
+
+    @classmethod
+    def export_source_payload_to_file(
+        cls,
+        profile: PFETLProfile,
+        file_id: str,
+        *,
+        target_path: Path | None = None,
+        chunk_size: int = 262_144,
+    ) -> tuple[SourcePayloadResult, Path | None]:
+        """Stream retained `cp_file_payloads` BLOB to disk via `blobopen` without full RAM load."""
+        cp_reader = ControlPlaneReader(profile)
+        if not cp_reader.is_available():
+            return (
+                SourcePayloadResult(
+                    file_id=file_id,
+                    available=False,
+                    diagnostics=("Control Plane SQLite database is unavailable.",),
+                ),
+                None,
+            )
+        return stream_source_payload_to_file(
+            cp_reader, file_id, target_path=target_path, chunk_size=chunk_size
+        )
