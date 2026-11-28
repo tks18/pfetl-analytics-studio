@@ -2,6 +2,21 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.0.5](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.4...1.0.5) (2026-11-28)
+
+
+### Docs 📃
+
+* add final patch plan ([f707325](https://github.com/tks18/pfetl-analytics-studio/commit/f707325506770128ddbac4e90299abac8b0d9694))
+* add social preview image ([f23d2bb](https://github.com/tks18/pfetl-analytics-studio/commit/f23d2bbe274650701f416894517246f483c41f0e))
+* remove plan docs as everything's over ([7a194bb](https://github.com/tks18/pfetl-analytics-studio/commit/7a194bb0fa6ca5a838728d7e49b9c04a63054321))
+* update readme to showcase latest changes ([647bd72](https://github.com/tks18/pfetl-analytics-studio/commit/647bd72870982fb32b3299310eb8b8f6697f9421))
+
+
+### Bug Fixes 🛠
+
+* **pages/operations:** fix the async loop, also use streaming downloads ([ef7cf80](https://github.com/tks18/pfetl-analytics-studio/commit/ef7cf802c9b465477ac0e98b344b147497227948))
+
 ### [1.0.4](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.3...1.0.4) (2026-11-28)
 
 
