@@ -24,7 +24,7 @@ _DOWNLOAD_ROUTE_PREFIX = "/_studio/download"
 _TOKEN_TTL_SECONDS = 300.0
 _LOCK = threading.Lock()
 _TOKENS: dict[str, tuple[Path, str, str, float]] = {}
-_ROUTE_REGISTERED = False
+_ROUTE_STATE: dict[str, bool] = {"registered": False}
 
 
 def _prune_expired_locked(now: float) -> None:
@@ -35,9 +35,8 @@ def _prune_expired_locked(now: float) -> None:
 
 def ensure_download_route_registered() -> None:
     """Register the shared `/_studio/download/{token}/{filename}` route idempotently."""
-    global _ROUTE_REGISTERED  # noqa: PLW0603
     with _LOCK:
-        if _ROUTE_REGISTERED:
+        if _ROUTE_STATE["registered"]:
             return
 
         @app.get(f"{_DOWNLOAD_ROUTE_PREFIX}/{{token}}/{{filename}}", include_in_schema=False)
@@ -58,7 +57,7 @@ def ensure_download_route_registered() -> None:
                 headers={"Cache-Control": "no-store"},
             )
 
-        _ROUTE_REGISTERED = True
+        _ROUTE_STATE["registered"] = True
 
 
 def trigger_file_download(

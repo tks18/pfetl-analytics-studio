@@ -10,8 +10,7 @@ from typing import Any
 
 from nicegui import run, ui
 
-from pfetl_analytics_studio.analytics import OperationsAnalytics
-from pfetl_analytics_studio.analytics.operations_models import RunHistoryFilter
+from pfetl_analytics_studio.analytics import OperationsAnalytics, RunHistoryFilter
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
 from pfetl_analytics_studio.data import QueryCache, create_temp_export_path
 from pfetl_analytics_studio.pages.report_editor_ui import (
@@ -44,8 +43,6 @@ from pfetl_analytics_studio.reports import (
     sanitize_filename,
 )
 from pfetl_analytics_studio.semantic import (
-    ComparisonMode,
-    PeriodPreset,
     PeriodRequest,
     preset_display_name,
 )
@@ -641,13 +638,6 @@ def _temp_export_path(filename: str) -> Path:
     return create_temp_export_path(filename)
 
 
-_PERIOD_MODE_OPTIONS: dict[str, str] = {
-    "default": "Template Default Period",
-    "global": "Use Global Period & Filters",
-    "custom": "Custom Period & Comparison",
-}
-
-
 def _load_reports_initial_state(
     context: AppContext, state_db_path: Path | None
 ) -> tuple[list[SavedReportRecord], list[SavedViewDefinition], list[ReportRunRecord]]:
@@ -693,44 +683,24 @@ def _load_available_run_options(
 
 
 def _build_preview_overrides(
-    sel_mode: str,
+    active_req: PeriodRequest | None,
     sel_run_key: str,
     latest_success_id: str | None,
     context: AppContext,
-    custom_period_req: PeriodRequest | None = None,
 ) -> ReportContextOverrides | None:
-    """Build `ReportContextOverrides` combining selected period/comparison mode and PFETL run."""
-    period_req: PeriodRequest | None = None
-    filters = None
-    if sel_mode == "global":
-        period_req = context.period_request
-        filters = context.filters
-    elif sel_mode == "custom" and custom_period_req is not None:
-        period_req = custom_period_req
-        filters = context.filters
-    elif sel_mode not in ("default", "global", "custom"):
-        period_req = PeriodRequest(
-            preset=PeriodPreset(sel_mode),
-            comparison_mode=(
-                custom_period_req.comparison_mode
-                if custom_period_req is not None
-                else ComparisonMode.NONE
-            ),
-        )
-        filters = context.filters
-
+    """Build `ReportContextOverrides` combining active `PeriodRequest` and PFETL run."""
     run_id_override: str | None = None
     if sel_run_key == "latest_success":
         run_id_override = latest_success_id
     elif sel_run_key != "active":
         run_id_override = sel_run_key
 
-    if period_req is None and filters is None and run_id_override is None:
+    if active_req is None and not context.filters.filters and run_id_override is None:
         return None
     return ReportContextOverrides(
         pfetl_run_id=run_id_override,
-        period_request=period_req,
-        filters=filters,
+        period_request=active_req,
+        filters=context.filters,
     )
 
 
@@ -838,9 +808,8 @@ def render_reports_page(  # pylint: disable=too-many-statements
         refresh_gallery_ref: dict[str, Callable[[], Any] | None] = {"fn": None}
 
         period_override_state: dict[str, Any] = {
-            "preset": "default",
             "run_key": "active",
-            "custom_req": context.period_request or PeriodRequest(),
+            "period_req": context.period_request or selected_def["current"].default_period,
         }
         prior_context_by_def: dict[str, ReportContext] = {}
         provenance_changes_state: dict[str, tuple[ProvenanceChange, ...]] = {"items": ()}
@@ -963,13 +932,15 @@ def render_reports_page(  # pylint: disable=too-many-statements
         async def _run_preview(defn: ReportDefinition) -> None:
             selected_def["current"] = defn
             error_state["error"] = None
+            req_val = period_override_state["period_req"]
+            active_req = req_val if isinstance(req_val, PeriodRequest) else None
             overrides = _build_preview_overrides(
-                str(period_override_state["preset"]),
+                active_req,
                 str(period_override_state["run_key"]),
                 run_options_state["latest_success"],
                 context,
-                custom_period_req=period_override_state["custom_req"],
             )
+            _set_exporting(True, f"Rendering {defn.name} preview…")
             try:
                 result = await run.io_bound(
                     service.render,
@@ -997,17 +968,17 @@ def render_reports_page(  # pylint: disable=too-many-statements
                     refresh_fn()
             except Exception as exc:  # noqa: BLE001
                 error_state["error"] = str(exc)
+            finally:
+                _set_exporting(False)
+            _configure_period_row.refresh()
             _preview_container.refresh()
             _history_container.refresh()
 
         @ui.refreshable
-        def _custom_period_row() -> None:
-            if period_override_state["preset"] != "custom":
-                return
-
-            def _on_custom_req_change(new_req: PeriodRequest) -> None:
-                period_override_state["custom_req"] = new_req
-                _custom_period_row.refresh()
+        def _configure_period_row() -> None:
+            def _on_req_change(new_req: PeriodRequest) -> None:
+                period_override_state["period_req"] = new_req
+                _configure_period_row.refresh()
                 if rendered_state["result"] is not None:
                     try:
                         asyncio.get_running_loop().create_task(
@@ -1016,21 +987,37 @@ def render_reports_page(  # pylint: disable=too-many-statements
                     except RuntimeError:
                         pass
 
-            cur_res = rendered_state["result"]
-            req_val = period_override_state["custom_req"]
-            custom_req = req_val if isinstance(req_val, PeriodRequest) else PeriodRequest()
-            period_selector(
-                current_request=custom_req,
-                on_request_change=_on_custom_req_change,
-                period_options=context.period_options,
-                period_context=cur_res.context.period if cur_res is not None else None,
-            )
+            def _sync_global() -> None:
+                _on_req_change(context.period_request or PeriodRequest())
 
-        async def _on_period_change(new_preset: str) -> None:
-            period_override_state["preset"] = new_preset
-            _custom_period_row.refresh()
-            if rendered_state["result"] is not None:
-                await _run_preview(selected_def["current"])
+            def _reset_template_default() -> None:
+                _on_req_change(selected_def["current"].default_period)
+
+            cur_res = rendered_state["result"]
+            req_val = period_override_state["period_req"]
+            active_req = req_val if isinstance(req_val, PeriodRequest) else PeriodRequest()
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+                period_selector(
+                    current_request=active_req,
+                    on_request_change=_on_req_change,
+                    period_options=context.period_options,
+                    period_context=cur_res.context.period if cur_res is not None else None,
+                )
+                with ui.row().classes("items-center gap-1.5"):
+                    ui.button(
+                        "Sync Global",
+                        icon="public",
+                        on_click=_sync_global,
+                    ).props("flat dense size=sm").tooltip(
+                        "Apply the global top-bar period & comparison selection"
+                    )
+                    ui.button(
+                        "Template Default",
+                        icon="restart_alt",
+                        on_click=_reset_template_default,
+                    ).props("flat dense size=sm").tooltip(
+                        "Reset to the selected report template's default period"
+                    )
 
         async def _on_run_change(new_run_key: str) -> None:
             period_override_state["run_key"] = new_run_key
@@ -1169,16 +1156,12 @@ def render_reports_page(  # pylint: disable=too-many-statements
 
         with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
-                ui.label("Deterministic Preview & Export").classes("text-base font-semibold").style(
-                    f"color: {StudioColor.TEXT}"
-                )
+                with ui.row().classes("items-center gap-2"):
+                    status_badge("Configure · Preview · Export", tone=BadgeTone.INFO, outline=True)
+                    ui.label("Deterministic Preview & Export").classes(
+                        "text-base font-semibold"
+                    ).style(f"color: {StudioColor.TEXT}")
                 with ui.row().classes("items-center gap-2 flex-wrap"):
-                    ui.select(
-                        options=_PERIOD_MODE_OPTIONS,
-                        value=period_override_state["preset"],
-                        label="Report Period",
-                        on_change=lambda e: _on_period_change(str(e.value or "default")),
-                    ).props("dense outlined").classes("w-56")
                     run_sel = (
                         ui.select(
                             options=run_options_state["options"],
@@ -1222,7 +1205,7 @@ def render_reports_page(  # pylint: disable=too-many-statements
                         on_click=lambda _e: _export_report("xlsx"),
                     ).props("outline dense")
                     export_buttons.extend([pdf_btn, pptx_btn, xlsx_btn])
-            _custom_period_row()
+            _configure_period_row()
             _export_status_strip()
             _preview_container()
 

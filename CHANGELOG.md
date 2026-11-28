@@ -2,6 +2,18 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.0.2](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.1...1.0.2) (2026-11-28)
+
+
+### Features 🔥
+
+* **ux:** improve Reports consistency and Operations/Explorer hierarchy ([dcb7a23](https://github.com/tks18/pfetl-analytics-studio/commit/dcb7a23083ca1b1715c354253f9a92be18932c2d))
+
+
+### Tests 🧪
+
+* **studio:** add domain invariants, export matrix, and smoke tests ([b64e2be](https://github.com/tks18/pfetl-analytics-studio/commit/b64e2be39f1fecebafa7fef417a68d604e78b3ff))
+
 ### [1.0.1](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.0...1.0.1) (2026-11-28)
 
 
