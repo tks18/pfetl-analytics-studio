@@ -19,6 +19,8 @@ import os
 import socket
 import sys
 import tempfile
+import urllib.error
+import urllib.request
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
@@ -26,10 +28,12 @@ from typing import Any, cast
 
 from nicegui import app as nicegui_app
 from nicegui import ui
+from platformdirs import user_data_dir
 
 from pfetl_analytics_studio import __version__
 from pfetl_analytics_studio.app import create_app
 from pfetl_analytics_studio.profile import PFETLProfile
+from pfetl_analytics_studio.resources import resolve_resource_path
 from pfetl_analytics_studio.state import StudioStateStore
 
 ALLOWED_LOOPBACKS = {"127.0.0.1", "localhost", "::1"}
@@ -187,8 +191,42 @@ def _is_pid_running(pid: int) -> bool:
     return True
 
 
+def studio_log_dir() -> Path:
+    """Return the per-user Studio logs directory (`<user_data_dir>/logs`)."""
+    log_dir = Path(user_data_dir("pfetl-analytics-studio")) / "logs"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    return log_dir
+
+
+def append_startup_log(message: str, *, log_file: Path | None = None) -> Path:
+    """Append one timestamped operational line to `studio_startup.log`."""
+    target = log_file or (studio_log_dir() / "studio_startup.log")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(UTC).isoformat()
+    with target.open("a", encoding="utf-8") as handle:
+        handle.write(f"[{stamp}] {message}\n")
+    return target
+
+
+def probe_healthz(host: str, port: int, *, timeout: float = 0.75) -> dict[str, Any] | None:
+    """Query `GET http://<host>:<port>/healthz` and return parsed JSON if valid."""
+    formatted_host = f"[{host}]" if ":" in host and not host.startswith("[") else host
+    url = f"http://{formatted_host}:{port}/healthz"
+    req = urllib.request.Request(url, method="GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            if getattr(resp, "status", 0) != 200:
+                return None
+            payload = json.loads(resp.read().decode("utf-8"))
+    except (OSError, urllib.error.URLError, ValueError):
+        return None
+    if not isinstance(payload, dict):
+        return None
+    return cast("dict[str, Any]", payload)
+
+
 def is_runtime_metadata_live(metadata: dict[str, Any]) -> bool:
-    """Return True if the runtime metadata's PID is running and its loopback port responds."""
+    """Return True if runtime PID is alive and `/healthz` reports Studio ready."""
     raw_pid = metadata.get("pid")
     raw_port = metadata.get("port")
     host = str(metadata.get("host") or "127.0.0.1")
@@ -196,11 +234,10 @@ def is_runtime_metadata_live(metadata: dict[str, Any]) -> bool:
         return False
     if not _is_pid_running(raw_pid):
         return False
-    try:
-        with socket.create_connection((host, raw_port), timeout=0.5):
-            return True
-    except OSError:
+    payload = probe_healthz(host, raw_port, timeout=0.75)
+    if payload is None:
         return False
+    return payload.get("app") == "pfetl-analytics-studio" and payload.get("status") == "ready"
 
 
 def remove_runtime_metadata(path: Path) -> None:
@@ -238,9 +275,14 @@ def run_server(config: StudioServerConfig) -> int:
     try:
         profile, resolved_port = validate_startup_preflight(config)
     except Exception as exc:  # noqa: BLE001
+        append_startup_log(f"server preflight failed: {exc}")
         print(f"Error: {exc}", file=sys.stderr)
         return 1
 
+    append_startup_log(
+        f"server starting host={config.host} port={resolved_port} pid={os.getpid()} "
+        f"profile={profile.profile_id if profile else 'none'}"
+    )
     if profile is not None:
         try:
             with StudioStateStore() as store:
@@ -254,11 +296,13 @@ def run_server(config: StudioServerConfig) -> int:
         write_runtime_metadata(rt_path, pid=os.getpid(), host=config.host, port=resolved_port)
         atexit.register(remove_runtime_metadata, rt_path)
 
+    icon_path = resolve_resource_path("logo.ico") or resolve_resource_path("logo.png")
     create_app(profile=profile)
     ui.run(  # pyright: ignore[reportUnknownMemberType]
         host=config.host,
         port=resolved_port,
         title="PFETL Analytics Studio",
+        favicon=str(icon_path) if icon_path is not None else "📊",
         show=config.open_browser,
         reload=config.reload,
     )
