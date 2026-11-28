@@ -20,7 +20,7 @@ from typing import Any, cast
 from pptx import Presentation
 from pptx.chart.data import CategoryChartData
 from pptx.dml.color import RGBColor
-from pptx.enum.chart import XL_CHART_TYPE, XL_LEGEND_POSITION
+from pptx.enum.chart import XL_CHART_TYPE, XL_LABEL_POSITION, XL_LEGEND_POSITION
 from pptx.enum.shapes import MSO_SHAPE
 from pptx.enum.text import PP_ALIGN
 from pptx.util import Inches, Pt
@@ -143,6 +143,42 @@ def _style_pptx_table(
             p.alignment = PP_ALIGN.RIGHT if c_idx in numeric_cols else PP_ALIGN.LEFT
 
 
+def _fmt_pptx_category(raw: Any) -> str:
+    """Format ISO date strings into compact `Mon YYYY` category labels."""
+    text = str(raw)
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        from datetime import date as dt_date  # noqa: PLC0415
+
+        try:
+            return dt_date.fromisoformat(text[:10]).strftime("%b %Y")
+        except ValueError:
+            return text
+    return text
+
+
+def _infer_pptx_number_format(
+    layout: dict[str, Any],
+    traces: list[dict[str, Any]],
+    all_values: list[float],
+) -> str:
+    """Infer a clean Excel/PowerPoint number format from Plotly axis metadata and values."""
+    yaxis: dict[str, Any] = dict(layout.get("yaxis") or {})
+    ticksuffix = str(yaxis.get("ticksuffix") or "")
+    ticktext = [str(t) for t in (yaxis.get("ticktext") or ())]
+    trace_names = " ".join(str(t.get("name") or "").lower() for t in traces)
+    max_abs = max((abs(v) for v in all_values), default=0.0)
+
+    if "%" in ticksuffix or any("%" in t for t in ticktext) or "%" in trace_names:
+        return "0.0%" if max_abs <= 1.5 else '0.0"%"'
+    if (
+        "₹" in str(yaxis.get("tickprefix") or "")
+        or any("₹" in t for t in ticktext)
+        or max_abs >= 1000
+    ):
+        return '[>=10000000]₹#,##0.0,," Cr";[>=100000]₹#,##0.0," L";₹#,##0'
+    return "#,##0.##"
+
+
 def _try_add_native_chart(slide: Any, block: RenderedChartBlock) -> bool:
     """Add a native editable PowerPoint chart for simple single-axis bar/line traces."""
     fig = block.figure_dict
@@ -163,18 +199,23 @@ def _try_add_native_chart(slide: Any, block: RenderedChartBlock) -> bool:
     first_x: list[Any] = list(traces[0].get("x") or [])
     if not first_x:
         return False
-    categories = [str(x) for x in first_x]
+    categories = [_fmt_pptx_category(x) for x in first_x]
 
     data_ctor: Any = CategoryChartData
     chart_data: Any = data_ctor()
     chart_data.categories = categories
+    all_values: list[float] = []
+    series_vals_list: list[list[float]] = []
     for idx, t in enumerate(traces):
         y_raw: list[Any] = list(t.get("y") or [])
         y_vals = [float(v) if isinstance(v, (int, float)) else 0.0 for v in y_raw]
         if len(y_vals) != len(categories):
             return False
+        all_values.extend(y_vals)
+        series_vals_list.append(y_vals)
         chart_data.add_series(str(t.get("name") or f"Series {idx + 1}"), y_vals)
 
+    num_fmt = _infer_pptx_number_format(layout, traces, all_values)
     is_horizontal = any(str(t.get("orientation") or "").lower() == "h" for t in traces)
     if is_horizontal:
         xl_type = XL_CHART_TYPE.BAR_CLUSTERED
@@ -197,11 +238,31 @@ def _try_add_native_chart(slide: Any, block: RenderedChartBlock) -> bool:
         chart.legend.font.size = Pt(10)
     chart.category_axis.tick_labels.font.size = Pt(9)
     chart.value_axis.tick_labels.font.size = Pt(9)
+    chart.value_axis.tick_labels.number_format = num_fmt
+
     plot = chart.plots[0]
-    plot.has_data_labels = len(categories) <= 16
-    if plot.has_data_labels:
-        plot.data_labels.show_value = True
-        plot.data_labels.font.size = Pt(8.5)
+    n_cats = len(categories)
+    show_labels = n_cats <= 16 and len(traces) <= 2
+    plot.has_data_labels = show_labels
+    if show_labels:
+        dl = plot.data_labels
+        dl.show_value = True
+        dl.number_format = num_fmt
+        dl.font.size = Pt(8.5)
+        if "bar" in trace_types:
+            dl.position = XL_LABEL_POSITION.OUTSIDE_END
+        else:
+            dl.position = XL_LABEL_POSITION.ABOVE
+        if n_cats > 7:
+            for s_idx, series in enumerate(plot.series):
+                vals = series_vals_list[s_idx]
+                min_i = min(range(n_cats), key=vals.__getitem__)
+                max_i = max(range(n_cats), key=vals.__getitem__)
+                keep = {0, n_cats - 1, min_i, max_i}
+                for p_idx, point in enumerate(series.points):
+                    if p_idx not in keep:
+                        point.data_label.has_text_frame = True
+                        point.data_label.text_frame.text = ""
     return True
 
 

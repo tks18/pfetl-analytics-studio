@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.0.3](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.2...1.0.3) (2026-11-28)
+
+
+### Bug Fixes 🛠
+
+* **reports:** format and thin chart labels across PPTX, PDF, PNG, SVG ([25e2449](https://github.com/tks18/pfetl-analytics-studio/commit/25e2449bc56bec4d2b0d7d673e24b4dad2edb854))
+
+
+### Features 🔥
+
+* **server:** add config, port resolution, /healthz, and preflight ([e9f3f81](https://github.com/tks18/pfetl-analytics-studio/commit/e9f3f8110ab5c6f503388659f5dbfb860205b891))
+
+
+### Tests 🧪
+
+* **server:** add server lifecycle, /healthz, and export label tests ([b8eaecf](https://github.com/tks18/pfetl-analytics-studio/commit/b8eaecf7efaee1e62a80de4907c0425e09e1abc8))
+
 ### [1.0.2](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.1...1.0.2) (2026-11-28)
 
 

@@ -38,6 +38,7 @@ from pfetl_analytics_studio.reports import (
     ReportExporter,
     ReportResult,
     ReportService,
+    check_static_export_capability,
     clone_definition_as_draft,
     compare_report_provenance,
     sanitize_filename,
@@ -1155,12 +1156,19 @@ def render_reports_page(  # pylint: disable=too-many-statements
         _editor_container()
 
         with ui.card().classes("studio-card w-full p-4 rounded-xl gap-3"):
+            static_ok, static_msg = check_static_export_capability()
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
                 with ui.row().classes("items-center gap-2"):
                     status_badge("Configure · Preview · Export", tone=BadgeTone.INFO, outline=True)
                     ui.label("Deterministic Preview & Export").classes(
                         "text-base font-semibold"
                     ).style(f"color: {StudioColor.TEXT}")
+                    if not static_ok:
+                        status_badge(
+                            "Static Chart Engine Unavailable",
+                            tone=BadgeTone.WARNING,
+                            outline=True,
+                        ).tooltip(static_msg)
                 with ui.row().classes("items-center gap-2 flex-wrap"):
                     run_sel = (
                         ui.select(
