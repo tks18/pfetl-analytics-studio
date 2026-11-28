@@ -3,66 +3,26 @@
 from __future__ import annotations
 
 import argparse
-import ipaddress
-import os
 import sys
-
-from nicegui import ui
+from pathlib import Path
 
 from pfetl_analytics_studio import __version__
-from pfetl_analytics_studio.app import create_app
-from pfetl_analytics_studio.profile import PFETLProfile
-from pfetl_analytics_studio.state import StudioStateStore
+from pfetl_analytics_studio.server import (
+    ALLOWED_LOOPBACKS,
+    StudioServerConfig,
+    run_server,
+    validate_loopback_host,
+)
 
-ALLOWED_LOOPBACKS = {"127.0.0.1", "localhost", "::1"}
-
-
-def validate_loopback_host(host: str) -> None:
-    """Validate that host is bound to local loopback interface.
-
-    Parameters
-    ----------
-    host : str
-        Host IP address or hostname.
-
-    Raises
-    ------
-    ValueError
-        If host is not a loopback address and remote binding is not explicitly allowed.
-    """
-    if os.environ.get("PFETL_STUDIO_DEV_ALLOW_REMOTE", "").lower() in ("1", "true", "yes"):
-        return
-
-    clean_host = host.strip().lower()
-    if clean_host in ALLOWED_LOOPBACKS:
-        return
-
-    try:
-        ip = ipaddress.ip_address(clean_host)
-        if ip.is_loopback:
-            return
-    except ValueError:
-        pass
-
-    raise ValueError(
-        f"Security violation: PFETL Analytics Studio must bind to a loopback address "
-        f"(got '{host}'). Set PFETL_STUDIO_DEV_ALLOW_REMOTE=1 only for explicit dev testing."
-    )
+__all__ = [
+    "ALLOWED_LOOPBACKS",
+    "main",
+    "validate_loopback_host",
+]
 
 
 def main(args: list[str] | None = None) -> int:
-    """Launch PFETL Analytics Studio NiceGUI server.
-
-    Parameters
-    ----------
-    args : list[str] | None, optional
-        Command line arguments, by default None (sys.argv[1:]).
-
-    Returns
-    -------
-    int
-        Exit return code.
-    """
+    """Parse CLI arguments and delegate launch to `run_server()`."""
     parser = argparse.ArgumentParser(
         prog="pfetl-studio",
         description="PFETL Analytics Studio — Local-First Analytical Console",
@@ -76,7 +36,12 @@ def main(args: list[str] | None = None) -> int:
         "--port",
         type=int,
         default=8080,
-        help="Port to listen on (default: 8080)",
+        help="Port to listen on (default: 8080; pass 0 with --auto-port for automatic)",
+    )
+    parser.add_argument(
+        "--auto-port",
+        action="store_true",
+        help="Prefer 8080 and automatically fall back to a free loopback port if occupied",
     )
     parser.add_argument(
         "--settings",
@@ -101,6 +66,12 @@ def main(args: list[str] | None = None) -> int:
         help="Enable auto-reload on code change (development only)",
     )
     parser.add_argument(
+        "--runtime-file",
+        type=str,
+        default=None,
+        help="Optional atomic JSON runtime metadata output path for process orchestration",
+    )
+    parser.add_argument(
         "--version",
         "-v",
         action="version",
@@ -108,45 +79,17 @@ def main(args: list[str] | None = None) -> int:
     )
 
     parsed = parser.parse_args(args)
-
-    try:
-        validate_loopback_host(parsed.host)
-    except ValueError as exc:
-        print(f"Error: {exc}", file=sys.stderr)
-        return 1
-
-    profile: PFETLProfile | None = None
-    if parsed.settings or parsed.rules:
-        if not parsed.settings or not parsed.rules:
-            print(
-                "Error: Both --settings and --rules must be supplied together to load a profile.",
-                file=sys.stderr,
-            )
-            return 1
-
-        result = PFETLProfile.load(parsed.settings, parsed.rules)
-        if not result.is_ok or result.profile is None:
-            err_msg = result.error.message if result.error else "Unknown profile load error"
-            print(f"Error loading profile: {err_msg}", file=sys.stderr)
-            return 1
-
-        profile = result.profile
-        try:
-            with StudioStateStore() as store:
-                store.record_profile_opened(profile)
-        except OSError as exc:
-            print(f"Warning: Failed to record recent profile: {exc}", file=sys.stderr)
-
-    create_app(profile=profile)
-
-    ui.run(  # pyright: ignore[reportUnknownMemberType]
-        host=parsed.host,
-        port=parsed.port,
-        title="PFETL Analytics Studio",
-        show=not parsed.no_browser,
-        reload=parsed.reload,
+    req_port: int | None = None if (parsed.auto_port or parsed.port == 0) else int(parsed.port)
+    config = StudioServerConfig(
+        host=str(parsed.host),
+        port=req_port,
+        settings_path=Path(parsed.settings) if parsed.settings else None,
+        rules_path=Path(parsed.rules) if parsed.rules else None,
+        open_browser=not parsed.no_browser,
+        reload=bool(parsed.reload),
+        runtime_file=Path(parsed.runtime_file) if parsed.runtime_file else None,
     )
-    return 0
+    return run_server(config)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
