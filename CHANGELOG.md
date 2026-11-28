@@ -2,6 +2,34 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+### [1.0.4](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.3...1.0.4) (2026-11-28)
+
+
+### Docs 📃
+
+* add final hardening doc ([553e136](https://github.com/tks18/pfetl-analytics-studio/commit/553e1363b19cb1ee40288ab101d643821d8c7e40))
+
+
+### Others 🔧
+
+* add logos from pfetl core ([526ab4c](https://github.com/tks18/pfetl-analytics-studio/commit/526ab4c884de3b6e6eabfb5c09ff0c520826f50b))
+* **build:** relocate assets and add PyInstaller spec and version info ([b223d7e](https://github.com/tks18/pfetl-analytics-studio/commit/b223d7ee7da1ccb483a6f7f1a4b29e8a88c8a273))
+
+
+### Performance Improvements 🏎
+
+* **data:** stream DuckDB and control plane queries ([2cf4401](https://github.com/tks18/pfetl-analytics-studio/commit/2cf4401dd84be40641aece7f34d262d1cc607063))
+
+
+### Features 🔥
+
+* **desktop:** add system tray runtime and brand logo header link ([818525b](https://github.com/tks18/pfetl-analytics-studio/commit/818525b3a318f10b740c909dc468873cbfa99b17))
+
+
+### Tests 🧪
+
+* **desktop:** add tray, streaming, and server lifecycle tests ([d86fd91](https://github.com/tks18/pfetl-analytics-studio/commit/d86fd91169a14df10c4aa036c7a9a3c8afa4f059))
+
 ### [1.0.3](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.2...1.0.3) (2026-11-28)
 
 
