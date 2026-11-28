@@ -109,12 +109,9 @@ def _open_asset_detail_dialog(context: AppContext, asset: WealthAssetRow) -> Non
     """Open modal drawer displaying Silver asset metadata, opening anchor, and monthly history."""
     if context.profile is None:
         return
-    history = WealthAnalytics.asset_history(
-        context.profile,
-        asset.asset_id,
-        context.period_context,
-        catalog_snapshot=context.catalog_snapshot,
-    )
+    profile = context.profile
+    period_ctx = context.period_context
+    catalog_snap = context.catalog_snapshot
     cid = asset.currency_id
     dialog = ui.dialog()
     with dialog, ui.card().classes("studio-card w-[760px] max-w-full p-6 rounded-xl gap-4"):
@@ -169,31 +166,74 @@ def _open_asset_detail_dialog(context: AppContext, asset: WealthAssetRow) -> Non
                 f"as of {asset.opening_anchor_date.isoformat() if asset.opening_anchor_date else '—'}"
             ).classes("text-xs font-mono").style(f"color: {StudioColor.MUTED}")
 
-        if history:
-            h_cols = [
-                TableColumn(name="month", label="Month End", field="month", align="left"),
-                TableColumn(name="open", label="Opening", field="open", align="right"),
-                TableColumn(name="book", label="Closing Book", field="book", align="right"),
-                TableColumn(name="mkt", label="Closing Market", field="mkt", align="right"),
-                TableColumn(name="ncf", label="Net Cashflow", field="ncf", align="right"),
-                TableColumn(name="dd", label="Drawdown", field="dd", align="right"),
-            ]
-            h_rows = [
-                {
-                    "month": h.month_end.isoformat(),
-                    "open": format_currency(h.opening_balance, cid),
-                    "book": format_currency(h.closing_balance, cid),
-                    "mkt": format_currency(h.closing_balance_market, cid)
-                    if h.closing_balance_market is not None
-                    else "—",
-                    "ncf": format_currency(h.net_cashflow_month, cid, signed=True),
-                    "dd": format_percent(h.drawdown_from_peak, decimals=1)
-                    if h.drawdown_from_peak is not None
-                    else "—",
-                }
-                for h in reversed(history)
-            ]
-            bounded_data_table(h_cols, h_rows, row_key="month", pagination=12)
+        history_box = ui.column().classes("w-full gap-2")
+
+        def _render_history(history: Sequence[Any]) -> None:
+            history_box.clear()
+            with history_box:
+                if history:
+                    h_cols = [
+                        TableColumn(name="month", label="Month End", field="month", align="left"),
+                        TableColumn(name="open", label="Opening", field="open", align="right"),
+                        TableColumn(name="book", label="Closing Book", field="book", align="right"),
+                        TableColumn(name="mkt", label="Closing Market", field="mkt", align="right"),
+                        TableColumn(name="ncf", label="Net Cashflow", field="ncf", align="right"),
+                        TableColumn(name="dd", label="Drawdown", field="dd", align="right"),
+                    ]
+                    h_rows = [
+                        {
+                            "month": h.month_end.isoformat(),
+                            "open": format_currency(h.opening_balance, cid),
+                            "book": format_currency(h.closing_balance, cid),
+                            "mkt": format_currency(h.closing_balance_market, cid)
+                            if h.closing_balance_market is not None
+                            else "—",
+                            "ncf": format_currency(h.net_cashflow_month, cid, signed=True),
+                            "dd": format_percent(h.drawdown_from_peak, decimals=1)
+                            if h.drawdown_from_peak is not None
+                            else "—",
+                        }
+                        for h in reversed(history)
+                    ]
+                    bounded_data_table(h_cols, h_rows, row_key="month", pagination=12)
+
+        def _fetch_sync() -> Sequence[Any]:
+            return WealthAnalytics.asset_history(
+                profile,
+                asset.asset_id,
+                period_ctx,
+                catalog_snapshot=catalog_snap,
+            )
+
+        try:
+            asyncio.get_running_loop()
+            has_loop = True
+        except RuntimeError:
+            has_loop = False
+
+        if not has_loop:
+            _render_history(_fetch_sync())
+        else:
+            with history_box:
+                with ui.row().classes("w-full items-center gap-2 py-2"):
+                    ui.spinner(size="sm")
+                    ui.label("Loading asset history...").classes("text-xs").style(
+                        f"color: {StudioColor.MUTED}"
+                    )
+
+            async def _load_history() -> None:
+                try:
+                    history = await run.io_bound(_fetch_sync)
+                except Exception as exc:  # noqa: BLE001
+                    history_box.clear()
+                    with history_box:
+                        ui.label(f"Unable to load asset history: {exc}").classes(
+                            "text-xs text-red-400"
+                        )
+                    return
+                _render_history(history)
+
+            asyncio.ensure_future(_load_history())
     dialog.open()
 
 

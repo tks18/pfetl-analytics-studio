@@ -141,6 +141,26 @@ class DuckDBSession:
             self._reader.translate_query_error(exc)
             raise
 
+    def iter_dict_chunks(
+        self,
+        sql: str,
+        params: Sequence[Any] | dict[str, Any] = (),
+        *,
+        chunk_size: int = 2000,
+    ) -> Generator[list[dict[str, Any]]]:
+        """Execute a read-only query on the open session and yield dict chunks via fetchmany()."""
+        try:
+            rel = self._conn.execute(sql, params)
+            columns = [desc[0] for desc in rel.description or []]
+            while True:
+                chunk = rel.fetchmany(chunk_size)
+                if not chunk:
+                    break
+                yield [dict(zip(columns, row, strict=True)) for row in chunk]
+        except duckdb.Error as exc:
+            self._reader.translate_query_error(exc)
+            raise
+
     def fetch_one(
         self,
         sql: str,

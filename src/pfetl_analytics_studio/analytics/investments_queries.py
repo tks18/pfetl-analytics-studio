@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """Read-only Gold & Silver SQL query helpers powering Investment Overview & Allocation.
 
 Owns
@@ -13,6 +14,7 @@ Does not own
 
 from __future__ import annotations
 
+from collections.abc import Generator
 from datetime import date
 from typing import Any
 
@@ -39,6 +41,7 @@ from pfetl_analytics_studio.analytics.overview_models import (
 )
 from pfetl_analytics_studio.analytics.overview_queries import table_exists, table_has_column
 from pfetl_analytics_studio.data import DuckDBQueryPort
+from pfetl_analytics_studio.data.duckdb_reader import DuckDBSession
 from pfetl_analytics_studio.semantic import (
     FilterField,
     FilterSet,
@@ -1243,15 +1246,12 @@ def query_lot_summary_and_kpis(
     return summary, kpis
 
 
-def query_lot_rows(
+def _build_lot_select_sql(
     duck_reader: DuckDBQueryPort,
     lot_filter: LotFilter,
     closing_date: date,
-    *,
-    limit: int = 25,
-    offset: int = 0,
-) -> tuple[int, tuple[LotSummaryRow, ...]]:
-    """Query paginated `silver.fact_investment_lot_analytics` summary rows."""
+) -> tuple[str, list[Any]]:
+    """Return `(select_without_limit_sql, params)` shared by paged and streaming lot queries."""
     where_sql, params = _build_lot_where_clause(lot_filter, closing_date)
     from_sql = _lot_from_clause(duck_reader)
     has_im = table_exists(duck_reader, "silver", "dim_instrument_master")
@@ -1261,15 +1261,7 @@ def query_lot_rows(
         "COALESCE(im.\"INSTRUMENT_CLASS\", 'Unclassified')" if has_im else "'Unclassified'"
     )
     bm_name_expr = "COALESCE(f.\"BENCHMARK_ID\", '—')"
-
-    cnt_row = duck_reader.fetch_one(
-        f"SELECT COUNT(*) AS cnt {from_sql} WHERE {where_sql};",
-        params,
-    )
-    total = int(cnt_row["cnt"]) if cnt_row and cnt_row.get("cnt") is not None else 0
-
-    rows = duck_reader.fetch_all(
-        f"""
+    sql = f"""
         SELECT
             f."Lot_ID" AS lot_id,
             f."Closing_Date" AS closing_date,
@@ -1298,42 +1290,78 @@ def query_lot_rows(
         {from_sql}
         WHERE {where_sql}
         ORDER BY COALESCE(f."Close_Value", 0.0) DESC, f."Buy_Date" ASC
-        LIMIT ? OFFSET ?;
-        """,
-        [*params, limit, offset],
+    """
+    return sql, params
+
+
+def _lot_row_from_dict(r: dict[str, Any], fallback_closing_date: date) -> LotSummaryRow:
+    """Parse one DuckDB lot row dict into `LotSummaryRow`."""
+    dt = as_date(r.get("closing_date")) or fallback_closing_date
+    return LotSummaryRow(
+        lot_id=str(r.get("lot_id") or ""),
+        closing_date=dt,
+        isin=str(r.get("isin") or ""),
+        instrument_name=str(r.get("inst_name") or ""),
+        instrument_class=str(r.get("inst_class") or "Unclassified"),
+        currency_id=str(r.get("currency_id") or "INR_INR"),
+        benchmark_name=str(r.get("bm_name") or "—"),
+        buy_date=as_date(r.get("buy_date")),
+        quantity=as_float(r.get("qty")) or 0.0,
+        buy_value=as_float(r.get("buy_val")) or 0.0,
+        close_value=as_float(r.get("close_val")) or 0.0,
+        unrealized_pl=as_float(r.get("pl")) or 0.0,
+        absolute_return=as_float(r.get("abs_ret")),
+        xirr=as_float(r.get("xirr")),
+        bm_xirr=as_float(r.get("bm_xirr")),
+        lot_alpha=as_float(r.get("lot_alpha")),
+        holding_type=str(r.get("holding_type") or "STCG"),
+        age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
+        days_to_ltcg=int(r["days_to_ltcg"]) if r.get("days_to_ltcg") is not None else None,
+        tax_if_sold=as_float(r.get("tax_if_sold")) or 0.0,
+        after_tax_pl=as_float(r.get("after_tax_pl")),
+        can_harvest_loss=bool(r.get("can_harvest")),
+        harvest_recommendation=str(r.get("harvest_rec") or "HOLD"),
+        is_lagging_benchmark=bool(int(r.get("is_lagging") or 0)),
     )
-    result: list[LotSummaryRow] = []
-    for r in rows:
-        dt = as_date(r.get("closing_date")) or closing_date
-        result.append(
-            LotSummaryRow(
-                lot_id=str(r.get("lot_id") or ""),
-                closing_date=dt,
-                isin=str(r.get("isin") or ""),
-                instrument_name=str(r.get("inst_name") or ""),
-                instrument_class=str(r.get("inst_class") or "Unclassified"),
-                currency_id=str(r.get("currency_id") or "INR_INR"),
-                benchmark_name=str(r.get("bm_name") or "—"),
-                buy_date=as_date(r.get("buy_date")),
-                quantity=as_float(r.get("qty")) or 0.0,
-                buy_value=as_float(r.get("buy_val")) or 0.0,
-                close_value=as_float(r.get("close_val")) or 0.0,
-                unrealized_pl=as_float(r.get("pl")) or 0.0,
-                absolute_return=as_float(r.get("abs_ret")),
-                xirr=as_float(r.get("xirr")),
-                bm_xirr=as_float(r.get("bm_xirr")),
-                lot_alpha=as_float(r.get("lot_alpha")),
-                holding_type=str(r.get("holding_type") or "STCG"),
-                age_days=int(r["age_days"]) if r.get("age_days") is not None else None,
-                days_to_ltcg=int(r["days_to_ltcg"]) if r.get("days_to_ltcg") is not None else None,
-                tax_if_sold=as_float(r.get("tax_if_sold")) or 0.0,
-                after_tax_pl=as_float(r.get("after_tax_pl")),
-                can_harvest_loss=bool(r.get("can_harvest")),
-                harvest_recommendation=str(r.get("harvest_rec") or "HOLD"),
-                is_lagging_benchmark=bool(int(r.get("is_lagging") or 0)),
-            )
-        )
-    return total, tuple(result)
+
+
+def stream_lot_rows(
+    duck_reader: DuckDBSession,
+    lot_filter: LotFilter,
+    closing_date: date,
+    *,
+    chunk_size: int = 2000,
+) -> Generator[list[LotSummaryRow]]:
+    """Stream all matching lot summary rows in bounded cursor chunks without LIMIT."""
+    select_sql, params = _build_lot_select_sql(duck_reader, lot_filter, closing_date)
+    for raw_chunk in duck_reader.iter_dict_chunks(f"{select_sql};", params, chunk_size=chunk_size):
+        yield [_lot_row_from_dict(r, closing_date) for r in raw_chunk]
+
+
+def query_lot_rows(
+    duck_reader: DuckDBQueryPort,
+    lot_filter: LotFilter,
+    closing_date: date,
+    *,
+    limit: int = 25,
+    offset: int = 0,
+) -> tuple[int, tuple[LotSummaryRow, ...]]:
+    """Query paginated `silver.fact_investment_lot_analytics` summary rows."""
+    where_sql, params = _build_lot_where_clause(lot_filter, closing_date)
+    from_sql = _lot_from_clause(duck_reader)
+
+    cnt_row = duck_reader.fetch_one(
+        f"SELECT COUNT(*) AS cnt {from_sql} WHERE {where_sql};",
+        params,
+    )
+    total = int(cnt_row["cnt"]) if cnt_row and cnt_row.get("cnt") is not None else 0
+
+    select_sql, select_params = _build_lot_select_sql(duck_reader, lot_filter, closing_date)
+    rows = duck_reader.fetch_all(
+        f"{select_sql} LIMIT ? OFFSET ?;",
+        [*select_params, limit, offset],
+    )
+    return total, tuple(_lot_row_from_dict(r, closing_date) for r in rows)
 
 
 _LOT_DETAIL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (

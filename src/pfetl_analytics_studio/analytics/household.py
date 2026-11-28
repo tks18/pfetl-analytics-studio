@@ -1,3 +1,4 @@
+# pylint: disable=too-many-lines
 """Household & Income analytics service backed strictly by Gold marts & Silver drill.
 
 Owns
@@ -12,8 +13,10 @@ Does not own
 
 from __future__ import annotations
 
+from collections.abc import Callable, Generator, Sequence
 from dataclasses import dataclass
 from datetime import date
+from pathlib import Path
 from typing import Any, Literal
 
 from pfetl_analytics_studio.analytics.household_budget_cashflow_queries import (
@@ -65,6 +68,7 @@ from pfetl_analytics_studio.analytics.household_transaction_queries import (
 from pfetl_analytics_studio.analytics.household_transaction_queries import (
     query_household_transaction_detail,
     query_household_transactions,
+    stream_household_transactions,
 )
 from pfetl_analytics_studio.analytics.overview import OverviewService
 from pfetl_analytics_studio.analytics.overview_models import (
@@ -89,6 +93,7 @@ from pfetl_analytics_studio.data import (
     WarehouseState,
     build_cache_key,
 )
+from pfetl_analytics_studio.data.exports import create_temp_export_path, write_rows_csv_file
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import FilterSet, MetricFormat, PeriodContext
 
@@ -1481,3 +1486,41 @@ class HouseholdAnalytics:
     def export_transactions_csv(page: HouseholdTransactionPage) -> str:
         """Export current paged HouseholdTransactionPage rows to RFC-4180 CSV."""
         return _export_transactions_csv(page)
+
+    @classmethod
+    def export_transactions_csv_file(
+        cls,
+        profile: PFETLProfile,
+        query: HouseholdTransactionQuery,
+        *,
+        columns: Sequence[str],
+        fields: Sequence[str],
+        row_formatter: Callable[[Sequence[Any]], Sequence[dict[str, Any]]],
+        target_path: Path | None = None,
+        catalog_snapshot: CatalogSnapshot | None = None,
+        chunk_size: int = 2000,
+    ) -> tuple[Path, int]:
+        """Stream all matching Silver transactions directly to a temporary CSV file."""
+        out_path = target_path or create_temp_export_path(
+            "household_transactions.csv", default_stem="household_transactions"
+        )
+        duck_reader = DuckDBReader(profile)
+        if duck_reader.get_state() != WarehouseState.AVAILABLE:
+            write_rows_csv_file(columns, [], out_path)
+            return out_path, 0
+
+        with duck_reader.session() as session_reader:
+            tok = use_catalog_snapshot(catalog_snapshot)
+            try:
+
+                def _iter_formatted() -> Generator[list[list[Any]]]:
+                    for chunk in stream_household_transactions(
+                        session_reader, query, chunk_size=chunk_size
+                    ):
+                        formatted = row_formatter(chunk)
+                        yield [[r.get(f, "") for f in fields] for r in formatted]
+
+                count = write_rows_csv_file(columns, _iter_formatted(), out_path)
+                return out_path, count
+            finally:
+                reset_catalog_snapshot(tok)

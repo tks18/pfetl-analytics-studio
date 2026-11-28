@@ -25,7 +25,6 @@ from pfetl_analytics_studio.analytics import (
     HouseholdTransactionRow,
 )
 from pfetl_analytics_studio.context import AppContext
-from pfetl_analytics_studio.data import create_temp_export_path, write_rows_csv_file
 from pfetl_analytics_studio.semantic import FilterField, FilterSet
 from pfetl_analytics_studio.ui import (
     BadgeTone,
@@ -112,30 +111,24 @@ async def _export_transactions_csv(
     context: AppContext,
     tx_query: HouseholdTransactionQuery,
     cols: Sequence[TableColumn],
-    total_count: int,
+    _total_count: int,
 ) -> None:
-    """Export all matching Silver transactions (unbounded) via temp CSV file."""
+    """Export all matching Silver transactions (unbounded) via chunked CSV streaming."""
     if context.profile is None:
         return
     profile = context.profile
+    headers = [c.label for c in cols]
+    fields = [c.field for c in cols]
 
     def _export_sync() -> tuple[Any, int]:
-        full_res = HouseholdAnalytics.household_transactions(
+        return HouseholdAnalytics.export_transactions_csv_file(
             profile,
             tx_query,
-            limit=max(total_count, 100_000),
-            offset=0,
+            columns=headers,
+            fields=fields,
+            row_formatter=_format_tx_rows,
             catalog_snapshot=context.catalog_snapshot,
         )
-        full_rows = _format_tx_rows(full_res.rows)
-        target_path = create_temp_export_path(
-            "household_transactions.csv", default_stem="household_transactions"
-        )
-        headers = [c.label for c in cols]
-        fields = [c.field for c in cols]
-        row_tuples = [[r.get(f, "") for f in fields] for r in full_rows]
-        count = write_rows_csv_file(headers, [row_tuples], target_path)
-        return target_path, count
 
     try:
         asyncio.get_running_loop()
@@ -158,92 +151,135 @@ def _open_tx_detail_dialog(
     """Open modal drawer displaying full Silver classification lineage & linked transfers."""
     if context.profile is None:
         return
-    detail = HouseholdAnalytics.household_transaction_detail(
-        context.profile,
-        tx_kind,
-        uid,
-        catalog_snapshot=context.catalog_snapshot,
-    )
-    if detail is None:
-        ui.notify("Transaction detail unavailable.", type="warning")
-        return
+    profile = context.profile
+    catalog_snap = context.catalog_snapshot
 
-    r = detail.row
     dialog = ui.dialog()
     with dialog, ui.card().classes("studio-card w-[760px] max-w-full p-6 rounded-xl gap-4"):
-        with ui.row().classes("w-full items-center justify-between"):
-            with ui.column().classes("gap-0"):
-                ui.label(f"{r.transaction_kind.title()} Transaction Detail").classes(
-                    "text-lg font-semibold"
-                )
-                ui.label(f"UID: {r.uid}").classes("text-xs font-mono").style(
-                    f"color: {StudioColor.MUTED}"
-                )
-            ui.button(icon="close", on_click=dialog.close).props("flat round dense color=white")
+        body = ui.column().classes("w-full gap-4")
 
-        with ui.row().classes("items-center gap-2 flex-wrap"):
-            status_badge(r.transaction_kind.upper(), tone=BadgeTone.INFO)
-            for fl in detail.flags:
-                status_badge(fl, tone=BadgeTone.SUCCESS if fl == "Core" else BadgeTone.NEUTRAL)
-
-        with ui.grid(columns=2).classes("md:grid-cols-4 w-full gap-3 text-xs"):
-            for lbl, val in (
-                ("Date / Time", f"{r.tx_date.isoformat()} {r.tx_time}".strip()),
-                ("Base Amount", format_currency(r.base_amount, r.currency_id, signed=True)),
-                (
-                    "Account Amount",
-                    format_currency(r.amount_account, r.currency_id, signed=True)
-                    if r.amount_account is not None
-                    else "—",
-                ),
-                (
-                    "Local Amount",
-                    format_currency(r.local_amount, r.currency_id, signed=True)
-                    if r.local_amount is not None
-                    else "—",
-                ),
-            ):
+    def _render_detail(detail: Any) -> None:
+        if detail is None:
+            dialog.close()
+            ui.notify("Transaction detail unavailable.", type="warning")
+            return
+        body.clear()
+        r = detail.row
+        with body:
+            with ui.row().classes("w-full items-center justify-between"):
                 with ui.column().classes("gap-0"):
-                    ui.label(lbl).style(f"color: {StudioColor.DIM}")
-                    ui.label(val).classes("font-mono font-semibold")
+                    ui.label(f"{r.transaction_kind.title()} Transaction Detail").classes(
+                        "text-lg font-semibold"
+                    )
+                    ui.label(f"UID: {r.uid}").classes("text-xs font-mono").style(
+                        f"color: {StudioColor.MUTED}"
+                    )
+                ui.button(icon="close", on_click=dialog.close).props("flat round dense color=white")
 
-        ui.label("CLASSIFICATION LINEAGE").classes("text-xs font-semibold tracking-wider").style(
-            f"color: {StudioColor.DIM}"
-        )
-        with ui.grid(columns=2).classes("md:grid-cols-3 w-full gap-2 text-xs"):
-            for k, v in detail.lineage.items():
-                with ui.column().classes("gap-0"):
-                    ui.label(k).style(f"color: {StudioColor.DIM}")
-                    ui.label(v).classes("font-medium")
+            with ui.row().classes("items-center gap-2 flex-wrap"):
+                status_badge(r.transaction_kind.upper(), tone=BadgeTone.INFO)
+                for fl in detail.flags:
+                    status_badge(fl, tone=BadgeTone.SUCCESS if fl == "Core" else BadgeTone.NEUTRAL)
 
-        if detail.linked_transfers:
-            ui.label(f"LINKED TRANSFER LEGS (TRANSFER_UID: {r.transfer_uid})").classes(
+            with ui.grid(columns=2).classes("md:grid-cols-4 w-full gap-3 text-xs"):
+                for lbl, val in (
+                    ("Date / Time", f"{r.tx_date.isoformat()} {r.tx_time}".strip()),
+                    ("Base Amount", format_currency(r.base_amount, r.currency_id, signed=True)),
+                    (
+                        "Account Amount",
+                        format_currency(r.amount_account, r.currency_id, signed=True)
+                        if r.amount_account is not None
+                        else "—",
+                    ),
+                    (
+                        "Local Amount",
+                        format_currency(r.local_amount, r.currency_id, signed=True)
+                        if r.local_amount is not None
+                        else "—",
+                    ),
+                ):
+                    with ui.column().classes("gap-0"):
+                        ui.label(lbl).style(f"color: {StudioColor.DIM}")
+                        ui.label(val).classes("font-mono font-semibold")
+
+            ui.label("CLASSIFICATION LINEAGE").classes(
                 "text-xs font-semibold tracking-wider"
             ).style(f"color: {StudioColor.DIM}")
-            l_cols = [
-                TableColumn(name="kind", label="Kind", field="kind", align="left"),
-                TableColumn(name="date", label="Date", field="date", align="left"),
-                TableColumn(name="acc", label="Account", field="acc", align="left"),
-                TableColumn(name="amt", label="Base Amount", field="amt", align="right"),
-                TableColumn(name="desc", label="Description", field="desc", align="left"),
-            ]
-            l_rows = [
-                {
-                    "kind": lr.transaction_kind.title(),
-                    "date": lr.tx_date.isoformat(),
-                    "acc": lr.asset_name,
-                    "amt": format_currency(lr.base_amount, lr.currency_id, signed=True),
-                    "desc": lr.description or lr.paid or "—",
-                }
-                for lr in detail.linked_transfers
-            ]
-            bounded_data_table(l_cols, l_rows, row_key="acc")
+            with ui.grid(columns=2).classes("md:grid-cols-3 w-full gap-2 text-xs"):
+                for k, v in detail.lineage.items():
+                    with ui.column().classes("gap-0"):
+                        ui.label(k).style(f"color: {StudioColor.DIM}")
+                        ui.label(v).classes("font-medium")
 
-        with ui.expansion("Raw Silver Columns", icon="code").classes("w-full text-xs"):
-            with ui.grid(columns=2).classes("w-full gap-2 text-xs font-mono"):
-                for k, v in detail.raw_fields.items():
-                    ui.label(f"{k}: {v}").classes("truncate")
+            if detail.linked_transfers:
+                ui.label(f"LINKED TRANSFER LEGS (TRANSFER_UID: {r.transfer_uid})").classes(
+                    "text-xs font-semibold tracking-wider"
+                ).style(f"color: {StudioColor.DIM}")
+                l_cols = [
+                    TableColumn(name="kind", label="Kind", field="kind", align="left"),
+                    TableColumn(name="date", label="Date", field="date", align="left"),
+                    TableColumn(name="acc", label="Account", field="acc", align="left"),
+                    TableColumn(name="amt", label="Base Amount", field="amt", align="right"),
+                    TableColumn(name="desc", label="Description", field="desc", align="left"),
+                ]
+                l_rows = [
+                    {
+                        "kind": lr.transaction_kind.title(),
+                        "date": lr.tx_date.isoformat(),
+                        "acc": lr.asset_name,
+                        "amt": format_currency(lr.base_amount, lr.currency_id, signed=True),
+                        "desc": lr.description or lr.paid or "—",
+                    }
+                    for lr in detail.linked_transfers
+                ]
+                bounded_data_table(l_cols, l_rows, row_key="acc")
+
+            with ui.expansion("Raw Silver Columns", icon="code").classes("w-full text-xs"):
+                with ui.grid(columns=2).classes("w-full gap-2 text-xs font-mono"):
+                    for k, v in detail.raw_fields.items():
+                        ui.label(f"{k}: {v}").classes("truncate")
+
+    def _fetch_sync() -> Any:
+        return HouseholdAnalytics.household_transaction_detail(
+            profile,
+            tx_kind,
+            uid,
+            catalog_snapshot=catalog_snap,
+        )
+
+    try:
+        asyncio.get_running_loop()
+        has_loop = True
+    except RuntimeError:
+        has_loop = False
+
+    if not has_loop:
+        detail = _fetch_sync()
+        if detail is None:
+            ui.notify("Transaction detail unavailable.", type="warning")
+            return
+        _render_detail(detail)
+        dialog.open()
+        return
+
+    with body:
+        with ui.row().classes("w-full items-center gap-2 py-2"):
+            ui.spinner(size="sm")
+            ui.label("Loading transaction detail...").classes("text-xs").style(
+                f"color: {StudioColor.MUTED}"
+            )
     dialog.open()
+
+    async def _load_detail() -> None:
+        try:
+            detail = await run.io_bound(_fetch_sync)
+        except Exception as exc:  # noqa: BLE001
+            dialog.close()
+            ui.notify(f"Unable to load transaction detail: {exc}", type="negative")
+            return
+        _render_detail(detail)
+
+    asyncio.ensure_future(_load_detail())
 
 
 def _render_transactions_body(context: AppContext, initial_page: HouseholdTransactionPage) -> None:

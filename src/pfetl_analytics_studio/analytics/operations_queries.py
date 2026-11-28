@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import sqlite3
 from collections.abc import Sequence
 from datetime import UTC, date, datetime
+from pathlib import Path
 from typing import Any, cast
 
 from pfetl_analytics_studio.analytics.operations_models import (
@@ -37,6 +40,7 @@ from pfetl_analytics_studio.analytics.overview_models import (
 )
 from pfetl_analytics_studio.analytics.overview_queries import table_exists
 from pfetl_analytics_studio.data import ControlPlaneReader, DuckDBQueryPort
+from pfetl_analytics_studio.data.exports import create_temp_export_path
 from pfetl_analytics_studio.semantic import MetricFormat
 
 
@@ -1371,4 +1375,85 @@ def query_source_payload_bytes(cp_reader: ControlPlaneReader, file_id: str) -> S
         byte_length=len(payload_bytes),
         available=True,
         file_bytes=payload_bytes,
+    )
+
+
+def stream_source_payload_to_file(
+    cp_reader: ControlPlaneReader,
+    file_id: str,
+    *,
+    target_path: Path | None = None,
+    chunk_size: int = 262_144,
+) -> tuple[SourcePayloadResult, Path | None]:
+    """Stream retained SQLite BLOB bytes via `sqlite3.Connection.blobopen` without full RAM load."""
+    if not _cp_table_exists(cp_reader, "cp_file_payloads"):
+        return (
+            SourcePayloadResult(
+                file_id=file_id,
+                available=False,
+                diagnostics=("Table cp_file_payloads is unavailable.",),
+            ),
+            None,
+        )
+
+    name_row = (
+        cp_reader.fetch_one("SELECT file_name FROM cp_file_registry WHERE file_id = ?;", (file_id,))
+        if _cp_table_exists(cp_reader, "cp_file_registry")
+        else None
+    )
+    file_name = (
+        str(name_row["file_name"]) if name_row and name_row.get("file_name") else f"{file_id}.bin"
+    )
+
+    with contextlib.closing(cp_reader.open_connection()) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.execute(
+            "SELECT rowid, LENGTH(file_bytes) AS byte_len, typeof(file_bytes) AS val_type "
+            "FROM cp_file_payloads WHERE file_id = ?;",
+            (file_id,),
+        )
+        meta = cur.fetchone()
+        if meta is None or meta["byte_len"] is None:
+            return (
+                SourcePayloadResult(
+                    file_id=file_id,
+                    file_name=file_name,
+                    available=False,
+                    diagnostics=(f"No retained payload bytes found for file_id '{file_id}'.",),
+                ),
+                None,
+            )
+
+        rowid = int(meta["rowid"])
+        byte_len = int(meta["byte_len"])
+        val_type = str(meta["val_type"] or "")
+        out_path = target_path or create_temp_export_path(file_name, default_stem=file_id)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+
+        if val_type == "blob":
+            with conn.blobopen("cp_file_payloads", "file_bytes", rowid, readonly=True) as blob:
+                with out_path.open("wb") as handle:
+                    while True:
+                        chunk = blob.read(chunk_size)
+                        if not chunk:
+                            break
+                        handle.write(chunk)
+        else:
+            row = conn.execute(
+                "SELECT file_bytes FROM cp_file_payloads WHERE rowid = ?;", (rowid,)
+            ).fetchone()
+            raw = row["file_bytes"] if row is not None else b""
+            data = raw if isinstance(raw, (bytes, bytearray)) else str(raw).encode("utf-8")
+            byte_len = len(data)
+            out_path.write_bytes(bytes(data))
+
+    return (
+        SourcePayloadResult(
+            file_id=file_id,
+            file_name=file_name,
+            byte_length=byte_len,
+            available=True,
+            file_bytes=None,
+        ),
+        out_path,
     )
