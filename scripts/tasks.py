@@ -20,8 +20,8 @@ def dev() -> None:
 
 
 def build():
-    """Build the executable using PyInstaller."""
-    print("Building executable with PyInstaller...")
+    """Build the PFETL Analytics Studio tray application using PyInstaller."""
+    print("Building tray executable with PyInstaller...")
     sys.exit(subprocess.call(["pyinstaller", "--clean", "-y", "main.spec"]))
 
 def release_preview():
