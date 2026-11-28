@@ -429,6 +429,11 @@ def render_sql_tab(
                         icon="download",
                         on_click=_download_sql_csv,
                     ).props("outline color=primary")
+                    status_badge(
+                        "Read-Only SQL · SELECT / WITH Only",
+                        tone=BadgeTone.INFO,
+                        outline=True,
+                    )
                     ui.button("Run SQL", icon="play_arrow", on_click=_run_sql).props(
                         "color=primary"
                     )

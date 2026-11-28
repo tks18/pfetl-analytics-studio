@@ -1338,7 +1338,18 @@ def render_operations_page(  # pylint: disable=too-many-statements
                         "color: var(--studio-text-muted);"
                     )
             if context.profile is not None:
-                status_badge("Operations Workspace Connected", tone=BadgeTone.INFO)
+                with ui.row().classes("items-center gap-2 flex-wrap"):
+                    status_badge(
+                        f"Profile: {context.profile.label}",
+                        tone=BadgeTone.INFO,
+                        outline=True,
+                    )
+                    if context.effective_run_id:
+                        status_badge(
+                            f"Active Run: {context.effective_run_id[:12]}",
+                            tone=BadgeTone.SUCCESS,
+                            outline=True,
+                        )
 
         if context.profile is None:
             render_domain_workspace(
