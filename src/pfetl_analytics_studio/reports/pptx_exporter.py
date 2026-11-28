@@ -175,7 +175,13 @@ def _try_add_native_chart(slide: Any, block: RenderedChartBlock) -> bool:
             return False
         chart_data.add_series(str(t.get("name") or f"Series {idx + 1}"), y_vals)
 
-    xl_type = XL_CHART_TYPE.COLUMN_CLUSTERED if "bar" in trace_types else XL_CHART_TYPE.LINE_MARKERS
+    is_horizontal = any(str(t.get("orientation") or "").lower() == "h" for t in traces)
+    if is_horizontal:
+        xl_type = XL_CHART_TYPE.BAR_CLUSTERED
+    elif "bar" in trace_types:
+        xl_type = XL_CHART_TYPE.COLUMN_CLUSTERED
+    else:
+        xl_type = XL_CHART_TYPE.LINE_MARKERS
     chart_frame = slide.shapes.add_chart(
         xl_type,
         Inches(0.6),
@@ -189,9 +195,12 @@ def _try_add_native_chart(slide: Any, block: RenderedChartBlock) -> bool:
     if chart.has_legend:
         chart.legend.position = XL_LEGEND_POSITION.TOP
         chart.legend.font.size = Pt(10)
+    chart.category_axis.tick_labels.font.size = Pt(9)
+    chart.value_axis.tick_labels.font.size = Pt(9)
     plot = chart.plots[0]
     plot.has_data_labels = len(categories) <= 16
     if plot.has_data_labels:
+        plot.data_labels.show_value = True
         plot.data_labels.font.size = Pt(8.5)
     return True
 
@@ -289,10 +298,21 @@ def _add_kpi_slide(
         p_val.font.size = Pt(22)
         p_val.font.bold = True
         p_val.font.color.rgb = _SLATE_DARK
-        if item.subtitle:
+        if item.delta_text:
+            p_delta = tf.add_paragraph()
+            p_delta.text = item.delta_text
+            p_delta.font.size = Pt(8.5)
+            p_delta.font.bold = True
+            p_delta.font.color.rgb = _HEADER_BG
+        extra = (
+            " | ".join(f"{k}: {v}" for k, v in item.breakups[:2])
+            if item.breakups
+            else item.subtitle
+        )
+        if extra:
             p_sub = tf.add_paragraph()
-            p_sub.text = item.subtitle
-            p_sub.font.size = Pt(8.5)
+            p_sub.text = extra
+            p_sub.font.size = Pt(8.0)
             p_sub.font.color.rgb = _SLATE_MUTED
     _add_slide_footer(slide, result, slide_num)
     return slide_num

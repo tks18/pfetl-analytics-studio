@@ -35,7 +35,11 @@ def build_tax_fy_trend_figure(
         [*led_inc, *inv_gl, *est_tax, *tax_credits], currency_id, include_zero=True
     )
     layout = studio_plotly_layout(
-        height=340, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+        height=340,
+        barmode="group",
+        y_ticks=y_ticks,
+        x_axis_type="category",
+        x_categories=fys,
     )
     return {
         "data": [
@@ -192,7 +196,11 @@ def build_tax_source_type_figure(
     taxes = [by_src[k][1] for k in labels]
     y_ticks = currency_ticks([*amts, *taxes], currency_id, include_zero=True)
     layout = studio_plotly_layout(
-        height=340, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+        height=340,
+        barmode="group",
+        y_ticks=y_ticks,
+        x_axis_type="category",
+        x_categories=labels,
     )
     return {
         "data": [
@@ -266,30 +274,50 @@ def build_tax_recon_bridge_figure(
 def build_tax_completeness_figure(
     rows: Sequence[Any],
 ) -> dict[str, Any] | None:
-    """Build stacked bar of Ready vs Check Required event counts across Tax Sub-Heads."""
-    top = list(rows[:10])
-    if not top:
+    """Build horizontal stacked bar of Ready vs Check Required event counts across Tax Sub-Heads."""
+    ordered = sorted(
+        rows,
+        key=lambda r: (
+            float(getattr(r, "ready_count", 0) or 0)
+            + float(getattr(r, "check_required_count", 0) or 0)
+        ),
+        reverse=True,
+    )[:10]
+    if not ordered:
         return None
-    labels = [str(getattr(r, "tax_sub_head", ""))[:22] for r in top]
-    ready = [float(getattr(r, "ready_count", 0) or 0) for r in top]
-    check = [float(getattr(r, "check_required_count", 0) or 0) for r in top]
-    y_ticks = numeric_ticks([r + c for r, c in zip(ready, check, strict=True)], suffix="")
+    ordered.reverse()
+    labels = [
+        (
+            f"{str(getattr(r, 'tax_sub_head', ''))[:26]}…"
+            if len(str(getattr(r, "tax_sub_head", ""))) > 26
+            else str(getattr(r, "tax_sub_head", ""))
+        )
+        for r in ordered
+    ]
+    ready = [float(getattr(r, "ready_count", 0) or 0) for r in ordered]
+    check = [float(getattr(r, "check_required_count", 0) or 0) for r in ordered]
+    x_ticks = numeric_ticks([0.0, *(r + c for r, c in zip(ready, check, strict=True))], suffix="")
     layout = studio_plotly_layout(
-        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category"
+        height=340,
+        barmode="stack",
+        horizontal_bars=True,
+        x_currency_ticks=x_ticks,
     )
     return {
         "data": [
             {
                 "type": "bar",
-                "x": labels,
-                "y": ready,
+                "orientation": "h",
+                "y": labels,
+                "x": ready,
                 "name": "Ready",
                 "marker": {"color": "#34D399"},
             },
             {
                 "type": "bar",
-                "x": labels,
-                "y": check,
+                "orientation": "h",
+                "y": labels,
+                "x": check,
                 "name": "Check Required",
                 "marker": {"color": "#FBBF24"},
             },
@@ -319,7 +347,11 @@ def build_tax_events_timeline_figure(
     taxes = [by_ym[k][1] for k in yms]
     y_ticks = currency_ticks([*amts, *taxes], currency_id, include_zero=True)
     layout = studio_plotly_layout(
-        height=340, barmode="group", y_ticks=y_ticks, x_axis_type="category"
+        height=340,
+        barmode="group",
+        y_ticks=y_ticks,
+        x_axis_type="category",
+        x_categories=yms,
     )
     return {
         "data": [
@@ -353,7 +385,7 @@ def build_tax_fy_readiness_figure(
     check = [float(r.get("Check_Required_Count") or 0) for r in all_fy_rows]
     y_ticks = numeric_ticks([r + c for r, c in zip(ready, check, strict=True)], suffix="")
     layout = studio_plotly_layout(
-        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category"
+        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category", x_categories=fys
     )
     return {
         "data": [
@@ -402,7 +434,7 @@ def build_tax_events_status_source_figure(
         include_zero=True,
     )
     layout = studio_plotly_layout(
-        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category"
+        height=340, barmode="stack", y_ticks=y_ticks, x_axis_type="category", x_categories=srcs
     )
     return {
         "data": [
