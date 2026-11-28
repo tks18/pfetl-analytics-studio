@@ -108,9 +108,9 @@ def test_healthz_endpoint_payload_and_zero_secrets() -> None:
 
 def test_cli_requires_paired_settings_and_rules_and_rejects_remote_host() -> None:
     """CLI returns non-zero on unpaired profile paths or remote hosts."""
-    assert cli_main(["--host", "0.0.0.0"]) == 1
-    assert cli_main(["--settings", "only_settings.toml"]) == 1
-    assert cli_main(["--rules", "only_rules.toml"]) == 1
+    assert cli_main(["--cli", "--host", "0.0.0.0"]) == 1
+    assert cli_main(["--cli", "--settings", "only_settings.toml"]) == 1
+    assert cli_main(["--cli", "--rules", "only_rules.toml"]) == 1
 
     with pytest.raises(ValueError, match="together"):
         validate_startup_preflight(
@@ -127,6 +127,7 @@ def test_subprocess_lifecycle_spawn_healthz_and_terminate(tmp_path: Path) -> Non
             sys.executable,
             "-m",
             "pfetl_analytics_studio.cli",
+            "--cli",
             "--no-browser",
             "--auto-port",
             "--runtime-file",
@@ -161,6 +162,7 @@ def test_subprocess_lifecycle_spawn_healthz_and_terminate(tmp_path: Path) -> Non
             )
         assert health_data["status"] == "ready"
         assert health_data["app"] == "pfetl-analytics-studio"
+        assert health_data["version"] == "1.1.0"
     finally:
         proc.terminate()
         proc.wait(timeout=10)
