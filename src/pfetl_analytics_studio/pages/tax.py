@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     InvestmentAnalytics,
@@ -41,9 +42,19 @@ from pfetl_analytics_studio.ui import (
     format_metric_value,
     format_percent,
     kpi_card,
+    loading_state_card,
     open_lot_detail_dialog,
     status_badge,
 )
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
 
 _SUB_TABS: tuple[tuple[str, str, str], ...] = (
     ("overview", "FY Overview & Exposure", "account_balance"),
@@ -53,7 +64,7 @@ _SUB_TABS: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def render_tax_page(
+def render_tax_page(  # pylint: disable=too-many-statements
     context: AppContext,
     *,
     cache: QueryCache | None = None,
@@ -105,7 +116,27 @@ def render_tax_page(
         profile = context.profile
         active_tab = initial_tab if any(t[0] == initial_tab for t in _SUB_TABS) else "overview"
 
-        fy_state: dict[str, Any] = {"fy": None, "rendering": False}
+        initial_fy: str | None = None
+        for spec in context.filters.filters:
+            if spec.field == FilterField.FY and spec.value is not None:
+                initial_fy = str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+                break
+
+        fy_state: dict[str, Any] = {
+            "fy": initial_fy,
+            "active_tab": active_tab,
+            "summary": None,
+            "currency_id": "INR_INR",
+            "suppress_fy_evt": False,
+        }
+        tab_gens: dict[str, int] = {
+            "summary": 0,
+            "breakdown": 0,
+            "reconciliation": 0,
+            "events": 0,
+        }
+        rendered_tabs: set[str] = set()
+
         with ui.element("div").classes("studio-filter-bar w-full"):
             with ui.row().classes("w-full items-center justify-between flex-wrap gap-3"):
                 fy_sel = (
@@ -120,79 +151,16 @@ def render_tax_page(
                 ui.tab(tab_id, label=tab_label, icon=tab_icon)
         tabs.set_value(active_tab)
 
-        if on_tab_change is not None:
-            tabs.on_value_change(lambda e: on_tab_change(str(e.value)))
-
         with ui.tab_panels(tabs, value=active_tab).classes("w-full bg-transparent p-0"):
             p_overview = ui.tab_panel("overview").classes("p-0 pt-3")
             p_breakdown = ui.tab_panel("breakdown").classes("p-0 pt-3")
             p_recon = ui.tab_panel("reconciliation").classes("p-0 pt-3")
             p_events = ui.tab_panel("events").classes("p-0 pt-3")
 
-        def _render_all() -> None:
-            if fy_state["rendering"]:
-                return
-            fy_state["rendering"] = True
-            try:
-                _render_all_inner()
-            finally:
-                fy_state["rendering"] = False
-
-        def _render_all_inner() -> None:
-            try:
-                summary = TaxAnalytics.fy_summary(
-                    profile,
-                    fy_state["fy"],
-                    run_id=context.provenance.run_id if context.provenance else None,
-                    provenance=context.provenance,
-                    catalog_snapshot=context.catalog_snapshot,
-                    cache=cache,
-                )
-            except Exception as exc:
-                p_overview.clear()
-                with p_overview:
-                    error_state_panel("Unable to load Tax FY summary", str(exc))
-                return
-
-            if summary.available_fys:
-                fy_opts = {f: f"FY {f}" for f in summary.available_fys}
-                fy_sel.options = fy_opts
-                fy_sel.value = summary.fy or summary.available_fys[0]
-                fy_sel.update()
-                fy_state["fy"] = summary.fy
-
-            status_box.clear()
-            with status_box:
-                if summary.fy:
-                    status_badge(f"FY {summary.fy}", tone=BadgeTone.INFO)
-                status_badge(
-                    "Ledger Tax: Complete"
-                    if summary.ledger_tax_estimate_complete
-                    else f"Ledger Tax: Incomplete ({summary.ledger_tax_estimate_missing_count} missing)",
-                    tone=BadgeTone.INFO
-                    if summary.ledger_tax_estimate_complete
-                    else BadgeTone.WARNING,
-                )
-                status_badge(
-                    "Inv. Tax: Complete"
-                    if summary.investment_tax_estimate_complete
-                    else f"Inv. Tax: Incomplete ({summary.investment_tax_estimate_missing_count} missing)",
-                    tone=BadgeTone.INFO
-                    if summary.investment_tax_estimate_complete
-                    else BadgeTone.WARNING,
-                )
-                if summary.check_required_count > 0:
-                    status_badge(
-                        f"Check Required: {summary.check_required_count}",
-                        tone=BadgeTone.WARNING,
-                    )
-
-            currency_id = summary.currency_id or "INR_INR"
-            active_fy = summary.fy
-
+        def _render_overview_from_summary(summary: Any, active_fy: str, currency_id: str) -> None:
             p_overview.clear()
             with p_overview:
-                if summary.state != "ready":
+                if summary is None or summary.state != "ready":
                     empty_state_panel(
                         "No Tax summary found",
                         "No Gold tax summary data matched the selected Financial Year.",
@@ -223,46 +191,202 @@ def render_tax_page(
                         )
                     _render_fy_params_card(summary.fy_params, active_fy, currency_id)
 
-            p_breakdown.clear()
-            with p_breakdown:
-                _render_breakdown_section(context, active_fy, currency_id, cache=cache)
+        def _ensure_tab_rendered(tab_key: str) -> None:
+            if tab_key in rendered_tabs:
+                return
+            summary = fy_state["summary"]
+            if summary is None:
+                return
+            rendered_tabs.add(tab_key)
+            active_fy = str(summary.fy or "")
+            currency_id = str(fy_state["currency_id"] or "INR_INR")
 
-            p_recon.clear()
-            with p_recon:
-                _render_reconciliation_section(context, active_fy, currency_id, cache=cache)
+            if tab_key == "overview":
+                _render_overview_from_summary(summary, active_fy, currency_id)
+            elif tab_key == "breakdown":
+                _load_breakdown_tab(
+                    p_breakdown, context, active_fy, currency_id, tab_gens, cache=cache
+                )
+            elif tab_key == "reconciliation":
+                _load_reconciliation_tab(
+                    p_recon, context, active_fy, currency_id, tab_gens, cache=cache
+                )
+            elif tab_key == "events":
+                _load_events_tab(p_events, context, active_fy, currency_id, tab_gens, cache=cache)
 
-            p_events.clear()
-            with p_events:
-                _render_events_and_harvest_section(context, active_fy, currency_id, cache=cache)
+        def _apply_summary(summary: Any) -> None:
+            if summary.available_fys:
+                fy_opts = {f: f"FY {f}" for f in summary.available_fys}
+                fy_state["suppress_fy_evt"] = True
+                try:
+                    fy_sel.options = fy_opts
+                    fy_sel.value = summary.fy or summary.available_fys[0]
+                    fy_sel.update()
+                finally:
+                    fy_state["suppress_fy_evt"] = False
+                fy_state["fy"] = summary.fy
+
+            status_box.clear()
+            with status_box:
+                if summary.fy:
+                    status_badge(f"FY {summary.fy}", tone=BadgeTone.INFO)
+                status_badge(
+                    "Ledger Tax: Complete"
+                    if summary.ledger_tax_estimate_complete
+                    else f"Ledger Tax: Incomplete ({summary.ledger_tax_estimate_missing_count} missing)",
+                    tone=BadgeTone.INFO
+                    if summary.ledger_tax_estimate_complete
+                    else BadgeTone.WARNING,
+                )
+                status_badge(
+                    "Inv. Tax: Complete"
+                    if summary.investment_tax_estimate_complete
+                    else f"Inv. Tax: Incomplete ({summary.investment_tax_estimate_missing_count} missing)",
+                    tone=BadgeTone.INFO
+                    if summary.investment_tax_estimate_complete
+                    else BadgeTone.WARNING,
+                )
+                if summary.check_required_count > 0:
+                    status_badge(
+                        f"Check Required: {summary.check_required_count}",
+                        tone=BadgeTone.WARNING,
+                    )
+
+            fy_state["summary"] = summary
+            fy_state["currency_id"] = summary.currency_id or "INR_INR"
+            rendered_tabs.clear()
+            _ensure_tab_rendered(str(fy_state["active_tab"]))
+
+        def _load_summary() -> None:
+            tab_gens["summary"] += 1
+            captured_gen = tab_gens["summary"]
+            req_fy = fy_state["fy"]
+
+            def _fetch_summary_sync() -> Any:
+                return TaxAnalytics.fy_summary(
+                    profile,
+                    req_fy,
+                    run_id=context.provenance.run_id if context.provenance else None,
+                    provenance=context.provenance,
+                    catalog_snapshot=context.catalog_snapshot,
+                    cache=cache,
+                )
+
+            if not _has_running_loop():
+                try:
+                    _apply_summary(_fetch_summary_sync())
+                except Exception as exc:  # noqa: BLE001
+                    p_overview.clear()
+                    with p_overview:
+                        error_state_panel("Unable to load Tax FY summary", str(exc))
+                return
+
+            if fy_state["summary"] is None:
+                p_overview.clear()
+                with p_overview:
+                    loading_state_card("Loading Tax FY summary...")
+
+            async def _load_async() -> None:
+                fy_sel.disable()
+                try:
+                    summary = await run.io_bound(_fetch_summary_sync)
+                except Exception as exc:  # noqa: BLE001
+                    if captured_gen == tab_gens["summary"]:
+                        p_overview.clear()
+                        with p_overview:
+                            error_state_panel("Unable to load Tax FY summary", str(exc))
+                    return
+                finally:
+                    fy_sel.enable()
+                if captured_gen == tab_gens["summary"]:
+                    _apply_summary(summary)
+
+            ui.timer(0.01, _load_async, once=True)
+
+        def _handle_tab_change(evt: Any) -> None:
+            tab_key = str(getattr(evt, "value", None) or "overview")
+            fy_state["active_tab"] = tab_key
+            _ensure_tab_rendered(tab_key)
+            if on_tab_change is not None:
+                on_tab_change(tab_key)
+
+        tabs.on_value_change(_handle_tab_change)
 
         def _on_fy_change(e: Any) -> None:
-            if fy_state["rendering"]:
+            if fy_state["suppress_fy_evt"]:
                 return
             fy_state["fy"] = str(e.value) if e.value else None
-            _render_all()
+            _load_summary()
 
         fy_sel.on_value_change(_on_fy_change)
-        _render_all()
+        _load_summary()
 
 
-def _render_breakdown_section(
+def _load_breakdown_tab(
+    panel: ui.tab_panel,
     context: AppContext,
     fy: str,
     currency_id: str,
+    tab_gens: dict[str, int],
     *,
     cache: QueryCache | None = None,
 ) -> None:
     profile = context.profile
     if profile is None or not fy:
+        panel.clear()
+        with panel:
+            empty_state_panel(
+                "No income breakdown rows", f"No breakdown rows for FY {fy}.", icon="category"
+            )
         return
-    snap = TaxAnalytics.income_breakdown(
-        profile,
-        fy,
-        run_id=context.provenance.run_id if context.provenance else None,
-        provenance=context.provenance,
-        catalog_snapshot=context.catalog_snapshot,
-        cache=cache,
-    )
+
+    tab_gens["breakdown"] += 1
+    captured = tab_gens["breakdown"]
+    global_head: str | None = None
+    for spec in context.filters.filters:
+        if spec.field == FilterField.INCOME_HEAD and spec.value is not None:
+            global_head = str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+            break
+
+    def _fetch_sync() -> Any:
+        return TaxAnalytics.income_breakdown(
+            profile,
+            fy,
+            income_head=global_head,
+            run_id=context.provenance.run_id if context.provenance else None,
+            provenance=context.provenance,
+            catalog_snapshot=context.catalog_snapshot,
+            cache=cache,
+        )
+
+    if not _has_running_loop():
+        panel.clear()
+        with panel:
+            _render_breakdown_body(_fetch_sync(), fy, currency_id)
+        return
+
+    panel.clear()
+    with panel:
+        loading_state_card(f"Loading FY {fy} income head breakdown...")
+
+    async def _load_async() -> None:
+        try:
+            snap = await run.io_bound(_fetch_sync)
+        except Exception as exc:  # noqa: BLE001
+            if captured == tab_gens["breakdown"]:
+                panel.clear()
+                with panel:
+                    error_state_panel("Unable to load income breakdown", str(exc))
+            return
+        if captured == tab_gens["breakdown"]:
+            panel.clear()
+            with panel:
+                _render_breakdown_body(snap, fy, currency_id)
+
+    ui.timer(0.01, _load_async, once=True)
+
+
+def _render_breakdown_body(snap: Any, fy: str, currency_id: str) -> None:
     if snap.state != "ready":
         empty_state_panel(
             "No income breakdown rows", f"No breakdown rows for FY {fy}.", icon="category"
@@ -314,24 +438,65 @@ def _render_breakdown_section(
     )
 
 
-def _render_reconciliation_section(
+def _load_reconciliation_tab(
+    panel: ui.tab_panel,
     context: AppContext,
     fy: str,
     currency_id: str,
+    tab_gens: dict[str, int],
     *,
     cache: QueryCache | None = None,
 ) -> None:
     profile = context.profile
     if profile is None or not fy:
+        panel.clear()
+        with panel:
+            empty_state_panel(
+                "No reconciliation rows", f"No reconciliation rows for FY {fy}.", icon="fact_check"
+            )
         return
-    snap = TaxAnalytics.reconciliation(
-        profile,
-        fy,
-        run_id=context.provenance.run_id if context.provenance else None,
-        provenance=context.provenance,
-        catalog_snapshot=context.catalog_snapshot,
-        cache=cache,
-    )
+
+    tab_gens["reconciliation"] += 1
+    captured = tab_gens["reconciliation"]
+
+    def _fetch_sync() -> Any:
+        return TaxAnalytics.reconciliation(
+            profile,
+            fy,
+            run_id=context.provenance.run_id if context.provenance else None,
+            provenance=context.provenance,
+            catalog_snapshot=context.catalog_snapshot,
+            cache=cache,
+        )
+
+    if not _has_running_loop():
+        panel.clear()
+        with panel:
+            _render_reconciliation_body(_fetch_sync(), fy, currency_id)
+        return
+
+    panel.clear()
+    with panel:
+        loading_state_card(f"Loading FY {fy} tax reconciliation...")
+
+    async def _load_async() -> None:
+        try:
+            snap = await run.io_bound(_fetch_sync)
+        except Exception as exc:  # noqa: BLE001
+            if captured == tab_gens["reconciliation"]:
+                panel.clear()
+                with panel:
+                    error_state_panel("Unable to load tax reconciliation", str(exc))
+            return
+        if captured == tab_gens["reconciliation"]:
+            panel.clear()
+            with panel:
+                _render_reconciliation_body(snap, fy, currency_id)
+
+    ui.timer(0.01, _load_async, once=True)
+
+
+def _render_reconciliation_body(snap: Any, fy: str, currency_id: str) -> None:
     if snap.state != "ready":
         empty_state_panel(
             "No reconciliation rows", f"No reconciliation rows for FY {fy}.", icon="fact_check"
@@ -381,15 +546,24 @@ def _render_reconciliation_section(
     )
 
 
-def _render_events_and_harvest_section(
+def _load_events_tab(
+    panel: ui.tab_panel,
     context: AppContext,
     fy: str,
     currency_id: str,
+    tab_gens: dict[str, int],
     *,
     cache: QueryCache | None = None,
 ) -> None:
     profile = context.profile
     if profile is None or not fy:
+        panel.clear()
+        with panel:
+            empty_state_panel(
+                "No tax events",
+                f"No tax events or harvesting lots for FY {fy}.",
+                icon="receipt_long",
+            )
         return
 
     def _global_val(field: FilterField) -> str | None:
@@ -403,39 +577,108 @@ def _render_events_and_harvest_section(
         tax_status=_global_val(FilterField.TAX_STATUS),
         search=_global_val(FilterField.ISIN),
     )
-    ev_snap = TaxAnalytics.tax_events(
-        profile,
-        fy,
-        ev_filter,
-        run_id=context.provenance.run_id if context.provenance else None,
-        provenance=context.provenance,
-        catalog_snapshot=context.catalog_snapshot,
-        cache=cache,
-    )
+
+    tab_gens["events"] += 1
+    captured = tab_gens["events"]
+
+    def _fetch_sync() -> tuple[Any, Any]:
+        ev_snap = TaxAnalytics.tax_events(
+            profile,
+            fy,
+            ev_filter,
+            run_id=context.provenance.run_id if context.provenance else None,
+            provenance=context.provenance,
+            catalog_snapshot=context.catalog_snapshot,
+            cache=cache,
+        )
+        harv = TaxAnalytics.harvesting_snapshot(
+            profile,
+            context.period_context,
+            isin=_global_val(FilterField.ISIN),
+            run_id=context.provenance.run_id if context.provenance else None,
+            provenance=context.provenance,
+            catalog_snapshot=context.catalog_snapshot,
+            cache=cache,
+        )
+        return ev_snap, harv
+
+    if not _has_running_loop():
+        ev_snap, harv = _fetch_sync()
+        panel.clear()
+        with panel:
+            _render_events_and_harvest_body(context, fy, currency_id, ev_snap, harv)
+        return
+
+    panel.clear()
+    with panel:
+        loading_state_card(f"Loading FY {fy} tax events & harvesting...")
+
+    async def _load_async() -> None:
+        try:
+            ev_snap, harv = await run.io_bound(_fetch_sync)
+        except Exception as exc:  # noqa: BLE001
+            if captured == tab_gens["events"]:
+                panel.clear()
+                with panel:
+                    error_state_panel("Unable to load tax events & harvesting", str(exc))
+            return
+        if captured == tab_gens["events"]:
+            panel.clear()
+            with panel:
+                _render_events_and_harvest_body(context, fy, currency_id, ev_snap, harv)
+
+    ui.timer(0.01, _load_async, once=True)
+
+
+def _render_events_and_harvest_body(
+    context: AppContext,
+    fy: str,
+    currency_id: str,
+    ev_snap: Any,
+    harv: Any,
+) -> None:
+    profile = context.profile
+    if profile is None or not fy:
+        return
+
     lot_drawer_box = ui.column().classes("w-full")
+    lot_gen: dict[str, int] = {"gen": 0}
 
     def _open_lot(lot_id: str, closing_dt: Any) -> None:
         if not lot_id:
             ui.notify("No Lot ID attached to this row.", type="info")
             return
-        detail = InvestmentAnalytics.lot_detail(
-            profile,
-            lot_id,
-            closing_dt,
-            catalog_snapshot=context.catalog_snapshot,
-        )
-        lot_drawer_box.clear()
-        with lot_drawer_box:
-            open_lot_detail_dialog(detail, lot_id)
+        lot_gen["gen"] += 1
+        captured_lot = lot_gen["gen"]
 
-    harv = TaxAnalytics.harvesting_snapshot(
-        profile,
-        context.period_context,
-        run_id=context.provenance.run_id if context.provenance else None,
-        provenance=context.provenance,
-        catalog_snapshot=context.catalog_snapshot,
-        cache=cache,
-    )
+        def _fetch_lot() -> Any:
+            return InvestmentAnalytics.lot_detail(
+                profile,
+                lot_id,
+                closing_dt,
+                catalog_snapshot=context.catalog_snapshot,
+            )
+
+        if not _has_running_loop():
+            detail = _fetch_lot()
+            lot_drawer_box.clear()
+            with lot_drawer_box:
+                open_lot_detail_dialog(detail, lot_id)
+            return
+
+        async def _load_lot() -> None:
+            try:
+                detail = await run.io_bound(_fetch_lot)
+            except Exception as exc:  # noqa: BLE001
+                if captured_lot == lot_gen["gen"]:
+                    ui.notify(f"Unable to load lot detail: {exc}", type="negative")
+                return
+            if captured_lot == lot_gen["gen"]:
+                lot_drawer_box.clear()
+                with lot_drawer_box:
+                    open_lot_detail_dialog(detail, lot_id)
+
+        asyncio.ensure_future(_load_lot())
 
     if ev_snap.state == "ready":
         with ui.element("div").classes("studio-chart-grid w-full mb-4"):

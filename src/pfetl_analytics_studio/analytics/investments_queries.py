@@ -232,6 +232,8 @@ def query_allocation(
     dimension: AllocationDimension,
     start_date: date,
     end_date: date,
+    *,
+    filters: FilterSet | None = None,
 ) -> tuple[AllocationRow, ...]:
     """Query one of the 9 whitelisted Gold investment allocation marts at latest Closing_Date."""
     if dimension not in _ALLOCATION_MART_MAP:
@@ -268,6 +270,37 @@ def query_allocation(
         if parent_col and table_has_column(duck_reader, s, table_name, parent_col)
         else "NULL AS parent_lbl"
     )
+    extra_clauses: list[str] = []
+    extra_params: list[Any] = []
+    if filters and filters.filters:
+        dim_cols = {
+            AllocationDimension.CLASS: FilterField.INSTRUMENT_CLASS,
+            AllocationDimension.SECTOR: FilterField.SECTOR,
+            AllocationDimension.CURRENCY: FilterField.CURRENCY_ID,
+        }
+        col_map: dict[FilterField, str] = {}
+        if dimension in dim_cols:
+            col_map[dim_cols[dimension]] = label_col
+        elif dimension == AllocationDimension.ISIN:
+            col_map[FilterField.ISIN] = "ISIN"
+            for fld, col_name in (
+                (FilterField.CURRENCY_ID, "CURRENCY_ID"),
+                (FilterField.INSTRUMENT_CLASS, "INSTRUMENT_CLASS"),
+                (FilterField.SECTOR, "SECTOR"),
+            ):
+                if table_has_column(duck_reader, s, table_name, col_name):
+                    col_map[fld] = col_name
+        if col_map:
+            scoped = FilterSet(filters=tuple(f for f in filters.filters if f.field in col_map))
+            if scoped.filters:
+                f_sql, f_params = compile_filter_clause(scoped, col_map)
+                if f_sql and f_sql != "1 = 1":
+                    extra_clauses.append(f"({f_sql})")
+                    extra_params.extend(f_params)
+
+    where_sql = '"Closing_Date" = ?' + (
+        (" AND " + " AND ".join(extra_clauses)) if extra_clauses else ""
+    )
     rows = duck_reader.fetch_all(
         f"""
         SELECT
@@ -287,10 +320,10 @@ def query_allocation(
             {_opt(duck_reader, s, table_name, "Weight", "weight")},
             {_opt(duck_reader, s, table_name, "Total_Stocks", "stocks")}
         FROM gold.{table_name}
-        WHERE "Closing_Date" = ?
+        WHERE {where_sql}
         ORDER BY COALESCE("Total_Current_Value", 0.0) DESC;
         """,
-        (target_dt,),
+        [target_dt, *extra_params],
     )
 
     out: list[AllocationRow] = []
@@ -970,6 +1003,9 @@ def _build_lot_where_clause(
     if lot_filter.instrument_class:
         clauses.append("COALESCE(im.\"INSTRUMENT_CLASS\", 'Unclassified') = ?")
         params.append(lot_filter.instrument_class)
+    if lot_filter.sector:
+        clauses.append("COALESCE(im.\"SECTOR\", 'Unclassified') = ?")
+        params.append(lot_filter.sector)
     if lot_filter.instrument_type:
         clauses.append("COALESCE(im.\"INSTRUMENT_TYPE\", 'Unclassified') = ?")
         params.append(lot_filter.instrument_type)
@@ -1350,36 +1386,18 @@ _LOT_DETAIL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ),
     (
         "Performance",
-        (
-            "Lot_CAGR",
-            "Lot_CAGR_Status",
-            "Lot_CAGR_Local",
-            "CAGR",
-            "CAGR_Status",
-            "XIRR",
-            "XIRR_Status",
-            "XIRR_Local",
-            "FX_XIRR_Impact",
-            "After_Tax_XIRR",
+        tuple(
+            "Lot_CAGR Lot_CAGR_Status Lot_CAGR_Local CAGR CAGR_Status "
+            "XIRR XIRR_Status XIRR_Local FX_XIRR_Impact After_Tax_XIRR".split()
         ),
     ),
     (
         "Benchmark / Alpha",
-        (
-            "BM_Buy_Price",
-            "BM_Market_Price",
-            "Lot_BM_Return",
-            "Lot_BM_CAGR",
-            "Lot_BM_CAGR_Status",
-            "Lot_BM_CAGR_Local",
-            "BM_CAGR",
-            "BM_CAGR_Status",
-            "BM_XIRR",
-            "BM_XIRR_Local",
-            "Active_Return",
-            "Active_Return_Local",
-            "Lot_Alpha",
-            "Is_Lagging_Benchmark",
+        tuple(
+            "BM_Buy_Price BM_Market_Price Lot_BM_Return Lot_BM_CAGR "
+            "Lot_BM_CAGR_Status Lot_BM_CAGR_Local BM_CAGR BM_CAGR_Status "
+            "BM_XIRR BM_XIRR_Local Active_Return Active_Return_Local "
+            "Lot_Alpha Is_Lagging_Benchmark".split()
         ),
     ),
     (
@@ -1427,13 +1445,7 @@ _LOT_DETAIL_GROUPS: tuple[tuple[str, tuple[str, ...]], ...] = (
             "FY_Realized_Net_PnL",
         ),
     ),
-    (
-        "Harvesting",
-        (
-            "Can_Harvest_Loss",
-            "Harvest_Recommendation",
-        ),
-    ),
+    ("Harvesting", ("Can_Harvest_Loss", "Harvest_Recommendation")),
 )
 
 
@@ -1446,12 +1458,7 @@ def query_lot_detail(
     if not table_exists(duck_reader, "silver", "fact_investment_lot_analytics"):
         return None
     row = duck_reader.fetch_one(
-        """
-        SELECT *
-        FROM silver.fact_investment_lot_analytics
-        WHERE "Lot_ID" = ? AND "Closing_Date" = ?
-        LIMIT 1;
-        """,
+        'SELECT * FROM silver.fact_investment_lot_analytics WHERE "Lot_ID" = ? AND "Closing_Date" = ? LIMIT 1;',
         (lot_id, closing_date),
     )
     if row is None:

@@ -199,6 +199,7 @@ class InvestmentAnalytics:
         run_id: str | None = None,
         provenance: RunProvenance | None = None,
         catalog_snapshot: CatalogSnapshot | None = None,
+        filters: FilterSet | None = None,
         cache: QueryCache | None = None,
     ) -> AllocationSnapshot:
         """Query one of the 9 whitelisted Gold investment allocation marts."""
@@ -216,13 +217,14 @@ class InvestmentAnalytics:
                 period_label=period_context.label if period_context else "",
             )
         assert period_context.start_date is not None and period_context.end_date is not None
+        active_filters = filters or FilterSet()
         eff_run = run_id or (provenance.run_id if provenance else "latest")
         cache_key = build_cache_key(
             profile.profile_id,
             eff_run,
             f"investments_alloc_{dimension.value}_v1",
             period=period_context,
-            filters=FilterSet(),
+            filters=active_filters,
         )
         if cache is not None:
             cached = cache.get(cache_key)
@@ -237,6 +239,7 @@ class InvestmentAnalytics:
                     dimension,
                     period_context.start_date,
                     period_context.end_date,
+                    filters=active_filters,
                 )
             finally:
                 reset_catalog_snapshot(tok)

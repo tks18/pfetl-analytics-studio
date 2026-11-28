@@ -222,7 +222,11 @@ class ReportService:
         )
         period_ctx = _resolve_period_context(app_context, period_req)
 
-        base_filters = definition.default_filters if definition is not None else app_context.filters
+        base_filters = (
+            _merge_filters(app_context.filters, definition.default_filters)
+            if definition is not None
+            else app_context.filters
+        )
         effective_filters = _merge_filters(base_filters, ovr.filters)
         currency_mode: CurrencyMode = ovr.currency_mode or (
             definition.currency_mode if definition is not None else "base"
@@ -375,6 +379,11 @@ class ReportService:
                         report_ctx.rules_snapshot_id if block.show_snapshots else None
                     ),
                     period_label=report_ctx.period.label,
+                    comparison_label=(
+                        report_ctx.period.comparison.label
+                        if report_ctx.period.comparison is not None
+                        else ""
+                    ),
                     studio_version=report_ctx.studio_version,
                     generated_at=report_ctx.generated_at,
                     currency_mode=report_ctx.currency_mode,

@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     AllocationDimension,
@@ -17,12 +19,13 @@ from pfetl_analytics_studio.analytics import (
     OverviewKPI,
 )
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
-from pfetl_analytics_studio.data import QueryCache
+from pfetl_analytics_studio.data import QueryCache, create_temp_export_path, write_rows_csv_file
 from pfetl_analytics_studio.pages import render_domain_workspace
 from pfetl_analytics_studio.pages.investments_evidence import (
     render_evidence_tab,
     render_realized_tab,
 )
+from pfetl_analytics_studio.semantic import FilterField
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     TableColumn,
@@ -59,9 +62,10 @@ from pfetl_analytics_studio.ui import (
     format_metric_value,
     format_percent,
     kpi_card,
+    loading_state_card,
     open_lot_detail_dialog,
-    rows_to_csv_bytes,
     status_badge,
+    trigger_file_download,
 )
 
 _SUB_TABS: tuple[tuple[str, str, str], ...] = (
@@ -184,26 +188,62 @@ def render_investments_page(
             return
 
         active_tab = initial_tab if any(t[0] == initial_tab for t in _SUB_TABS) else "overview"
+        rendered_tabs: set[str] = set()
 
         with ui.tabs().classes("w-full studio-subtabs") as tabs:
             for tab_id, tab_label, tab_icon in _SUB_TABS:
                 ui.tab(tab_id, label=tab_label, icon=tab_icon)
         tabs.set_value(active_tab)
 
-        if on_tab_change is not None:
-            tabs.on_value_change(lambda e: on_tab_change(str(e.value)))
-
         with ui.tab_panels(tabs, value=active_tab).classes("w-full bg-transparent p-0"):
             with ui.tab_panel("overview").classes("p-0 pt-3"):
-                _render_overview_tab(context, cache=cache)
+                overview_slot = ui.column().classes("w-full gap-4")
             with ui.tab_panel("performance").classes("p-0 pt-3"):
-                _render_performance_tab(context, cache=cache)
+                perf_slot = ui.column().classes("w-full gap-4")
             with ui.tab_panel("lots").classes("p-0 pt-3"):
-                _render_lots_tab(context, cache=cache)
+                lots_slot = ui.column().classes("w-full gap-4")
             with ui.tab_panel("realized").classes("p-0 pt-3"):
-                render_realized_tab(context, cache=cache)
+                realized_slot = ui.column().classes("w-full gap-4")
             with ui.tab_panel("evidence").classes("p-0 pt-3"):
-                render_evidence_tab(context, cache=cache)
+                evidence_slot = ui.column().classes("w-full gap-4")
+
+        def _ensure_tab_rendered(tab_key: str) -> None:
+            if tab_key in rendered_tabs:
+                return
+            rendered_tabs.add(tab_key)
+            if tab_key == "overview":
+                with overview_slot:
+                    _render_overview_tab(context, cache=cache)
+            elif tab_key == "performance":
+                with perf_slot:
+                    _render_performance_tab(context, cache=cache)
+            elif tab_key == "lots":
+                with lots_slot:
+                    _render_lots_tab(context, cache=cache)
+            elif tab_key == "realized":
+                with realized_slot:
+                    render_realized_tab(context, cache=cache)
+            elif tab_key == "evidence":
+                with evidence_slot:
+                    render_evidence_tab(context, cache=cache)
+
+        _ensure_tab_rendered(active_tab)
+
+        def _handle_tab_change(evt: Any) -> None:
+            tab_key = str(getattr(evt, "value", None) or "overview")
+            _ensure_tab_rendered(tab_key)
+            if on_tab_change is not None:
+                on_tab_change(tab_key)
+
+        tabs.on_value_change(_handle_tab_change)
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 def _render_overview_tab(
@@ -216,8 +256,8 @@ def _render_overview_tab(
     if profile is None:
         return
 
-    try:
-        snapshot = InvestmentAnalytics.portfolio_snapshot(
+    def _fetch_snapshot_sync() -> InvestmentPortfolioSnapshot:
+        return InvestmentAnalytics.portfolio_snapshot(
             profile,
             context.period_context,
             run_id=context.provenance.run_id if context.provenance else None,
@@ -227,11 +267,45 @@ def _render_overview_tab(
             filters=context.filters,
             cache=cache,
         )
-    except Exception as exc:
-        error_state_panel(
-            "Unable to load investment portfolio snapshot",
-            str(exc),
-        )
+
+    def _render_snapshot_body(snapshot: InvestmentPortfolioSnapshot) -> None:
+        _render_overview_snapshot_body(context, snapshot, cache=cache)
+
+    if not _has_running_loop():
+        try:
+            _render_snapshot_body(_fetch_snapshot_sync())
+        except Exception as exc:  # noqa: BLE001
+            error_state_panel("Unable to load investment portfolio snapshot", str(exc))
+        return
+
+    body_slot = ui.column().classes("w-full gap-4")
+    with body_slot:
+        loading_state_card("Loading Investment portfolio & allocation...")
+
+    async def _load_async() -> None:
+        try:
+            snapshot = await run.io_bound(_fetch_snapshot_sync)
+        except Exception as exc:  # noqa: BLE001
+            body_slot.clear()
+            with body_slot:
+                error_state_panel("Unable to load investment portfolio snapshot", str(exc))
+            return
+        body_slot.clear()
+        with body_slot:
+            _render_snapshot_body(snapshot)
+
+    ui.timer(0.01, _load_async, once=True)
+
+
+def _render_overview_snapshot_body(  # pylint: disable=too-many-statements
+    context: AppContext,
+    snapshot: InvestmentPortfolioSnapshot,
+    *,
+    cache: QueryCache | None = None,
+) -> None:
+    """Render Overview & Allocation body from an immutable `InvestmentPortfolioSnapshot`."""
+    profile = context.profile
+    if profile is None:
         return
 
     if snapshot.state != "ready" or (
@@ -295,14 +369,10 @@ def _render_overview_tab(
 
     drawer_container = ui.column().classes("w-full")
     alloc_container = ui.column().classes("w-full gap-4")
+    drawer_state: dict[str, int] = {"gen": 0}
+    alloc_state: dict[str, int] = {"gen": 0}
 
-    def _open_isin_drawer(isin: str) -> None:
-        detail = InvestmentAnalytics.instrument_detail(
-            profile,
-            isin,
-            context.period_context,
-            catalog_snapshot=context.catalog_snapshot,
-        )
+    def _render_isin_dialog(detail: Any, isin: str) -> None:
         drawer_container.clear()
         with drawer_container:
             with (
@@ -368,27 +438,39 @@ def _render_overview_tab(
                         )
             dlg.open()
 
-    def _render_allocation_section(dim_value: str, sub_value: str = "none") -> None:
-        alloc_container.clear()
-        dim = AllocationDimension(dim_value)
-        dim_label = _DIMENSION_OPTIONS.get(dim_value, dim_value)
-        if sub_value != "none":
-            sub_label = _SUB_DIMENSION_OPTIONS.get(sub_value, sub_value)
-            alloc_rows = _aggregate_sub_allocation(snapshot.holdings, dim_value, sub_value)
-            effective_label = f"{dim_label} → {sub_label}"
-        else:
-            alloc = InvestmentAnalytics.allocation(
-                profile,
-                dim,
-                context.period_context,
-                run_id=context.provenance.run_id if context.provenance else None,
-                provenance=context.provenance,
-                catalog_snapshot=context.catalog_snapshot,
-                cache=cache,
-            )
-            alloc_rows = alloc.rows
-            effective_label = dim_label
+    def _open_isin_drawer(isin: str) -> None:
+        drawer_state["gen"] += 1
+        captured_gen = drawer_state["gen"]
 
+        def _fetch_detail() -> Any:
+            return InvestmentAnalytics.instrument_detail(
+                profile,
+                isin,
+                context.period_context,
+                catalog_snapshot=context.catalog_snapshot,
+            )
+
+        if not _has_running_loop():
+            _render_isin_dialog(_fetch_detail(), isin)
+            return
+
+        async def _load_drawer() -> None:
+            try:
+                detail = await run.io_bound(_fetch_detail)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == drawer_state["gen"]:
+                    ui.notify(f"Unable to load instrument detail: {exc}", type="negative")
+                return
+            if captured_gen == drawer_state["gen"]:
+                _render_isin_dialog(detail, isin)
+
+        asyncio.ensure_future(_load_drawer())
+
+    def _draw_allocation_content(
+        alloc_rows: tuple[AllocationRow, ...],
+        effective_label: str,
+    ) -> None:
+        alloc_container.clear()
         with alloc_container:
             with ui.element("div").classes("studio-chart-grid w-full"):
                 _render_chart_card(
@@ -440,6 +522,57 @@ def _render_overview_tab(
 
             _render_allocation_table(alloc_rows, currency_id, effective_label)
             _render_holdings_table(snapshot, currency_id, _open_isin_drawer)
+
+    def _render_allocation_section(dim_value: str, sub_value: str = "none") -> None:
+        alloc_state["gen"] += 1
+        captured_gen = alloc_state["gen"]
+        dim = AllocationDimension(dim_value)
+        dim_label = _DIMENSION_OPTIONS.get(dim_value, dim_value)
+        if sub_value != "none":
+            sub_label = _SUB_DIMENSION_OPTIONS.get(sub_value, sub_value)
+            alloc_rows = _aggregate_sub_allocation(snapshot.holdings, dim_value, sub_value)
+            _draw_allocation_content(alloc_rows, f"{dim_label} → {sub_label}")
+            return
+
+        def _fetch_alloc_sync() -> tuple[AllocationRow, ...]:
+            alloc = InvestmentAnalytics.allocation(
+                profile,
+                dim,
+                context.period_context,
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                filters=context.filters,
+                cache=cache,
+            )
+            return alloc.rows
+
+        if not _has_running_loop():
+            _draw_allocation_content(_fetch_alloc_sync(), dim_label)
+            return
+
+        if not alloc_container.default_slot.children:
+            with alloc_container:
+                loading_state_card("Loading allocation breakdown...")
+
+        async def _load_alloc_async() -> None:
+            dim_select.disable()
+            sub_dim_select.disable()
+            try:
+                rows = await run.io_bound(_fetch_alloc_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == alloc_state["gen"]:
+                    alloc_container.clear()
+                    with alloc_container:
+                        error_state_panel("Unable to load allocation breakdown", str(exc))
+                return
+            finally:
+                dim_select.enable()
+                sub_dim_select.enable()
+            if captured_gen == alloc_state["gen"]:
+                _draw_allocation_content(rows, dim_label)
+
+        ui.timer(0.01, _load_alloc_async, once=True)
 
     def _on_primary_change(e: Any) -> None:
         dimension_state["primary"] = str(e.value)
@@ -638,27 +771,10 @@ def _render_performance_tab(
             )
 
     perf_container = ui.column().classes("w-full gap-4")
+    perf_state: dict[str, int] = {"gen": 0}
 
-    def _render_perf_body(dim_value: str) -> None:
+    def _draw_perf_content(snap: Any, dim_label: str) -> None:
         perf_container.clear()
-        dim = AllocationDimension(dim_value)
-        dim_label = _DIMENSION_OPTIONS.get(dim_value, dim_value)
-        try:
-            snap = InvestmentAnalytics.performance(
-                profile,
-                dim,
-                context.period_context,
-                run_id=context.provenance.run_id if context.provenance else None,
-                provenance=context.provenance,
-                catalog_snapshot=context.catalog_snapshot,
-                filters=context.filters,
-                cache=cache,
-            )
-        except Exception as exc:
-            with perf_container:
-                error_state_panel("Unable to load investment performance", str(exc))
-            return
-
         if snap.state != "ready":
             with perf_container:
                 empty_state_panel(
@@ -719,6 +835,54 @@ def _render_performance_tab(
             _render_segment_perf_table(snap.segment_rows, currency_id, dim_label)
             _render_fx_table(snap.fx_country_rows or snap.fx_currency_rows, currency_id)
             _render_isin_alpha_leaderboard(snap.isin_perf_rows, currency_id)
+
+    def _render_perf_body(dim_value: str) -> None:
+        perf_state["gen"] += 1
+        captured_gen = perf_state["gen"]
+        dim = AllocationDimension(dim_value)
+        dim_label = _DIMENSION_OPTIONS.get(dim_value, dim_value)
+
+        def _fetch_perf_sync() -> Any:
+            return InvestmentAnalytics.performance(
+                profile,
+                dim,
+                context.period_context,
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                filters=context.filters,
+                cache=cache,
+            )
+
+        if not _has_running_loop():
+            try:
+                _draw_perf_content(_fetch_perf_sync(), dim_label)
+            except Exception as exc:  # noqa: BLE001
+                perf_container.clear()
+                with perf_container:
+                    error_state_panel("Unable to load investment performance", str(exc))
+            return
+
+        if not perf_container.default_slot.children:
+            with perf_container:
+                loading_state_card("Loading investment performance & benchmarks...")
+
+        async def _load_perf_async() -> None:
+            dim_select.disable()
+            try:
+                snap = await run.io_bound(_fetch_perf_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == perf_state["gen"]:
+                    perf_container.clear()
+                    with perf_container:
+                        error_state_panel("Unable to load investment performance", str(exc))
+                return
+            finally:
+                dim_select.enable()
+            if captured_gen == perf_state["gen"]:
+                _draw_perf_content(snap, dim_label)
+
+        ui.timer(0.01, _load_perf_async, once=True)
 
     dim_select.on_value_change(lambda e: _render_perf_body(str(e.value)))
     _render_perf_body(dim_state["value"])
@@ -837,7 +1001,7 @@ def _render_isin_alpha_leaderboard(rows: tuple[Any, ...], currency_id: str) -> N
         _render_filtered("")
 
 
-def _render_lots_tab(
+def _render_lots_tab(  # pylint: disable=too-many-statements
     context: AppContext,
     *,
     cache: QueryCache | None = None,
@@ -914,21 +1078,54 @@ def _render_lots_tab(
 
     drawer_box = ui.column().classes("w-full")
     lots_container = ui.column().classes("w-full gap-4")
+    lots_gen: dict[str, int] = {"body": 0, "drawer": 0}
 
     def _open_lot_detail(lot_id: str, closing_dt: Any) -> None:
-        detail = InvestmentAnalytics.lot_detail(
-            profile,
-            lot_id,
-            closing_dt,
-            catalog_snapshot=context.catalog_snapshot,
-        )
-        drawer_box.clear()
-        with drawer_box:
-            open_lot_detail_dialog(detail, lot_id)
+        lots_gen["drawer"] += 1
+        captured_gen = lots_gen["drawer"]
+
+        def _fetch_lot() -> Any:
+            return InvestmentAnalytics.lot_detail(
+                profile,
+                lot_id,
+                closing_dt,
+                catalog_snapshot=context.catalog_snapshot,
+            )
+
+        def _show_lot(detail: Any) -> None:
+            drawer_box.clear()
+            with drawer_box:
+                open_lot_detail_dialog(detail, lot_id)
+
+        if not _has_running_loop():
+            _show_lot(_fetch_lot())
+            return
+
+        async def _load_lot() -> None:
+            try:
+                detail = await run.io_bound(_fetch_lot)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == lots_gen["drawer"]:
+                    ui.notify(f"Unable to load lot detail: {exc}", type="negative")
+                return
+            if captured_gen == lots_gen["drawer"]:
+                _show_lot(detail)
+
+        asyncio.ensure_future(_load_lot())
 
     def _build_filter() -> LotFilter:
+        def _global_val(field: FilterField) -> str | None:
+            for spec in context.filters.filters:
+                if spec.field == field and spec.value is not None:
+                    return str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+            return None
+
         max_d = int(state["max_days"]) if state["max_days"] != "ALL" else None
         return LotFilter(
+            isin=_global_val(FilterField.ISIN),
+            instrument_class=_global_val(FilterField.INSTRUMENT_CLASS),
+            sector=_global_val(FilterField.SECTOR),
+            currency_id=_global_val(FilterField.CURRENCY_ID),
             holding_type=None if state["holding_type"] == "ALL" else str(state["holding_type"]),
             harvest_recommendation=None
             if state["harvest_rec"] == "ALL"
@@ -939,26 +1136,8 @@ def _render_lots_tab(
             search=str(state["search"]).strip() or None,
         )
 
-    def _render_lots_body() -> None:
+    def _draw_lots_content(snap: Any, lf: LotFilter) -> None:
         lots_container.clear()
-        lf = _build_filter()
-        try:
-            snap = InvestmentAnalytics.lot_rows(
-                profile,
-                lf,
-                context.period_context,
-                limit=int(state["limit"]),
-                offset=int(state["offset"]),
-                run_id=context.provenance.run_id if context.provenance else None,
-                provenance=context.provenance,
-                catalog_snapshot=context.catalog_snapshot,
-                cache=cache,
-            )
-        except Exception as exc:
-            with lots_container:
-                error_state_panel("Unable to load investment lots", str(exc))
-            return
-
         if snap.state != "ready" or not snap.rows:
             msg = "No lots matched the active filter criteria."
             if snap.nearest_dates:
@@ -1038,7 +1217,7 @@ def _render_lots_tab(
                 for r in snap.chart_rows
             ]
 
-            def _export_all_lots() -> None:
+            def _export_lots_to_file_sync() -> tuple[Path, int]:
                 full_snap = InvestmentAnalytics.lot_rows(
                     profile,
                     lf,
@@ -1050,27 +1229,40 @@ def _render_lots_tab(
                     catalog_snapshot=context.catalog_snapshot,
                     cache=cache,
                 )
-                full_t_rows = [
-                    {
-                        "lot_id": r.lot_id,
-                        "inst": r.instrument_name[:30],
-                        "buy_dt": r.buy_date.isoformat() if r.buy_date else "—",
-                        "qty": f"{r.quantity:,.2f}",
-                        "buy_val": format_currency(r.buy_value, currency_id),
-                        "close_val": format_currency(r.close_value, currency_id),
-                        "pl": format_currency(r.unrealized_pl, currency_id),
-                        "xirr": format_percent(r.xirr) if r.xirr is not None else "—",
-                        "hold": r.holding_type,
-                        "d_ltcg": str(r.days_to_ltcg) if r.days_to_ltcg is not None else "—",
-                        "tax": format_currency(r.tax_if_sold, currency_id),
-                        "rec": r.harvest_recommendation,
-                    }
+                target_path = create_temp_export_path(
+                    "investment_lots.csv", default_stem="investment_lots"
+                )
+                headers = [c.label for c in cols]
+                row_iter = (
+                    (
+                        r.lot_id,
+                        r.instrument_name[:30],
+                        r.buy_date.isoformat() if r.buy_date else "—",
+                        f"{r.quantity:,.2f}",
+                        format_currency(r.buy_value, currency_id),
+                        format_currency(r.close_value, currency_id),
+                        format_currency(r.unrealized_pl, currency_id),
+                        format_percent(r.xirr) if r.xirr is not None else "—",
+                        r.holding_type,
+                        str(r.days_to_ltcg) if r.days_to_ltcg is not None else "—",
+                        format_currency(r.tax_if_sold, currency_id),
+                        r.harvest_recommendation,
+                    )
                     for r in full_snap.rows
-                ]
-                csv_bytes = rows_to_csv_bytes(cols, full_t_rows)
-                ui.download(csv_bytes, filename="investment_lots.csv")
+                )
+                count = write_rows_csv_file(headers, [list(row_iter)], target_path)
+                return target_path, count
+
+            async def _export_all_lots() -> None:
+                if not _has_running_loop():
+                    export_path, count = _export_lots_to_file_sync()
+                else:
+                    export_path, count = await run.io_bound(_export_lots_to_file_sync)
+                trigger_file_download(
+                    export_path, filename="investment_lots.csv", media_type="text/csv"
+                )
                 ui.notify(
-                    f"Exported {len(full_t_rows):,} lots to investment_lots.csv",
+                    f"Exported {count:,} lots to investment_lots.csv",
                     type="positive",
                 )
 
@@ -1108,6 +1300,51 @@ def _render_lots_tab(
                     ).props("outline dense").set_enabled(
                         int(state["offset"]) + int(state["limit"]) < snap.total_count
                     )
+
+    def _render_lots_body() -> None:
+        lots_gen["body"] += 1
+        captured_gen = lots_gen["body"]
+        lf = _build_filter()
+
+        def _fetch_lots_sync() -> Any:
+            return InvestmentAnalytics.lot_rows(
+                profile,
+                lf,
+                context.period_context,
+                limit=int(state["limit"]),
+                offset=int(state["offset"]),
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                cache=cache,
+            )
+
+        if not _has_running_loop():
+            try:
+                _draw_lots_content(_fetch_lots_sync(), lf)
+            except Exception as exc:  # noqa: BLE001
+                lots_container.clear()
+                with lots_container:
+                    error_state_panel("Unable to load investment lots", str(exc))
+            return
+
+        if not lots_container.default_slot.children:
+            with lots_container:
+                loading_state_card("Loading investment lots...")
+
+        async def _load_lots_async() -> None:
+            try:
+                snap = await run.io_bound(_fetch_lots_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == lots_gen["body"]:
+                    lots_container.clear()
+                    with lots_container:
+                        error_state_panel("Unable to load investment lots", str(exc))
+                return
+            if captured_gen == lots_gen["body"]:
+                _draw_lots_content(snap, lf)
+
+        ui.timer(0.01, _load_lots_async, once=True)
 
     def _reset_and_render(key: str, val: Any) -> None:
         state[key] = val
