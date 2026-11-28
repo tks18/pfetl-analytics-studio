@@ -2,19 +2,19 @@
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
 import json
-from pathlib import Path
 import sqlite3
-from typing import Any
 import zipfile
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
 
 import plotly.io as pio  # type: ignore[import-untyped]
 import polars as pl
-from pptx import Presentation
 import pytest
 from nicegui import Client
 from nicegui.page import page
+from pptx import Presentation
 
 from pfetl_analytics_studio.context import AppSessionManager
 from pfetl_analytics_studio.pages.reports import render_reports_page
@@ -237,9 +237,7 @@ def test_missing_saved_view_and_unknown_source_produce_broken_blocks_unless_requ
     strict_defn = ReportDefinition(
         id="fixture.broken_strict",
         name="Strict Broken Report",
-        blocks=(
-            SavedViewBlock(block_id="req_sv", view_id="nonexistent_view_id", required=True),
-        ),
+        blocks=(SavedViewBlock(block_id="req_sv", view_id="nonexistent_view_id", required=True),),
     )
     with pytest.raises(RequiredReportBlockError):
         service.render(strict_defn, app_ctx, state_db_path=state_db)
@@ -526,7 +524,6 @@ def test_prebuilt_cashflow_expense_income_reports_render_and_export(
         assert xlsx_out.bytes_written > 1000
 
 
-
 def test_prebuilt_portfolio_performance_currency_reports_render_and_export(
     profile_with_full_atlas: PFETLProfile,
     tmp_path: Path,
@@ -555,7 +552,6 @@ def test_prebuilt_portfolio_performance_currency_reports_render_and_export(
         assert pdf_out.bytes_written > 1000
         assert pptx_out.bytes_written > 4000
         assert xlsx_out.bytes_written > 1000
-
 
 
 def test_prebuilt_tax_and_fire_reports_render_and_export(
@@ -589,7 +585,6 @@ def test_prebuilt_tax_and_fire_reports_render_and_export(
         assert pdf_out.bytes_written > 1000
         assert pptx_out.bytes_written > 4000
         assert xlsx_out.bytes_written > 1000
-
 
 
 def _seed_operations_control_plane(cp_path: Path) -> None:
@@ -833,7 +828,10 @@ def test_custom_report_draft_clone_reorder_and_persistence_roundtrip(
 
         renamed = store.rename_report_definition(saved.report_id, "My Monthly Custom")
         assert renamed.name == "My Monthly Custom"
-        assert ReportDefinition.model_validate_json(renamed.definition_json).name == "My Monthly Custom"
+        assert (
+            ReportDefinition.model_validate_json(renamed.definition_json).name
+            == "My Monthly Custom"
+        )
 
         store.record_report_run(
             saved.report_id,
@@ -936,7 +934,9 @@ def test_custom_report_lifecycle_export_and_rerun_across_runs(
                     id="tmp",
                     name="tmp",
                     blocks=(
-                        NarrativeBlock(block_id="cust_note", heading="Note", body="Custom rerun check"),
+                        NarrativeBlock(
+                            block_id="cust_note", heading="Note", body="Custom rerun check"
+                        ),
                         SavedViewBlock(block_id="cust_sv", view_id=saved_view.view_id, max_rows=10),
                     ),
                 )
@@ -1033,5 +1033,3 @@ def test_sanitize_excel_sheet_name_and_filename() -> None:
     assert len(s2) <= 31
     assert s1 != s2
     assert sanitize_filename("bad:file/name?.pdf") == "bad_file_name_.pdf"
-
-
