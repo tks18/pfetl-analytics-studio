@@ -16,6 +16,7 @@ from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import InvestmentAnalytics
 from pfetl_analytics_studio.analytics.investments_models import AllocationDimension
+from pfetl_analytics_studio.reports.comparison import kpi_items_from_overview_kpis
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -26,12 +27,15 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
+from pfetl_analytics_studio.ui import (
+    build_inv_perf_alpha_trend_figure,
+    build_inv_perf_drawdown_figure,
+    build_inv_perf_segment_alpha_figure,
+)
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -53,22 +57,7 @@ def _exec_performance_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedK
         filters=ctx.report_context.filters,
         cache=ctx.cache,
     )
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=perf.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in perf.kpis[:8]
-    ]
+    items = kpi_items_from_overview_kpis(perf.kpis, perf.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="performance.kpis",
@@ -248,6 +237,62 @@ def _exec_isin_performance_table(ctx: ReportSourceContext, block_id: str) -> Ren
     )
 
 
+def _load_perf_snap(ctx: ReportSourceContext) -> Any:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    return InvestmentAnalytics.performance(
+        profile=profile,
+        dimension=AllocationDimension.CLASS,
+        period_context=ctx.report_context.period,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        filters=ctx.report_context.filters,
+        cache=ctx.cache,
+    )
+
+
+def _exec_drawdown_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    perf = _load_perf_snap(ctx)
+    fig = build_inv_perf_drawdown_figure(perf.history) if perf.history else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="performance.drawdown_chart",
+        title=ctx.title_override or "Historical Max Drawdown",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_portfolio",),
+    )
+
+
+def _exec_alpha_trend_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    perf = _load_perf_snap(ctx)
+    fig = build_inv_perf_alpha_trend_figure(perf.history) if perf.history else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="performance.alpha_trend_chart",
+        title=ctx.title_override or "Active Alpha Trend (vs Benchmark)",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_portfolio",),
+    )
+
+
+def _exec_segment_alpha_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    perf = _load_perf_snap(ctx)
+    fig = (
+        build_inv_perf_segment_alpha_figure(perf.segment_rows, dimension_label="Asset Class")
+        if perf.segment_rows
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="performance.segment_alpha_chart",
+        title=ctx.title_override or "Segment XIRR vs Benchmark by Asset Class",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_class",),
+    )
+
+
 INVESTMENT_PERFORMANCE_BENCHMARK_DEF = ReportDefinition(
     id="investment_performance_benchmark",
     name="Investment Performance & Benchmark",
@@ -289,6 +334,21 @@ INVESTMENT_PERFORMANCE_BENCHMARK_DEF = ReportDefinition(
             block_id="perf_pnl_chart",
             source_id="performance.asset_vs_fx_pnl_chart",
             title="Asset P&L vs Forex P&L Decomposition",
+        ),
+        ChartBlock(
+            block_id="perf_drawdown_chart",
+            source_id="performance.drawdown_chart",
+            title="Historical Max Drawdown",
+        ),
+        ChartBlock(
+            block_id="perf_alpha_trend_chart",
+            source_id="performance.alpha_trend_chart",
+            title="Active Alpha Trend (vs Benchmark)",
+        ),
+        ChartBlock(
+            block_id="perf_segment_alpha_chart",
+            source_id="performance.segment_alpha_chart",
+            title="Segment XIRR vs Benchmark by Asset Class",
         ),
         PageBreakBlock(block_id="pb_perf_3"),
         TableBlock(
@@ -342,6 +402,33 @@ def register_performance_sources(registry: ReportRegistry) -> None:
             title="ISIN Performance Table",
             source_tables=("gold.investment_by_isin",),
             executor=_exec_isin_performance_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="performance.drawdown_chart",
+            kind=ReportSourceKind.CHART,
+            title="Historical Max Drawdown",
+            source_tables=("gold.investment_by_portfolio",),
+            executor=_exec_drawdown_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="performance.alpha_trend_chart",
+            kind=ReportSourceKind.CHART,
+            title="Active Alpha Trend (vs Benchmark)",
+            source_tables=("gold.investment_by_portfolio",),
+            executor=_exec_alpha_trend_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="performance.segment_alpha_chart",
+            kind=ReportSourceKind.CHART,
+            title="Segment XIRR vs Benchmark by Asset Class",
+            source_tables=("gold.investment_by_class",),
+            executor=_exec_segment_alpha_chart,
         )
     )
     registry.register_definition(INVESTMENT_PERFORMANCE_BENCHMARK_DEF)

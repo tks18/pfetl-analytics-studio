@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import HouseholdAnalytics
+from pfetl_analytics_studio.reports.comparison import kpi_items_from_overview_kpis
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -25,12 +26,10 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -63,22 +62,7 @@ def _exec_cashflow_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
         cache=ctx.cache,
     )
     combined = list(budget.kpis[:4]) + list(cashflow.kpis[:4])
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=budget.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in combined
-    ]
+    items = kpi_items_from_overview_kpis(combined, budget.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="cashflow.kpis",
@@ -347,6 +331,11 @@ CASHFLOW_BUDGET_REVIEW_DEF = ReportDefinition(
             block_id="cf_waterfall_chart",
             source_id="cashflow.activity_waterfall_chart",
             title="Cashflow Activity Bridge",
+        ),
+        ChartBlock(
+            block_id="cf_income_expense_trend",
+            source_id="monthly.income_expense_cashflow_chart",
+            title="Monthly Income, Expense & Net Cashflow Trend",
         ),
         PageBreakBlock(block_id="pb_cf_3"),
         TableBlock(

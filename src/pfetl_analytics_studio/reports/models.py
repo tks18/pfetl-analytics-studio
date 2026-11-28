@@ -217,6 +217,10 @@ class ReportKpiItem(BaseModel):
     subtitle: str = ""
     tone: str = "neutral"
     source_table: str = ""
+    delta_text: str = ""
+    delta_tone: str = "neutral"
+    breakups: tuple[tuple[str, str], ...] = ()
+    tooltip: str = ""
 
 
 class RenderedTextBlock(BaseModel):
@@ -245,6 +249,7 @@ class RenderedProvenanceBlock(BaseModel):
     settings_snapshot_id: str | None = None
     rules_snapshot_id: str | None = None
     period_label: str
+    comparison_label: str = ""
     studio_version: str
     generated_at: datetime
     currency_mode: CurrencyMode = "base"

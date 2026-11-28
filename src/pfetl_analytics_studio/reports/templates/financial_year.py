@@ -16,6 +16,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import HouseholdAnalytics, OverviewService, TaxAnalytics
+from pfetl_analytics_studio.reports.comparison import (
+    comparison_period_context,
+    enrich_table_with_comparison,
+    kpi_items_from_overview_kpis,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -26,12 +31,10 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -53,22 +56,7 @@ def _exec_fy_headline_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedK
         filters=ctx.report_context.filters,
         cache=ctx.cache,
     )
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=snap.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in snap.primary_kpis[:8]
-    ]
+    items = kpi_items_from_overview_kpis(snap.primary_kpis, snap.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="fy.headline_kpis",
@@ -146,7 +134,7 @@ def _exec_fy_cashflow_statement(ctx: ReportSourceContext, block_id: str) -> Rend
         filters=ctx.report_context.filters,
         cache=ctx.cache,
     )
-    rows = [
+    rows: list[dict[str, Any]] = [
         {"Activity": "Opening Cash Balance", "Amount": cf.opening_cash},
         {"Activity": "Operating Cashflow (Net)", "Amount": cf.net_operating},
         {"Activity": "Investing Cashflow (Net)", "Amount": cf.net_investing},
@@ -157,11 +145,43 @@ def _exec_fy_cashflow_statement(ctx: ReportSourceContext, block_id: str) -> Rend
         {"Activity": "Actual Cash Change", "Amount": cf.actual_cash_change},
         {"Activity": "Unreconciled Difference", "Amount": cf.unreconciled_difference},
     ]
+    cols: tuple[str, ...] = ("Activity", "Amount")
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    if comp_ctx is not None:
+        prior_cf = HouseholdAnalytics.cashflow_statement(
+            profile=profile,
+            period_context=comp_ctx,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            compatibility=ctx.app_context.compatibility,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            filters=ctx.report_context.filters,
+            cache=ctx.cache,
+        )
+        prior_by_key = {
+            "Opening Cash Balance": {"Amount": prior_cf.opening_cash},
+            "Operating Cashflow (Net)": {"Amount": prior_cf.net_operating},
+            "Investing Cashflow (Net)": {"Amount": prior_cf.net_investing},
+            "Financing Cashflow (Net)": {"Amount": prior_cf.net_financing},
+            "Internal Transfers (Net)": {"Amount": prior_cf.net_transfers},
+            "Calculated Net Cashflow": {"Amount": prior_cf.calculated_net_cashflow},
+            "Closing Cash Balance": {"Amount": prior_cf.closing_cash},
+            "Actual Cash Change": {"Amount": prior_cf.actual_cash_change},
+            "Unreconciled Difference": {"Amount": prior_cf.unreconciled_difference},
+        }
+        cols, rows = enrich_table_with_comparison(
+            cols,
+            rows,
+            prior_by_key,
+            key_col="Activity",
+            value_col="Amount",
+            comparison_label=comp_ctx.label,
+        )
     return RenderedTableBlock(
         block_id=block_id,
         source_id="fy.cashflow_statement_table",
         title=ctx.title_override or "FY Cashflow Statement & Reconciliation",
-        columns=("Activity", "Amount"),
+        columns=cols,
         rows=tuple(rows[: ctx.max_rows]),
         total_rows=len(rows),
         truncated=len(rows) > ctx.max_rows,
@@ -264,6 +284,21 @@ FINANCIAL_YEAR_REVIEW_DEF = ReportDefinition(
             block_id="fy_nw_trend",
             source_id="overview.net_worth_trend",
             title="FY Net Worth & Savings Flow",
+        ),
+        ChartBlock(
+            block_id="fy_cashflow_trend",
+            source_id="monthly.income_expense_cashflow_chart",
+            title="FY Monthly Income, Expense & Net Cashflow",
+        ),
+        ChartBlock(
+            block_id="fy_alloc_donut",
+            source_id="monthly.alloc_donut_chart",
+            title="FY Portfolio Asset Class Allocation",
+        ),
+        ChartBlock(
+            block_id="fy_tax_comp_chart",
+            source_id="tax_pos.head_breakdown_chart",
+            title="FY Tax Breakdown by Income Head",
         ),
         PageBreakBlock(block_id="pb_fy_3"),
         TableBlock(

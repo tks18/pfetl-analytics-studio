@@ -17,6 +17,7 @@ from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import HouseholdAnalytics, OverviewService
 from pfetl_analytics_studio.analytics.overview_models import OverviewSnapshot
+from pfetl_analytics_studio.reports.comparison import kpi_items_from_overview_kpis
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -32,7 +33,12 @@ from pfetl_analytics_studio.reports.models import (
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
+from pfetl_analytics_studio.ui import (
+    build_asset_class_mix_figure,
+    build_category_breakup_figure,
+    build_fire_trajectory_figure,
+    build_portfolio_return_figure,
+)
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -313,26 +319,7 @@ def _exec_budget_cashflow_table(ctx: ReportSourceContext, block_id: str) -> Rend
 def _exec_portfolio_tax_fire_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGroupBlock:
     """Build secondary Portfolio, Indicative Tax, and FIRE KPI cards."""
     snap = _load_overview(ctx)
-    items: list[ReportKpiItem] = []
-    for kpi in snap.secondary_kpis[:8]:
-        formatted = format_metric_value(
-            kpi.value,
-            kpi.format,
-            currency_id=snap.currency_id,
-            unit_suffix=kpi.unit_suffix,
-        )
-        items.append(
-            ReportKpiItem(
-                label=kpi.label,
-                value=str(kpi.value)
-                if not isinstance(kpi.value, (int, float))
-                else float(kpi.value),
-                formatted_value=formatted,
-                subtitle=kpi.subtitle,
-                tone=kpi.status_tone,
-                source_table=kpi.source_table,
-            )
-        )
+    items = kpi_items_from_overview_kpis(snap.secondary_kpis, snap.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="monthly.portfolio_tax_fire_kpis",
@@ -380,6 +367,70 @@ def _exec_asset_class_mix_table(ctx: ReportSourceContext, block_id: str) -> Rend
         total_rows=len(rows),
         truncated=len(rows) > ctx.max_rows,
         source_tables=("gold.investment_by_class",),
+    )
+
+
+def _exec_alloc_donut_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build Asset Class Allocation Donut from `OverviewSnapshot`."""
+    snap = _load_overview(ctx)
+    fig = (
+        build_asset_class_mix_figure(snap.asset_class_mix, currency_id=snap.currency_id)
+        if snap.asset_class_mix
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="monthly.alloc_donut_chart",
+        title=ctx.title_override or "Portfolio Asset Class Allocation",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_class",),
+    )
+
+
+def _exec_portfolio_xirr_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build Portfolio Market vs Invested & XIRR trend from `OverviewSnapshot`."""
+    snap = _load_overview(ctx)
+    fig = (
+        build_portfolio_return_figure(snap.portfolio_series, currency_id=snap.currency_id)
+        if snap.portfolio_series
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="monthly.portfolio_xirr_chart",
+        title=ctx.title_override or "Portfolio Valuation & XIRR vs Benchmark",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_portfolio",),
+    )
+
+
+def _exec_fire_traj_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build FIRE Coverage & Monte Carlo Success Probability trend from `OverviewSnapshot`."""
+    snap = _load_overview(ctx)
+    fig = build_fire_trajectory_figure(snap.fire_series) if snap.fire_series else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="monthly.fire_traj_chart",
+        title=ctx.title_override or "FIRE Coverage & Monte Carlo Success Trend",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_fire_analytics",),
+    )
+
+
+def _exec_expense_breakup_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build Top Expense Categories horizontal bar from `OverviewSnapshot`."""
+    snap = _load_overview(ctx)
+    fig = (
+        build_category_breakup_figure(snap.expense_breakup, currency_id=snap.currency_id)
+        if snap.expense_breakup
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="monthly.expense_breakup_chart",
+        title=ctx.title_override or "Top Expense Categories",
+        figure_dict=fig or {},
+        source_tables=("gold.cashflow_expense_breakdown",),
     )
 
 
@@ -443,6 +494,26 @@ MONTHLY_FINANCIAL_REVIEW_DEF = ReportDefinition(
             block_id="monthly_secondary_kpis",
             source_id="monthly.portfolio_tax_fire_kpis",
             title="Portfolio, Indicative Tax & FIRE Summary",
+        ),
+        ChartBlock(
+            block_id="monthly_expense_breakup_chart",
+            source_id="monthly.expense_breakup_chart",
+            title="Top Expense Categories",
+        ),
+        ChartBlock(
+            block_id="monthly_alloc_donut_chart",
+            source_id="monthly.alloc_donut_chart",
+            title="Portfolio Asset Class Allocation",
+        ),
+        ChartBlock(
+            block_id="monthly_portfolio_xirr_chart",
+            source_id="monthly.portfolio_xirr_chart",
+            title="Portfolio Valuation & XIRR vs Benchmark",
+        ),
+        ChartBlock(
+            block_id="monthly_fire_traj_chart",
+            source_id="monthly.fire_traj_chart",
+            title="FIRE Coverage & Monte Carlo Success Trend",
         ),
         TableBlock(
             block_id="monthly_asset_mix",
@@ -517,6 +588,42 @@ def register_monthly_sources(registry: ReportRegistry) -> None:
             title="Asset Class Allocation Table",
             source_tables=("gold.investment_by_class",),
             executor=_exec_asset_class_mix_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="monthly.alloc_donut_chart",
+            kind=ReportSourceKind.CHART,
+            title="Portfolio Asset Class Allocation",
+            source_tables=("gold.investment_by_class",),
+            executor=_exec_alloc_donut_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="monthly.portfolio_xirr_chart",
+            kind=ReportSourceKind.CHART,
+            title="Portfolio Valuation & XIRR vs Benchmark",
+            source_tables=("gold.investment_by_portfolio",),
+            executor=_exec_portfolio_xirr_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="monthly.fire_traj_chart",
+            kind=ReportSourceKind.CHART,
+            title="FIRE Coverage & Monte Carlo Success Trend",
+            source_tables=("gold.wealth_fire_analytics",),
+            executor=_exec_fire_traj_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="monthly.expense_breakup_chart",
+            kind=ReportSourceKind.CHART,
+            title="Top Expense Categories",
+            source_tables=("gold.cashflow_expense_breakdown",),
+            executor=_exec_expense_breakup_chart,
         )
     )
     registry.register_definition(MONTHLY_FINANCIAL_REVIEW_DEF)

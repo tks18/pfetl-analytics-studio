@@ -20,6 +20,10 @@ from pfetl_analytics_studio.analytics.investments_models import (
     AllocationDimension,
     FxExposureRow,
 )
+from pfetl_analytics_studio.reports.comparison import (
+    comparison_period_context,
+    format_delta_kpi_fields,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -34,7 +38,8 @@ from pfetl_analytics_studio.reports.models import (
     TableBlock,
     TitleBlock,
 )
-from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.semantic import FilterSet, MetricFormat, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.ui import build_inv_perf_fx_impact_figure
 from pfetl_analytics_studio.ui.formatting import format_currency, format_percent
 from pfetl_analytics_studio.ui.theme import StudioColor
 
@@ -61,6 +66,40 @@ def _exec_currency_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
     total_invested = sum(r.base_invested for r in perf.fx_currency_rows)
     non_base = sum(r.base_current for r in perf.fx_currency_rows if not r.bucket.endswith("_INR"))
     fx_share = (non_base / total_base) if total_base > 0 else 0.0
+
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    prior_base: float | None = None
+    prior_non_base: float | None = None
+    prior_lbl = comp_ctx.label if comp_ctx else "Prior"
+    if comp_ctx is not None:
+        prior_perf = InvestmentAnalytics.performance(
+            profile=profile,
+            dimension=AllocationDimension.CURRENCY,
+            period_context=comp_ctx,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            filters=ctx.report_context.filters,
+            cache=ctx.cache,
+        )
+        prior_base = sum(r.base_current for r in prior_perf.fx_currency_rows)
+        prior_non_base = sum(
+            r.base_current for r in prior_perf.fx_currency_rows if not r.bucket.endswith("_INR")
+        )
+    base_d, base_tone, base_br = format_delta_kpi_fields(
+        total_base,
+        prior_base,
+        MetricFormat.CURRENCY,
+        currency_id=perf.currency_id,
+        comparison_label=prior_lbl,
+    )
+    fx_d, fx_tone, fx_br = format_delta_kpi_fields(
+        non_base,
+        prior_non_base,
+        MetricFormat.CURRENCY,
+        currency_id=perf.currency_id,
+        comparison_label=prior_lbl,
+    )
     items = (
         ReportKpiItem(
             label="Total Base Exposure",
@@ -68,6 +107,9 @@ def _exec_currency_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
             formatted_value=format_currency(total_base, currency_id=perf.currency_id),
             subtitle=f"Invested: {format_currency(total_invested, currency_id=perf.currency_id)}",
             source_table="gold.investment_by_currency",
+            delta_text=base_d,
+            delta_tone=base_tone,
+            breakups=base_br,
         ),
         ReportKpiItem(
             label="Foreign Currency Exposure",
@@ -75,6 +117,9 @@ def _exec_currency_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
             formatted_value=format_currency(non_base, currency_id=perf.currency_id),
             subtitle=f"{format_percent(fx_share)} of portfolio",
             source_table="gold.investment_by_currency",
+            delta_text=fx_d,
+            delta_tone=fx_tone,
+            breakups=fx_br,
         ),
         ReportKpiItem(
             label="Currencies Held",
@@ -252,6 +297,32 @@ def _exec_country_breakdown_table(ctx: ReportSourceContext, block_id: str) -> Re
     )
 
 
+def _exec_fx_impact_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build Country / Currency FX Impact (Local vs Base XIRR) chart."""
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    perf = InvestmentAnalytics.performance(
+        profile=profile,
+        dimension=AllocationDimension.COUNTRY,
+        period_context=ctx.report_context.period,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        filters=ctx.report_context.filters,
+        cache=ctx.cache,
+    )
+    rows = perf.fx_country_rows or perf.fx_currency_rows
+    fig = build_inv_perf_fx_impact_figure(rows) if rows else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="currency.fx_impact_chart",
+        title=ctx.title_override or "Local vs Base XIRR & FX Impact",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_country", "gold.investment_by_currency"),
+    )
+
+
 MULTI_CURRENCY_EXPOSURE_REVIEW_DEF = ReportDefinition(
     id="multi_currency_exposure_review",
     name="Multi-Currency Exposure Review",
@@ -287,6 +358,11 @@ MULTI_CURRENCY_EXPOSURE_REVIEW_DEF = ReportDefinition(
             block_id="fx_chart",
             source_id="currency.exposure_chart",
             title="Currency Allocation (Base Value)",
+        ),
+        ChartBlock(
+            block_id="fx_impact_chart",
+            source_id="currency.fx_impact_chart",
+            title="Local vs Base XIRR & FX Impact",
         ),
         PageBreakBlock(block_id="pb_fx_2"),
         TableBlock(
@@ -347,6 +423,15 @@ def register_currency_sources(registry: ReportRegistry) -> None:
             title="Country FX Breakdown",
             source_tables=("gold.investment_by_country",),
             executor=_exec_country_breakdown_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="currency.fx_impact_chart",
+            kind=ReportSourceKind.CHART,
+            title="Local vs Base XIRR & FX Impact",
+            source_tables=("gold.investment_by_country", "gold.investment_by_currency"),
+            executor=_exec_fx_impact_chart,
         )
     )
     registry.register_definition(MULTI_CURRENCY_EXPOSURE_REVIEW_DEF)

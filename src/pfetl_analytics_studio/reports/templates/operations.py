@@ -37,6 +37,10 @@ from pfetl_analytics_studio.reports.models import (
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterField, FilterSet, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.ui import (
+    build_ops_status_breakdown_figure,
+    build_ops_table_row_counts_figure,
+)
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -141,6 +145,17 @@ def _exec_ops_health_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKP
     prov_ok = sum(1 for req in prv.requests if req.status.upper() in ("SUCCESS", "CACHED"))
     latest_sim = sim.runs[0] if sim.runs else None
 
+    prev_run = runs[1] if len(runs) >= 2 else None
+    dur_delta = ""
+    if (
+        latest
+        and prev_run
+        and latest.duration_seconds is not None
+        and prev_run.duration_seconds is not None
+    ):
+        diff_s = latest.duration_seconds - prev_run.duration_seconds
+        dur_delta = f"{diff_s:+.1f}s vs prior run"
+
     items = (
         ReportKpiItem(
             label="Run Success Rate",
@@ -148,6 +163,8 @@ def _exec_ops_health_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKP
             formatted_value=f"{success_rate:.0f}% ({ok_runs}/{total_runs})",
             subtitle=(f"Latest: {latest.status} · {latest_dur}" if latest else "No runs in window"),
             source_table="cp_runs",
+            delta_text=dur_delta,
+            breakups=(("Latest", latest_dur), ("Runs", str(total_runs))),
         ),
         ReportKpiItem(
             label="Sync Window Totals",
@@ -155,6 +172,7 @@ def _exec_ops_health_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKP
             formatted_value=f"{synced:,} synced",
             subtitle=f"Healed {healed} · Failed {failed_sync} · Deferred {deferred}",
             source_table="cp_run_sync_summaries",
+            breakups=(("Healed", str(healed)), ("Failed", str(failed_sync))),
         ),
         ReportKpiItem(
             label="Warehouse Contracts",
@@ -251,12 +269,12 @@ def _exec_run_trend_chart(ctx: ReportSourceContext, block_id: str) -> RenderedCh
         data.append(
             {
                 "type": "scatter",
-                "mode": "markers+text",
+                "mode": "markers",
                 "name": "Snapshot Change",
                 "x": change_x,
                 "y": change_y,
                 "text": change_text,
-                "textposition": "top center",
+                "hovertemplate": "%{x}<br>%{text}: %{y:.1f}s<extra></extra>",
                 "marker": {"color": StudioColor.ACCENT, "size": 11, "symbol": "diamond"},
             }
         )
@@ -605,6 +623,43 @@ def _exec_providers_failures_table(ctx: ReportSourceContext, block_id: str) -> R
     )
 
 
+def _exec_ops_status_matrix_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    snap = OperationsAnalytics.run_history(
+        profile,
+        RunHistoryFilter(limit=100),
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = build_ops_status_breakdown_figure(snap.runs) if snap.runs else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="ops.status_matrix_chart",
+        title=ctx.title_override or "Run Status x Commit State Matrix",
+        figure_dict=fig or {},
+        source_tables=("cp_runs",),
+    )
+
+
+def _exec_ops_top_tables_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    wh = OperationsAnalytics.warehouse_health(
+        profile, catalog_snapshot=ctx.app_context.catalog_snapshot, cache=ctx.cache
+    )
+    fig = build_ops_table_row_counts_figure(wh.tables) if wh.tables else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="ops.top_tables_chart",
+        title=ctx.title_override or "Top Warehouse Tables by Row Count",
+        figure_dict=fig or {},
+        source_tables=("meta.m_Table_Row_Counts",),
+    )
+
+
 DATA_HEALTH_OPERATIONS_DEF = ReportDefinition(
     id="data_health_operations",
     name="Data Health & PFETL Operations",
@@ -656,6 +711,16 @@ DATA_HEALTH_OPERATIONS_DEF = ReportDefinition(
             block_id="ops_wh_chart",
             source_id="ops.warehouse_health_chart",
             title="Warehouse Contract Health by Layer",
+        ),
+        ChartBlock(
+            block_id="ops_status_matrix_chart",
+            source_id="ops.status_matrix_chart",
+            title="Run Status x Commit State Matrix",
+        ),
+        ChartBlock(
+            block_id="ops_top_tables_chart",
+            source_id="ops.top_tables_chart",
+            title="Top Warehouse Tables by Row Count",
         ),
         TableBlock(
             block_id="ops_runs_table",
@@ -739,6 +804,24 @@ def register_operations_sources(registry: ReportRegistry) -> None:
                 "cp_simulation_runs",
             ),
             executor=_exec_providers_failures_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="ops.status_matrix_chart",
+            kind=ReportSourceKind.CHART,
+            title="Run Status x Commit State Matrix",
+            source_tables=("cp_runs",),
+            executor=_exec_ops_status_matrix_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="ops.top_tables_chart",
+            kind=ReportSourceKind.CHART,
+            title="Top Warehouse Tables by Row Count",
+            source_tables=("meta.m_Table_Row_Counts",),
+            executor=_exec_ops_top_tables_chart,
         )
     )
     registry.register_definition(DATA_HEALTH_OPERATIONS_DEF)

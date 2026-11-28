@@ -15,6 +15,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import HouseholdAnalytics
+from pfetl_analytics_studio.reports.comparison import (
+    build_period_comparison_bar_figure,
+    comparison_period_context,
+    enrich_table_with_comparison,
+    kpi_items_from_overview_kpis,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -25,12 +31,10 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -52,22 +56,11 @@ def _exec_expense_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
         filters=ctx.report_context.filters,
         cache=ctx.cache,
     )
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=snap.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in (list(snap.primary_kpis[:4]) + list(snap.secondary_kpis[:4]))
-    ]
+    items = kpi_items_from_overview_kpis(
+        list(snap.primary_kpis[:4]) + list(snap.secondary_kpis[:4]),
+        snap.currency_id,
+        limit=8,
+    )
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="expense.kpis",
@@ -157,24 +150,49 @@ def _exec_expense_category_chart(ctx: ReportSourceContext, block_id: str) -> Ren
         cache=ctx.cache,
     )
     top_cats = sorted(snap.category_rows, key=lambda r: r.amount, reverse=True)[:10]
-    figure_dict: dict[str, Any] = {
-        "data": [
-            {
-                "type": "bar",
-                "name": "Category Spend",
-                "x": [c.category_name for c in top_cats],
-                "y": [c.amount for c in top_cats],
-                "marker": {"color": StudioColor.ERROR},
-            }
-        ],
-        "layout": {
-            "paper_bgcolor": "rgba(0,0,0,0)",
-            "plot_bgcolor": "rgba(13,17,23,0.65)",
-            "font": {"color": StudioColor.TEXT},
-            "xaxis": {"title": "Expense Category"},
-            "yaxis": {"title": "Spend (INR)"},
-        },
-    }
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    if comp_ctx is not None and top_cats:
+        prior_snap = HouseholdAnalytics.expense_summary(
+            profile=profile,
+            period_context=comp_ctx,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            compatibility=ctx.app_context.compatibility,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            filters=ctx.report_context.filters,
+            cache=ctx.cache,
+        )
+        prior_map = {r.category_name: r.amount for r in prior_snap.category_rows}
+        figure_dict = (
+            build_period_comparison_bar_figure(
+                [c.category_name for c in top_cats],
+                [c.amount for c in top_cats],
+                [prior_map.get(c.category_name, 0.0) for c in top_cats],
+                currency_id=snap.currency_id,
+                current_label=snap.period_label,
+                prior_label=comp_ctx.label,
+            )
+            or {}
+        )
+    else:
+        figure_dict = {
+            "data": [
+                {
+                    "type": "bar",
+                    "name": "Category Spend",
+                    "x": [c.category_name for c in top_cats],
+                    "y": [c.amount for c in top_cats],
+                    "marker": {"color": StudioColor.ERROR},
+                }
+            ],
+            "layout": {
+                "paper_bgcolor": "rgba(0,0,0,0)",
+                "plot_bgcolor": "rgba(13,17,23,0.65)",
+                "font": {"color": StudioColor.TEXT},
+                "xaxis": {"title": "Expense Category"},
+                "yaxis": {"title": "Spend (INR)"},
+            },
+        }
     return RenderedChartBlock(
         block_id=block_id,
         source_id="expense.category_contribution_chart",
@@ -213,20 +231,42 @@ def _exec_expense_category_table(ctx: ReportSourceContext, block_id: str) -> Ren
         }
         for c in sorted(snap.category_rows, key=lambda r: r.amount, reverse=True)
     ]
+    cols: tuple[str, ...] = (
+        "Category",
+        "Group",
+        "Spend Type",
+        "Core",
+        "Amount",
+        "Trailing 3M Avg",
+        "YTD",
+        "Share (%)",
+    )
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    if comp_ctx is not None:
+        prior_snap = HouseholdAnalytics.expense_summary(
+            profile=profile,
+            period_context=comp_ctx,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            compatibility=ctx.app_context.compatibility,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            filters=ctx.report_context.filters,
+            cache=ctx.cache,
+        )
+        prior_by_key = {r.category_name: {"Amount": r.amount} for r in prior_snap.category_rows}
+        cols, rows = enrich_table_with_comparison(
+            cols,
+            rows,
+            prior_by_key,
+            key_col="Category",
+            value_col="Amount",
+            comparison_label=comp_ctx.label,
+        )
     return RenderedTableBlock(
         block_id=block_id,
         source_id="expense.category_table",
         title=ctx.title_override or "Expense Category & Spend-Type Breakdown",
-        columns=(
-            "Category",
-            "Group",
-            "Spend Type",
-            "Core",
-            "Amount",
-            "Trailing 3M Avg",
-            "YTD",
-            "Share (%)",
-        ),
+        columns=cols,
         rows=tuple(rows[: ctx.max_rows]),
         total_rows=len(rows),
         truncated=len(rows) > ctx.max_rows,
@@ -311,6 +351,11 @@ EXPENSE_LIFESTYLE_REVIEW_DEF = ReportDefinition(
             block_id="exp_cat_chart",
             source_id="expense.category_contribution_chart",
             title="Top 10 Expense Categories",
+        ),
+        ChartBlock(
+            block_id="exp_income_compare_chart",
+            source_id="monthly.income_expense_cashflow_chart",
+            title="Monthly Income vs Expense Trajectory",
         ),
         PageBreakBlock(block_id="pb_exp_3"),
         TableBlock(

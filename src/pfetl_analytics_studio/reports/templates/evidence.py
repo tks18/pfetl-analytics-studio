@@ -35,6 +35,7 @@ from pfetl_analytics_studio.reports.models import (
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterField, FilterSet, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.ui import build_ops_source_freshness_timeline_figure
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -87,6 +88,10 @@ def _exec_evidence_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
             formatted_value=f"{src.total_count:,} files",
             subtitle=f"{len(src.category_counts)} categories · Sample synced: {synced_files}/{len(src.files)}",
             source_table="cp_file_registry",
+            breakups=(
+                ("Synced", f"{synced_files}/{len(src.files)}"),
+                ("Categories", str(len(src.category_counts))),
+            ),
         ),
         ReportKpiItem(
             label="Artifact Events",
@@ -94,6 +99,10 @@ def _exec_evidence_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
             formatted_value=f"{len(aev.events):,} events",
             subtitle=f"Converged: {converged_events} · Types: {len(aev.available_event_types)}",
             source_table="cp_artifact_run_events",
+            breakups=(
+                ("Converged", str(converged_events)),
+                ("Types", str(len(aev.available_event_types))),
+            ),
         ),
         ReportKpiItem(
             label="Retained Payloads",
@@ -348,6 +357,23 @@ def _exec_payload_availability_table(ctx: ReportSourceContext, block_id: str) ->
     )
 
 
+def _exec_freshness_timeline_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    src = OperationsAnalytics.source_registry(
+        profile, SourceRegistryFilter(limit=250), cache=ctx.cache
+    )
+    fig = build_ops_source_freshness_timeline_figure(src.files) if src.files else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="evidence.freshness_timeline_chart",
+        title=ctx.title_override or "Source File Freshness Timeline",
+        figure_dict=fig or {},
+        source_tables=("cp_file_registry",),
+    )
+
+
 SOURCE_EVIDENCE_CHANGE_DEF = ReportDefinition(
     id="source_evidence_change",
     name="Source Evidence & Change Report",
@@ -393,6 +419,11 @@ SOURCE_EVIDENCE_CHANGE_DEF = ReportDefinition(
             block_id="evidence_events_chart",
             source_id="evidence.artifact_events_chart",
             title="Artifact Change & Convergence Breakdown",
+        ),
+        ChartBlock(
+            block_id="evidence_freshness_chart",
+            source_id="evidence.freshness_timeline_chart",
+            title="Source File Freshness Timeline",
         ),
         PageBreakBlock(block_id="evidence_pb_2"),
         TableBlock(
@@ -462,6 +493,15 @@ def register_evidence_sources(registry: ReportRegistry) -> None:
             title="Source Registry & Retained-Payload Availability",
             source_tables=("cp_file_registry", "cp_file_payloads"),
             executor=_exec_payload_availability_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="evidence.freshness_timeline_chart",
+            kind=ReportSourceKind.CHART,
+            title="Source File Freshness Timeline",
+            source_tables=("cp_file_registry",),
+            executor=_exec_freshness_timeline_chart,
         )
     )
     registry.register_definition(SOURCE_EVIDENCE_CHANGE_DEF)

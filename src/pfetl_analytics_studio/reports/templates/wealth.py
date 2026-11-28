@@ -15,6 +15,9 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import WealthAnalytics
+from pfetl_analytics_studio.reports.comparison import (
+    kpi_items_from_overview_kpis,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -25,12 +28,14 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
+from pfetl_analytics_studio.ui import (
+    build_wealth_group_treemap_figure,
+    build_wealth_savings_vs_market_figure,
+)
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -52,22 +57,7 @@ def _exec_wealth_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGro
         filters=ctx.report_context.filters,
         cache=ctx.cache,
     )
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=snap.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in snap.kpis[:8]
-    ]
+    items = kpi_items_from_overview_kpis(snap.kpis, snap.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="wealth.kpis",
@@ -187,6 +177,58 @@ def _exec_asset_subcategory_table(ctx: ReportSourceContext, block_id: str) -> Re
     )
 
 
+def _exec_asset_split_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build Asset Group -> Asset Subcategory treemap from `WealthAssetBreakdown`."""
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    breakdown = WealthAnalytics.asset_breakdown(
+        profile=profile,
+        period_context=ctx.report_context.period,
+        filters=ctx.report_context.filters,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = (
+        build_wealth_group_treemap_figure(breakdown.assets, breakdown.currency_id)
+        if breakdown.assets
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="wealth.asset_split_chart",
+        title=ctx.title_override or "Asset Group Allocation (Market vs Book)",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_asset_breakdown",),
+    )
+
+
+def _exec_cum_return_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    """Build Cumulative Net Savings vs Market Balance figure."""
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    breakdown = WealthAnalytics.asset_breakdown(
+        profile=profile,
+        period_context=ctx.report_context.period,
+        filters=ctx.report_context.filters,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = (
+        build_wealth_savings_vs_market_figure(breakdown.assets, breakdown.currency_id)
+        if breakdown.assets
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="wealth.cum_return_chart",
+        title=ctx.title_override or "Cumulative Savings vs Market Return",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_asset_breakdown",),
+    )
+
+
 NET_WORTH_WEALTH_ATTRIBUTION_DEF = ReportDefinition(
     id="net_worth_wealth_attribution",
     name="Net Worth & Wealth Attribution",
@@ -228,6 +270,16 @@ NET_WORTH_WEALTH_ATTRIBUTION_DEF = ReportDefinition(
             block_id="wealth_attribution_bridge",
             source_id="monthly.attribution_waterfall",
             title="Net Worth Attribution Bridge",
+        ),
+        ChartBlock(
+            block_id="wealth_asset_split_chart",
+            source_id="wealth.asset_split_chart",
+            title="Asset Group Allocation (Market vs Book)",
+        ),
+        ChartBlock(
+            block_id="wealth_cum_return_chart",
+            source_id="wealth.cum_return_chart",
+            title="Cumulative Savings vs Market Return",
         ),
         PageBreakBlock(block_id="pb_wealth_3"),
         TableBlock(
@@ -272,6 +324,24 @@ def register_wealth_sources(registry: ReportRegistry) -> None:
             title="Asset Subcategory Table",
             source_tables=("gold.wealth_asset_breakdown",),
             executor=_exec_asset_subcategory_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="wealth.asset_split_chart",
+            kind=ReportSourceKind.CHART,
+            title="Asset Group Allocation (Market vs Book)",
+            source_tables=("gold.wealth_asset_breakdown",),
+            executor=_exec_asset_split_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="wealth.cum_return_chart",
+            kind=ReportSourceKind.CHART,
+            title="Cumulative Savings vs Market Return",
+            source_tables=("gold.core_monthly_fact",),
+            executor=_exec_cum_return_chart,
         )
     )
     registry.register_definition(NET_WORTH_WEALTH_ATTRIBUTION_DEF)

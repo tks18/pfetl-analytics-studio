@@ -15,6 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import FireAnalytics
+from pfetl_analytics_studio.reports.comparison import kpi_items_from_overview_kpis
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -25,12 +26,17 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
+from pfetl_analytics_studio.ui import (
+    build_fire_corpus_targets_figure,
+    build_fire_gap_coverage_figure,
+    build_fire_monte_carlo_band_figure,
+    build_fire_runway_comparison_figure,
+    build_fire_savings_rate_figure,
+)
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -50,22 +56,7 @@ def _exec_fire_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGroup
         catalog_snapshot=ctx.app_context.catalog_snapshot,
         cache=ctx.cache,
     )
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=snap.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in snap.kpis[:8]
-    ]
+    items = kpi_items_from_overview_kpis(snap.kpis, snap.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="fire.kpis",
@@ -178,6 +169,88 @@ def _exec_simulation_provenance_table(
     )
 
 
+def _load_fire_snap(ctx: ReportSourceContext) -> Any:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    return FireAnalytics.summary(
+        profile=profile,
+        period_context=ctx.report_context.period,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+
+
+def _exec_fire_corpus_targets_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_fire_snap(ctx)
+    fig = (
+        build_fire_corpus_targets_figure(snap.history, currency_id=snap.currency_id)
+        if snap.history
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="fire.corpus_targets_chart",
+        title=ctx.title_override or "FI Corpus Targets vs Current Wealth",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_fire_analytics",),
+    )
+
+
+def _exec_fire_gap_coverage_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_fire_snap(ctx)
+    fig = (
+        build_fire_gap_coverage_figure(snap.history, currency_id=snap.currency_id)
+        if snap.history
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="fire.gap_coverage_chart",
+        title=ctx.title_override or "FI Corpus Gap & Coverage %",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_fire_analytics",),
+    )
+
+
+def _exec_fire_mc_band_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_fire_snap(ctx)
+    fig = build_fire_monte_carlo_band_figure(snap.history) if snap.history else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="fire.mc_band_chart",
+        title=ctx.title_override or "Monte Carlo Months to FI (P10 / P50 / P90)",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_fire_analytics",),
+    )
+
+
+def _exec_fire_runway_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_fire_snap(ctx)
+    fig = build_fire_runway_comparison_figure(snap.history) if snap.history else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="fire.runway_chart",
+        title=ctx.title_override or "Portfolio Runway Comparison (Months)",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_fire_analytics",),
+    )
+
+
+def _exec_fire_savings_rate_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_fire_snap(ctx)
+    fig = build_fire_savings_rate_figure(snap.history) if snap.history else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="fire.savings_rate_chart",
+        title=ctx.title_override or "Savings Rate vs Required & SWR",
+        figure_dict=fig or {},
+        source_tables=("gold.wealth_fire_analytics",),
+    )
+
+
 FIRE_PLANNING_REVIEW_DEF = ReportDefinition(
     id="fire_planning_review",
     name="FIRE & Planning Review",
@@ -213,6 +286,31 @@ FIRE_PLANNING_REVIEW_DEF = ReportDefinition(
             block_id="fire_chart",
             source_id="fire.trajectory_chart",
             title="FI Coverage & Success Probability Trajectory",
+        ),
+        ChartBlock(
+            block_id="fire_corpus_targets_chart",
+            source_id="fire.corpus_targets_chart",
+            title="FI Corpus Targets vs Current Wealth",
+        ),
+        ChartBlock(
+            block_id="fire_gap_coverage_chart",
+            source_id="fire.gap_coverage_chart",
+            title="FI Corpus Gap & Coverage %",
+        ),
+        ChartBlock(
+            block_id="fire_mc_band_chart",
+            source_id="fire.mc_band_chart",
+            title="Monte Carlo Months to FI (P10 / P50 / P90)",
+        ),
+        ChartBlock(
+            block_id="fire_runway_chart",
+            source_id="fire.runway_chart",
+            title="Portfolio Runway Comparison (Months)",
+        ),
+        ChartBlock(
+            block_id="fire_savings_rate_chart",
+            source_id="fire.savings_rate_chart",
+            title="Savings Rate vs Required & SWR",
         ),
         PageBreakBlock(block_id="pb_fire_2"),
         TableBlock(
@@ -257,6 +355,51 @@ def register_fire_sources(registry: ReportRegistry) -> None:
             title="Simulation Provenance History",
             source_tables=("cp_simulation_runs", "meta.m_Latest_Simulation"),
             executor=_exec_simulation_provenance_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="fire.corpus_targets_chart",
+            kind=ReportSourceKind.CHART,
+            title="FI Corpus Targets vs Current Wealth",
+            source_tables=("gold.wealth_fire_analytics",),
+            executor=_exec_fire_corpus_targets_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="fire.gap_coverage_chart",
+            kind=ReportSourceKind.CHART,
+            title="FI Corpus Gap & Coverage %",
+            source_tables=("gold.wealth_fire_analytics",),
+            executor=_exec_fire_gap_coverage_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="fire.mc_band_chart",
+            kind=ReportSourceKind.CHART,
+            title="Monte Carlo Months to FI (P10 / P50 / P90)",
+            source_tables=("gold.wealth_fire_analytics",),
+            executor=_exec_fire_mc_band_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="fire.runway_chart",
+            kind=ReportSourceKind.CHART,
+            title="Portfolio Runway Comparison (Months)",
+            source_tables=("gold.wealth_fire_analytics",),
+            executor=_exec_fire_runway_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="fire.savings_rate_chart",
+            kind=ReportSourceKind.CHART,
+            title="Savings Rate vs Required & SWR",
+            source_tables=("gold.wealth_fire_analytics",),
+            executor=_exec_fire_savings_rate_chart,
         )
     )
     registry.register_definition(FIRE_PLANNING_REVIEW_DEF)
