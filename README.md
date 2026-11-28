@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/tks18/pfetl-analytics-studio/master/.github/assets/logo.png" width="150" alt="PFETL Analytics Studio logo">
+  <img src=".github/assets/logo.png" width="150" alt="PFETL Analytics Studio logo">
 </p>
 
 # PFETL Analytics Studio
@@ -107,6 +107,8 @@ PFETL
 The ownership rule is simple:
 
 > **Core owns truth. Studio owns interpretation and presentation.**
+
+**PFETL Core:** [GitHub](https://github.com/tks18/personal-finance-etl) · [PyPI](https://pypi.org/project/personal-finance-etl/)
 
 Studio does not reimplement:
 
@@ -1238,6 +1240,8 @@ financial evidence
 ---
 
 # Relationship with PFETL Core
+
+**PFETL Core:** [GitHub](https://github.com/tks18/personal-finance-etl) · [PyPI](https://pypi.org/project/personal-finance-etl/)
 
 Studio remains independently releasable and does not import the Core Python package.
 
