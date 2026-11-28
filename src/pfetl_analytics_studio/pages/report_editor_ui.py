@@ -36,12 +36,10 @@ from pfetl_analytics_studio.semantic import (
     FilterOperator,
     FilterSet,
     FilterSpec,
-    PeriodPreset,
     PeriodRequest,
-    preset_display_name,
 )
 from pfetl_analytics_studio.state import SavedReportRecord, SavedViewDefinition
-from pfetl_analytics_studio.ui import BadgeTone, StudioColor, status_badge
+from pfetl_analytics_studio.ui import BadgeTone, StudioColor, period_selector, status_badge
 
 _BLOCK_CATEGORY_OPTIONS: dict[str, str] = {
     "kpi_group": "KPI Group (Registered)",
@@ -54,16 +52,6 @@ _BLOCK_CATEGORY_OPTIONS: dict[str, str] = {
     "provenance": "Provenance & Disclaimer",
     "divider": "Section Divider",
     "page_break": "Page Break (Slide Boundary)",
-}
-
-_PERIOD_PRESET_OPTIONS: dict[str, str] = {
-    p.value: preset_display_name(p)
-    for p in (
-        PeriodPreset.LATEST_COMPLETE_MONTH,
-        PeriodPreset.FYTD,
-        PeriodPreset.ROLLING_12M,
-        PeriodPreset.SINCE_INCEPTION,
-    )
 }
 
 _FILTER_FIELD_OPTIONS: dict[str, str] = {
@@ -339,16 +327,6 @@ def render_custom_editor_panel(
                 on_change=lambda e: setattr(draft, "description", str(e.value or "")),
             ).props("dense outlined").classes("flex-1 min-w-64")
             ui.select(
-                options=_PERIOD_PRESET_OPTIONS,
-                value=draft.default_period.preset.value,
-                label="Default Period",
-                on_change=lambda e: setattr(
-                    draft,
-                    "default_period",
-                    PeriodRequest(preset=PeriodPreset(str(e.value))),
-                ),
-            ).props("dense outlined").classes("w-48")
-            ui.select(
                 options={"base": "Base Currency", "local": "Local Currency"},
                 value=draft.currency_mode,
                 label="Currency",
@@ -356,6 +334,19 @@ def render_custom_editor_panel(
                     draft, "currency_mode", "local" if e.value == "local" else "base"
                 ),
             ).props("dense outlined").classes("w-36")
+
+        @ui.refreshable
+        def _editor_period_row() -> None:
+            def _on_editor_period_change(new_req: PeriodRequest) -> None:
+                draft.default_period = new_req
+                _editor_period_row.refresh()
+
+            period_selector(
+                current_request=draft.default_period,
+                on_request_change=_on_editor_period_change,
+            )
+
+        _editor_period_row()
 
         with ui.row().classes("w-full items-center gap-2 flex-wrap"):
             ui.select(

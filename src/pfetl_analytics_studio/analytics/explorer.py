@@ -45,6 +45,7 @@ from pfetl_analytics_studio.data import (
     PFETLCatalog,
     QueryCache,
     build_cache_key,
+    create_temp_export_path,
 )
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.semantic import (
@@ -127,7 +128,7 @@ class ExplorerAnalytics:
         """Return a bounded, read-only preview for any classified PFETL surface."""
 
         def _compute() -> TablePreviewResult:
-            entries, _ = PFETLCatalog(profile).discover()
+            entries = None if catalog_snapshot is not None else PFETLCatalog(profile).discover()[0]
             return fetch_surface_preview(
                 profile,
                 physical_name,
@@ -164,8 +165,8 @@ class ExplorerAnalytics:
         filters: Sequence[SurfaceColumnFilter] = (),
         sort_column: str | None = None,
         sort_desc: bool = False,
-    ) -> tuple[bytes, int, str]:
-        """Export full unbounded rows of a classified PFETL surface as CSV bytes."""
+    ) -> tuple[Path, int, str]:
+        """Export full unbounded rows of a classified PFETL surface to a temp CSV file."""
         return export_surface_csv(
             profile,
             physical_name,
@@ -178,8 +179,8 @@ class ExplorerAnalytics:
     def export_guided_csv(
         profile: PFETLProfile,
         query: GuidedQuery,
-    ) -> tuple[bytes, int, str]:
-        """Export full unbounded rows of a validated `GuidedQuery` as CSV bytes."""
+    ) -> tuple[Path, int, str]:
+        """Export full unbounded rows of a validated `GuidedQuery` to a temp CSV file."""
         reader = DuckDBReader(profile)
         with reader.session() as db:
             resolved_period: PeriodContext | None = None
@@ -192,8 +193,12 @@ class ExplorerAnalytics:
                 period_context=resolved_period,
                 include_limit=False,
             )
-            df = db.fetch_df(sql, params)
-            return df.write_csv().encode("utf-8"), df.height, f"guided_{query.dataset_id}.csv"
+            filename = f"guided_{query.dataset_id}.csv"
+            target_path = create_temp_export_path(
+                filename, default_stem=f"guided_{query.dataset_id}"
+            )
+            row_count = db.export_csv_file(sql, target_path, params)
+            return target_path, row_count, filename
 
     @staticmethod
     def execute_guided(
@@ -312,8 +317,8 @@ class ExplorerAnalytics:
         profile: PFETLProfile,
         sql: str,
         datasource: SqlDatasource = SqlDatasource.DUCKDB,
-    ) -> tuple[bytes, int, str]:
-        """Export full unbounded rows of a validated read-only SQL query as CSV bytes."""
+    ) -> tuple[Path, int, str]:
+        """Export full unbounded rows of a validated read-only SQL query to a temp CSV file."""
         return export_sql_csv(profile, sql, datasource=datasource)
 
     @staticmethod

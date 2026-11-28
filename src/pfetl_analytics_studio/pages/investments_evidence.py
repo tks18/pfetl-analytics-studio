@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     InvestmentAnalytics,
@@ -13,6 +14,7 @@ from pfetl_analytics_studio.analytics import (
 )
 from pfetl_analytics_studio.context import AppContext
 from pfetl_analytics_studio.data import QueryCache
+from pfetl_analytics_studio.semantic import FilterField
 from pfetl_analytics_studio.ui import (
     BadgeTone,
     TableColumn,
@@ -35,8 +37,17 @@ from pfetl_analytics_studio.ui import (
     format_currency,
     format_metric_value,
     kpi_card,
+    loading_state_card,
     status_badge,
 )
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 def _render_kpi_grid(kpis: tuple[OverviewKPI, ...], currency_id: str) -> None:
@@ -91,7 +102,7 @@ def _detail_stat(label: str, value: str) -> None:
         )
 
 
-def render_realized_tab(
+def render_realized_tab(  # pylint: disable=too-many-statements
     context: AppContext,
     *,
     cache: QueryCache | None = None,
@@ -101,7 +112,18 @@ def render_realized_tab(
     if profile is None:
         return
 
-    state: dict[str, str] = {"fy": "ALL", "holding_type": "ALL", "gain_state": "all", "search": ""}
+    def _global_val(field: FilterField) -> str | None:
+        for spec in context.filters.filters:
+            if spec.field == field and spec.value is not None:
+                return str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+        return None
+
+    state: dict[str, str] = {
+        "fy": _global_val(FilterField.FY) or "ALL",
+        "holding_type": "ALL",
+        "gain_state": "all",
+        "search": _global_val(FilterField.ISIN) or "",
+    }
 
     with ui.element("div").classes("studio-filter-bar w-full mb-3"):
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
@@ -136,12 +158,9 @@ def render_realized_tab(
 
     drawer_box = ui.column().classes("w-full")
     body_box = ui.column().classes("w-full gap-4")
-    rendering = {"active": False}
+    gen_state: dict[str, int] = {"body": 0, "lineage": 0}
 
-    def _open_lineage_drawer(realized_event_id: str) -> None:
-        trace = InvestmentAnalytics.trace_lineage(
-            profile, realized_event_id, catalog_snapshot=context.catalog_snapshot
-        )
+    def _render_lineage_dialog(trace: Any, realized_event_id: str) -> None:
         drawer_box.clear()
         with drawer_box:
             with (
@@ -201,38 +220,33 @@ def render_realized_tab(
                                         _detail_stat(str(k), str(v) if v is not None else "—")
             dlg.open()
 
-    def _render_body() -> None:
-        if rendering["active"]:
-            return
-        rendering["active"] = True
-        try:
-            _render_body_inner()
-        finally:
-            rendering["active"] = False
+    def _open_lineage_drawer(realized_event_id: str) -> None:
+        gen_state["lineage"] += 1
+        captured_gen = gen_state["lineage"]
 
-    def _render_body_inner() -> None:
-        body_box.clear()
-        rf = RealizedEventFilter(
-            fy=None if state["fy"] == "ALL" else state["fy"],
-            holding_type=None if state["holding_type"] == "ALL" else state["holding_type"],
-            gain_state=state["gain_state"],  # type: ignore[arg-type]
-            search=state["search"].strip() or None,
-        )
-        try:
-            snap = InvestmentAnalytics.realized_and_reconciliation(
-                profile,
-                rf,
-                recon_search=state["search"].strip() or None,
-                run_id=context.provenance.run_id if context.provenance else None,
-                provenance=context.provenance,
-                catalog_snapshot=context.catalog_snapshot,
-                cache=cache,
+        def _fetch_trace() -> Any:
+            return InvestmentAnalytics.trace_lineage(
+                profile, realized_event_id, catalog_snapshot=context.catalog_snapshot
             )
-        except Exception as exc:
-            with body_box:
-                error_state_panel("Unable to load realized & reconciliation data", str(exc))
+
+        if not _has_running_loop():
+            _render_lineage_dialog(_fetch_trace(), realized_event_id)
             return
 
+        async def _load_trace() -> None:
+            try:
+                trace = await run.io_bound(_fetch_trace)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == gen_state["lineage"]:
+                    ui.notify(f"Unable to load trade lineage: {exc}", type="negative")
+                return
+            if captured_gen == gen_state["lineage"]:
+                _render_lineage_dialog(trace, realized_event_id)
+
+        asyncio.ensure_future(_load_trace())
+
+    def _draw_realized_content(snap: Any) -> None:
+        body_box.clear()
         if snap.available_fys:
             fy_opts = {"ALL": "All FYs", **{f: f for f in snap.available_fys}}
             fy_sel.options = fy_opts
@@ -347,6 +361,55 @@ def render_realized_tab(
                     pagination=15,
                 )
 
+    def _render_body() -> None:
+        gen_state["body"] += 1
+        captured_gen = gen_state["body"]
+        rf = RealizedEventFilter(
+            fy=None if state["fy"] == "ALL" else state["fy"],
+            holding_type=None if state["holding_type"] == "ALL" else state["holding_type"],
+            gain_state=state["gain_state"],  # type: ignore[arg-type]
+            search=state["search"].strip() or None,
+        )
+        recon_search = state["search"].strip() or None
+
+        def _fetch_sync() -> Any:
+            return InvestmentAnalytics.realized_and_reconciliation(
+                profile,
+                rf,
+                recon_search=recon_search,
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                cache=cache,
+            )
+
+        if not _has_running_loop():
+            try:
+                _draw_realized_content(_fetch_sync())
+            except Exception as exc:  # noqa: BLE001
+                body_box.clear()
+                with body_box:
+                    error_state_panel("Unable to load realized & reconciliation data", str(exc))
+            return
+
+        if not body_box.default_slot.children:
+            with body_box:
+                loading_state_card("Loading realized events & reconciliation...")
+
+        async def _load_async() -> None:
+            try:
+                snap = await run.io_bound(_fetch_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == gen_state["body"]:
+                    body_box.clear()
+                    with body_box:
+                        error_state_panel("Unable to load realized & reconciliation data", str(exc))
+                return
+            if captured_gen == gen_state["body"]:
+                _draw_realized_content(snap)
+
+        ui.timer(0.01, _load_async, once=True)
+
     def _on_chg(k: str, v: Any) -> None:
         state[k] = str(v or "")
         _render_body()
@@ -368,7 +431,17 @@ def render_evidence_tab(
     if profile is None:
         return
 
-    sel: dict[str, str | None] = {"isin": None, "bm": None, "cur": None}
+    def _global_val(field: FilterField) -> str | None:
+        for spec in context.filters.filters:
+            if spec.field == field and spec.value is not None:
+                return str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+        return None
+
+    sel: dict[str, str | None] = {
+        "isin": _global_val(FilterField.ISIN),
+        "bm": None,
+        "cur": _global_val(FilterField.CURRENCY_ID),
+    }
 
     with ui.element("div").classes("studio-filter-bar w-full mb-3"):
         with ui.row().classes("w-full items-center gap-3 flex-wrap"):
@@ -389,36 +462,10 @@ def render_evidence_tab(
             )
 
     ev_box = ui.column().classes("w-full gap-4")
-    ev_rendering = {"active": False}
+    ev_state: dict[str, int] = {"gen": 0}
 
-    def _render_ev_body() -> None:
-        if ev_rendering["active"]:
-            return
-        ev_rendering["active"] = True
-        try:
-            _render_ev_body_inner()
-        finally:
-            ev_rendering["active"] = False
-
-    def _render_ev_body_inner() -> None:
+    def _draw_ev_content(snap: Any) -> None:
         ev_box.clear()
-        try:
-            snap = InvestmentAnalytics.market_evidence(
-                profile,
-                context.period_context,
-                isin=sel["isin"],
-                benchmark_id=sel["bm"],
-                currency_id=sel["cur"],
-                run_id=context.provenance.run_id if context.provenance else None,
-                provenance=context.provenance,
-                catalog_snapshot=context.catalog_snapshot,
-                cache=cache,
-            )
-        except Exception as exc:
-            with ev_box:
-                error_state_panel("Unable to load market evidence", str(exc))
-            return
-
         if snap.available_isins:
             i_opts = {k: f"{v[:30]} ({k})" for k, v in snap.available_isins}
             isin_sel.options = i_opts
@@ -512,6 +559,53 @@ def render_evidence_tab(
                     rows=m_rows,
                     pagination=15,
                 )
+
+    def _render_ev_body() -> None:
+        ev_state["gen"] += 1
+        captured_gen = ev_state["gen"]
+        isin_val = sel["isin"]
+        bm_val = sel["bm"]
+        cur_val = sel["cur"]
+
+        def _fetch_ev_sync() -> Any:
+            return InvestmentAnalytics.market_evidence(
+                profile,
+                context.period_context,
+                isin=isin_val,
+                benchmark_id=bm_val,
+                currency_id=cur_val,
+                run_id=context.provenance.run_id if context.provenance else None,
+                provenance=context.provenance,
+                catalog_snapshot=context.catalog_snapshot,
+                cache=cache,
+            )
+
+        if not _has_running_loop():
+            try:
+                _draw_ev_content(_fetch_ev_sync())
+            except Exception as exc:  # noqa: BLE001
+                ev_box.clear()
+                with ev_box:
+                    error_state_panel("Unable to load market evidence", str(exc))
+            return
+
+        if not ev_box.default_slot.children:
+            with ev_box:
+                loading_state_card("Loading market, benchmark & FX evidence...")
+
+        async def _load_ev_async() -> None:
+            try:
+                snap = await run.io_bound(_fetch_ev_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == ev_state["gen"]:
+                    ev_box.clear()
+                    with ev_box:
+                        error_state_panel("Unable to load market evidence", str(exc))
+                return
+            if captured_gen == ev_state["gen"]:
+                _draw_ev_content(snap)
+
+        ui.timer(0.01, _load_ev_async, once=True)
 
     def _on_sel(k: str, v: Any) -> None:
         sel[k] = str(v) if v else None

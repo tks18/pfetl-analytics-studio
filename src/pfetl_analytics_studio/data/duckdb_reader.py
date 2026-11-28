@@ -24,6 +24,7 @@ from pfetl_analytics_studio.data.errors import (
     ReadOnlyViolationError,
     WarehouseState,
 )
+from pfetl_analytics_studio.data.exports import write_rows_csv_file
 from pfetl_analytics_studio.profile import PFETLProfile
 
 IDENTIFIER_PATTERN = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -167,6 +168,39 @@ class DuckDBSession:
             rel = self._conn.execute(sql, params)
             row = rel.fetchone()
             return row[0] if row is not None else None
+        except duckdb.Error as exc:
+            self._reader.translate_query_error(exc)
+            raise
+
+    def export_csv_file(
+        self,
+        sql: str,
+        target_path: Path,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> int:
+        """Export a read-only query to `target_path` via DuckDB COPY or chunked streaming."""
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        clean_sql = sql.strip().rstrip(";").strip()
+        try:
+            if not params:
+                escaped = target_path.resolve().as_posix().replace("'", "''")
+                rel = self._conn.execute(
+                    f"COPY ({clean_sql}) TO '{escaped}' (HEADER, DELIMITER ',')"
+                )
+                row = rel.fetchone()
+                return int(row[0]) if row is not None and row[0] is not None else 0
+
+            rel = self._conn.execute(sql, params)
+            cols = [desc[0] for desc in rel.description or []]
+
+            def _iter_chunks() -> Generator[list[tuple[Any, ...]]]:
+                while True:
+                    chunk = rel.fetchmany(4096)
+                    if not chunk:
+                        break
+                    yield chunk
+
+            return write_rows_csv_file(cols, _iter_chunks(), target_path)
         except duckdb.Error as exc:
             self._reader.translate_query_error(exc)
             raise
@@ -338,6 +372,16 @@ class DuckDBReader:
         """Execute query and return a single scalar value from the first row and column."""
         with self.session() as db:
             return db.fetch_scalar(sql, params)
+
+    def export_csv_file(
+        self,
+        sql: str,
+        target_path: Path,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> int:
+        """Export a read-only query to `target_path` without materializing full bytes."""
+        with self.session() as db:
+            return db.export_csv_file(sql, target_path, params)
 
     def table_exists(self, schema: str, table: str) -> bool:
         """Verify whether a table exists in the specified warehouse schema.

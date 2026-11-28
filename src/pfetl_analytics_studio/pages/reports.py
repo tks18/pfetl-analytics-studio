@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import tempfile
+import asyncio
 from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
@@ -13,7 +13,7 @@ from nicegui import run, ui
 from pfetl_analytics_studio.analytics import OperationsAnalytics
 from pfetl_analytics_studio.analytics.operations_models import RunHistoryFilter
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
-from pfetl_analytics_studio.data import QueryCache
+from pfetl_analytics_studio.data import QueryCache, create_temp_export_path
 from pfetl_analytics_studio.pages.report_editor_ui import (
     open_delete_report_dialog,
     open_rename_report_dialog,
@@ -43,7 +43,12 @@ from pfetl_analytics_studio.reports import (
     compare_report_provenance,
     sanitize_filename,
 )
-from pfetl_analytics_studio.semantic import PeriodPreset, PeriodRequest, preset_display_name
+from pfetl_analytics_studio.semantic import (
+    ComparisonMode,
+    PeriodPreset,
+    PeriodRequest,
+    preset_display_name,
+)
 from pfetl_analytics_studio.state import (
     ReportRunRecord,
     SavedReportRecord,
@@ -57,7 +62,9 @@ from pfetl_analytics_studio.ui import (
     bounded_data_table,
     empty_state_panel,
     error_state_panel,
+    period_selector,
     status_badge,
+    trigger_file_download,
 )
 
 _REPORTS_CACHE = QueryCache(max_entries=32)
@@ -82,6 +89,12 @@ def _render_provenance_block(block: RenderedProvenanceBlock) -> None:
             if block.schema_version:
                 status_badge(f"Schema: {block.schema_version}", tone=BadgeTone.NEUTRAL)
             status_badge(f"Period: {block.period_label}", tone=BadgeTone.SUCCESS, outline=True)
+            if block.comparison_label:
+                status_badge(
+                    f"Comparison: {block.comparison_label}",
+                    tone=BadgeTone.INFO,
+                    outline=True,
+                )
             status_badge(
                 f"Currency: {block.currency_mode.upper()}",
                 tone=BadgeTone.NEUTRAL,
@@ -103,19 +116,48 @@ def _render_provenance_block(block: RenderedProvenanceBlock) -> None:
             )
 
 
+def _kpi_delta_badge_tone(tone: str) -> BadgeTone:
+    if tone == "positive":
+        return BadgeTone.SUCCESS
+    if tone == "warning":
+        return BadgeTone.WARNING
+    if tone == "negative":
+        return BadgeTone.ERROR
+    return BadgeTone.NEUTRAL
+
+
 def _render_kpi_group_block(block: RenderedKPIGroupBlock) -> None:
-    """Render a `RenderedKPIGroupBlock` as a responsive grid of KPI cards."""
+    """Render a `RenderedKPIGroupBlock` as a responsive grid of multi-info KPI cards."""
     with ui.column().classes("w-full gap-2"):
         ui.label(block.title).classes("text-base font-semibold").style(f"color: {StudioColor.TEXT}")
         with ui.grid(columns=4).classes("w-full gap-3"):
             for item in block.items:
-                with ui.card().classes("studio-card p-3 rounded-xl gap-1"):
-                    ui.label(item.label).classes("text-xs font-medium").style(
-                        f"color: {StudioColor.MUTED}"
-                    )
+                card = ui.card().classes("studio-card p-3 rounded-xl gap-1.5")
+                if item.tooltip:
+                    card.tooltip(item.tooltip)
+                with card:
+                    with ui.row().classes("w-full items-center justify-between gap-1"):
+                        ui.label(item.label).classes("text-xs font-medium").style(
+                            f"color: {StudioColor.MUTED}"
+                        )
+                        if item.delta_text:
+                            status_badge(
+                                item.delta_text,
+                                tone=_kpi_delta_badge_tone(item.delta_tone),
+                                outline=True,
+                            )
                     ui.label(item.formatted_value).classes("text-xl font-bold").style(
                         f"color: {StudioColor.TEXT}"
                     )
+                    if item.breakups:
+                        with ui.row().classes("w-full items-center gap-1.5 flex-wrap pt-0.5"):
+                            for b_lbl, b_val in item.breakups[:3]:
+                                ui.label(f"{b_lbl}: {b_val}").classes(
+                                    "text-[11px] px-1.5 py-0.5 rounded"
+                                ).style(
+                                    "background: rgba(148, 163, 184, 0.12); "
+                                    f"color: {StudioColor.MUTED}"
+                                )
                     if item.subtitle:
                         ui.label(item.subtitle).classes("text-xs").style(
                             f"color: {StudioColor.MUTED}"
@@ -596,18 +638,13 @@ def _render_reports_header_and_guards(context: AppContext) -> bool:
 
 def _temp_export_path(filename: str) -> Path:
     """Resolve a temporary local export path prior to browser download."""
-    export_dir = Path(tempfile.gettempdir()) / "pfetl_studio_exports"
-    export_dir.mkdir(parents=True, exist_ok=True)
-    return export_dir / filename
+    return create_temp_export_path(filename)
 
 
-_PERIOD_OPTIONS: dict[str, str] = {
+_PERIOD_MODE_OPTIONS: dict[str, str] = {
     "default": "Template Default Period",
     "global": "Use Global Period & Filters",
-    PeriodPreset.LATEST_COMPLETE_MONTH.value: "Latest Complete Month",
-    PeriodPreset.FYTD.value: "FYTD",
-    PeriodPreset.ROLLING_12M.value: "Rolling 12M",
-    PeriodPreset.SINCE_INCEPTION.value: "Since Inception",
+    "custom": "Custom Period & Comparison",
 }
 
 
@@ -656,19 +693,30 @@ def _load_available_run_options(
 
 
 def _build_preview_overrides(
-    sel_preset: str,
+    sel_mode: str,
     sel_run_key: str,
     latest_success_id: str | None,
     context: AppContext,
+    custom_period_req: PeriodRequest | None = None,
 ) -> ReportContextOverrides | None:
-    """Build `ReportContextOverrides` combining selected period preset and PFETL run."""
+    """Build `ReportContextOverrides` combining selected period/comparison mode and PFETL run."""
     period_req: PeriodRequest | None = None
     filters = None
-    if sel_preset == "global":
+    if sel_mode == "global":
         period_req = context.period_request
         filters = context.filters
-    elif sel_preset != "default":
-        period_req = PeriodRequest(preset=PeriodPreset(sel_preset))
+    elif sel_mode == "custom" and custom_period_req is not None:
+        period_req = custom_period_req
+        filters = context.filters
+    elif sel_mode not in ("default", "global", "custom"):
+        period_req = PeriodRequest(
+            preset=PeriodPreset(sel_mode),
+            comparison_mode=(
+                custom_period_req.comparison_mode
+                if custom_period_req is not None
+                else ComparisonMode.NONE
+            ),
+        )
         filters = context.filters
 
     run_id_override: str | None = None
@@ -769,7 +817,19 @@ def render_reports_page(  # pylint: disable=too-many-statements
         saved_reports, saved_views, run_history = _load_reports_initial_state(
             context, state_db_path
         )
-        run_options, latest_success_run_id = _load_available_run_options(context, active_cache)
+        run_options_state: dict[str, Any] = {
+            "options": {"active": "Current Active Run"},
+            "latest_success": None,
+        }
+        try:
+            asyncio.get_running_loop()
+            _has_loop = True
+        except RuntimeError:
+            _has_loop = False
+        if not _has_loop:
+            opts, latest_id = _load_available_run_options(context, active_cache)
+            run_options_state["options"] = opts
+            run_options_state["latest_success"] = latest_id
         last_runs_by_report: dict[str, ReportRunRecord] = {}
         for run_rec in run_history:
             last_runs_by_report.setdefault(run_rec.report_id, run_rec)
@@ -777,7 +837,11 @@ def render_reports_page(  # pylint: disable=too-many-statements
         editor_state: dict[str, ReportDefinitionDraft | None] = {"draft": None}
         refresh_gallery_ref: dict[str, Callable[[], Any] | None] = {"fn": None}
 
-        period_override_state: dict[str, str] = {"preset": "default", "run_key": "active"}
+        period_override_state: dict[str, Any] = {
+            "preset": "default",
+            "run_key": "active",
+            "custom_req": context.period_request or PeriodRequest(),
+        }
         prior_context_by_def: dict[str, ReportContext] = {}
         provenance_changes_state: dict[str, tuple[ProvenanceChange, ...]] = {"items": ()}
         export_progress_state: dict[str, str | bool] = {"active": False, "label": ""}
@@ -823,7 +887,7 @@ def render_reports_page(  # pylint: disable=too-many-statements
                 )
                 res = await run.io_bound(fn, block.figure_dict, target)
                 media = "image/png" if fmt == "png" else "image/svg+xml"
-                ui.download(res.path.read_bytes(), filename=res.path.name, media_type=media)
+                trigger_file_download(res.path, filename=res.path.name, media_type=media)
                 ui.notify(
                     f"Downloading {res.format.upper()} chart ({res.bytes_written:,} bytes)…",
                     type="positive",
@@ -853,8 +917,8 @@ def render_reports_page(  # pylint: disable=too-many-statements
                 with StudioStateStore(db_path=state_db_path) as store:
                     run_history[:] = store.list_report_runs(limit=25)
                 _history_container.refresh()
-                ui.download(
-                    export_res.path.read_bytes(),
+                trigger_file_download(
+                    export_res.path,
                     filename=export_res.path.name,
                     media_type=media,
                 )
@@ -900,10 +964,11 @@ def render_reports_page(  # pylint: disable=too-many-statements
             selected_def["current"] = defn
             error_state["error"] = None
             overrides = _build_preview_overrides(
-                period_override_state["preset"],
-                period_override_state["run_key"],
-                latest_success_run_id,
+                str(period_override_state["preset"]),
+                str(period_override_state["run_key"]),
+                run_options_state["latest_success"],
                 context,
+                custom_period_req=period_override_state["custom_req"],
             )
             try:
                 result = await run.io_bound(
@@ -935,8 +1000,35 @@ def render_reports_page(  # pylint: disable=too-many-statements
             _preview_container.refresh()
             _history_container.refresh()
 
+        @ui.refreshable
+        def _custom_period_row() -> None:
+            if period_override_state["preset"] != "custom":
+                return
+
+            def _on_custom_req_change(new_req: PeriodRequest) -> None:
+                period_override_state["custom_req"] = new_req
+                _custom_period_row.refresh()
+                if rendered_state["result"] is not None:
+                    try:
+                        asyncio.get_running_loop().create_task(
+                            _run_preview(selected_def["current"])
+                        )
+                    except RuntimeError:
+                        pass
+
+            cur_res = rendered_state["result"]
+            req_val = period_override_state["custom_req"]
+            custom_req = req_val if isinstance(req_val, PeriodRequest) else PeriodRequest()
+            period_selector(
+                current_request=custom_req,
+                on_request_change=_on_custom_req_change,
+                period_options=context.period_options,
+                period_context=cur_res.context.period if cur_res is not None else None,
+            )
+
         async def _on_period_change(new_preset: str) -> None:
             period_override_state["preset"] = new_preset
+            _custom_period_row.refresh()
             if rendered_state["result"] is not None:
                 await _run_preview(selected_def["current"])
 
@@ -946,7 +1038,7 @@ def render_reports_page(  # pylint: disable=too-many-statements
                 await _run_preview(selected_def["current"])
 
         async def _rerun_latest_custom(rec: SavedReportRecord) -> None:
-            if latest_success_run_id:
+            if run_options_state["latest_success"]:
                 period_override_state["run_key"] = "latest_success"
             await _run_preview(ReportDefinition.model_validate_json(rec.definition_json))
 
@@ -1082,17 +1174,33 @@ def render_reports_page(  # pylint: disable=too-many-statements
                 )
                 with ui.row().classes("items-center gap-2 flex-wrap"):
                     ui.select(
-                        options=_PERIOD_OPTIONS,
+                        options=_PERIOD_MODE_OPTIONS,
                         value=period_override_state["preset"],
                         label="Report Period",
                         on_change=lambda e: _on_period_change(str(e.value or "default")),
-                    ).props("dense outlined").classes("w-48")
-                    ui.select(
-                        options=run_options,
-                        value=period_override_state["run_key"],
-                        label="PFETL Run",
-                        on_change=lambda e: _on_run_change(str(e.value or "active")),
                     ).props("dense outlined").classes("w-56")
+                    run_sel = (
+                        ui.select(
+                            options=run_options_state["options"],
+                            value=period_override_state["run_key"],
+                            label="PFETL Run",
+                            on_change=lambda e: _on_run_change(str(e.value or "active")),
+                        )
+                        .props("dense outlined")
+                        .classes("w-56")
+                    )
+                    if _has_loop:
+
+                        async def _load_run_options_async() -> None:
+                            opts, latest_id = await run.io_bound(
+                                _load_available_run_options, context, active_cache
+                            )
+                            run_options_state["options"] = opts
+                            run_options_state["latest_success"] = latest_id
+                            run_sel.options = opts
+                            run_sel.update()
+
+                        ui.timer(0.01, _load_run_options_async, once=True)
                     ui.button(
                         "Rerun Latest",
                         icon="refresh",
@@ -1114,6 +1222,7 @@ def render_reports_page(  # pylint: disable=too-many-statements
                         on_click=lambda _e: _export_report("xlsx"),
                     ).props("outline dense")
                     export_buttons.extend([pdf_btn, pptx_btn, xlsx_btn])
+            _custom_period_row()
             _export_status_strip()
             _preview_container()
 

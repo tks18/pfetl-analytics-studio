@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import InvestmentAnalytics
 from pfetl_analytics_studio.analytics.investments_models import AllocationDimension
+from pfetl_analytics_studio.reports.comparison import (
+    build_period_comparison_bar_figure,
+    comparison_period_context,
+    kpi_items_from_overview_kpis,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -26,12 +31,16 @@ from pfetl_analytics_studio.reports.models import (
     RenderedKPIGroupBlock,
     RenderedTableBlock,
     ReportDefinition,
-    ReportKpiItem,
     TableBlock,
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
-from pfetl_analytics_studio.ui.formatting import format_metric_value
+from pfetl_analytics_studio.ui import (
+    build_inv_class_target_drift_figure,
+    build_inv_gainers_losers_figure,
+    build_inv_holdings_top_figure,
+    build_inv_pnl_decomposition_figure,
+)
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -53,22 +62,7 @@ def _exec_portfolio_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPI
         filters=ctx.report_context.filters,
         cache=ctx.cache,
     )
-    items = [
-        ReportKpiItem(
-            label=kpi.label,
-            value=str(kpi.value) if not isinstance(kpi.value, (int, float)) else float(kpi.value),
-            formatted_value=format_metric_value(
-                kpi.value,
-                kpi.format,
-                currency_id=snap.currency_id,
-                unit_suffix=kpi.unit_suffix,
-            ),
-            subtitle=kpi.subtitle,
-            tone=kpi.status_tone,
-            source_table=kpi.source_table,
-        )
-        for kpi in snap.kpis[:8]
-    ]
+    items = kpi_items_from_overview_kpis(snap.kpis, snap.currency_id, limit=8)
     return RenderedKPIGroupBlock(
         block_id=block_id,
         source_id="portfolio.kpis",
@@ -93,7 +87,39 @@ def _exec_class_allocation_chart(ctx: ReportSourceContext, block_id: str) -> Ren
         cache=ctx.cache,
     )
     rows = sorted(alloc.rows, key=lambda r: r.current_value, reverse=True)
-    figure_dict: dict[str, Any] = {
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    if comp_ctx is not None and rows:
+        prior_alloc = InvestmentAnalytics.allocation(
+            profile=profile,
+            dimension=AllocationDimension.CLASS,
+            period_context=comp_ctx,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            cache=ctx.cache,
+        )
+        prior_map = {r.label: r.current_value for r in prior_alloc.rows}
+        figure_dict = (
+            build_period_comparison_bar_figure(
+                [r.label for r in rows],
+                [r.current_value for r in rows],
+                [prior_map.get(r.label, 0.0) for r in rows],
+                currency_id=alloc.currency_id,
+                current_label=alloc.period_label,
+                prior_label=comp_ctx.label,
+            )
+            or {}
+        )
+        return RenderedChartBlock(
+            block_id=block_id,
+            source_id="portfolio.class_allocation_chart",
+            title=ctx.title_override
+            or f"Asset Class Valuation ({alloc.period_label} vs {comp_ctx.label})",
+            figure_dict=figure_dict,
+            source_tables=("gold.investment_by_class",),
+            caption=f"Comparison: {comp_ctx.label} · Source: gold.investment_by_class",
+        )
+    figure_dict = {
         "data": [
             {
                 "type": "bar",
@@ -144,7 +170,7 @@ def _exec_sector_allocation_chart(ctx: ReportSourceContext, block_id: str) -> Re
         cache=ctx.cache,
     )
     rows = sorted(alloc.rows, key=lambda r: r.current_value, reverse=True)[:10]
-    figure_dict: dict[str, Any] = {
+    figure_dict = {
         "data": [
             {
                 "type": "bar",
@@ -268,6 +294,92 @@ def _exec_concentration_table(ctx: ReportSourceContext, block_id: str) -> Render
     )
 
 
+def _load_port_snap(ctx: ReportSourceContext) -> Any:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    return InvestmentAnalytics.portfolio_snapshot(
+        profile=profile,
+        period_context=ctx.report_context.period,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        compatibility=ctx.app_context.compatibility,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        filters=ctx.report_context.filters,
+        cache=ctx.cache,
+    )
+
+
+def _exec_top_holdings_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_port_snap(ctx)
+    fig = (
+        build_inv_holdings_top_figure(snap.holdings, snap.currency_id, limit=12)
+        if snap.holdings
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="portfolio.top_holdings_chart",
+        title=ctx.title_override or "Top 12 Holdings by Market Value",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_isin",),
+    )
+
+
+def _exec_class_drift_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_port_snap(ctx)
+    fig = build_inv_class_target_drift_figure(snap.holdings) if snap.holdings else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="portfolio.class_drift_chart",
+        title=ctx.title_override or "Asset Class Drift: Actual vs Target Weight %",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_isin",),
+    )
+
+
+def _exec_gainers_losers_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    snap = _load_port_snap(ctx)
+    fig = build_inv_gainers_losers_figure(snap.holdings, snap.currency_id) if snap.holdings else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="portfolio.gainers_losers_chart",
+        title=ctx.title_override or "Top Unrealized Gainers vs Losers",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_isin",),
+    )
+
+
+def _exec_pnl_decomp_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    alloc = InvestmentAnalytics.allocation(
+        profile=profile,
+        dimension=AllocationDimension.CLASS,
+        period_context=ctx.report_context.period,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        filters=ctx.report_context.filters,
+        cache=ctx.cache,
+    )
+    fig = (
+        build_inv_pnl_decomposition_figure(
+            alloc.rows, alloc.currency_id, dimension_label="Asset Class"
+        )
+        if alloc.rows
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="portfolio.pnl_decomp_chart",
+        title=ctx.title_override or "Asset vs Forex P&L Decomposition",
+        figure_dict=fig or {},
+        source_tables=("gold.investment_by_class",),
+    )
+
+
 PORTFOLIO_REVIEW_DEF = ReportDefinition(
     id="portfolio_review",
     name="Portfolio Review",
@@ -309,6 +421,26 @@ PORTFOLIO_REVIEW_DEF = ReportDefinition(
             block_id="port_sector_chart",
             source_id="portfolio.sector_allocation_chart",
             title="Top 10 Sector Allocation",
+        ),
+        ChartBlock(
+            block_id="port_top_holdings_chart",
+            source_id="portfolio.top_holdings_chart",
+            title="Top 12 Holdings by Market Value",
+        ),
+        ChartBlock(
+            block_id="port_class_drift_chart",
+            source_id="portfolio.class_drift_chart",
+            title="Asset Class Drift: Actual vs Target Weight %",
+        ),
+        ChartBlock(
+            block_id="port_gainers_losers_chart",
+            source_id="portfolio.gainers_losers_chart",
+            title="Top Unrealized Gainers vs Losers",
+        ),
+        ChartBlock(
+            block_id="port_pnl_decomp_chart",
+            source_id="portfolio.pnl_decomp_chart",
+            title="Asset vs Forex P&L Decomposition",
         ),
         PageBreakBlock(block_id="pb_port_3"),
         TableBlock(
@@ -378,6 +510,42 @@ def register_portfolio_sources(registry: ReportRegistry) -> None:
             title="Portfolio Concentration",
             source_tables=("gold.investment_by_portfolio",),
             executor=_exec_concentration_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="portfolio.top_holdings_chart",
+            kind=ReportSourceKind.CHART,
+            title="Top 12 Holdings by Market Value",
+            source_tables=("gold.investment_by_isin",),
+            executor=_exec_top_holdings_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="portfolio.class_drift_chart",
+            kind=ReportSourceKind.CHART,
+            title="Asset Class Drift: Actual vs Target Weight %",
+            source_tables=("gold.investment_by_isin",),
+            executor=_exec_class_drift_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="portfolio.gainers_losers_chart",
+            kind=ReportSourceKind.CHART,
+            title="Top Unrealized Gainers vs Losers",
+            source_tables=("gold.investment_by_isin",),
+            executor=_exec_gainers_losers_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="portfolio.pnl_decomp_chart",
+            kind=ReportSourceKind.CHART,
+            title="Asset vs Forex P&L Decomposition",
+            source_tables=("gold.investment_by_class",),
+            executor=_exec_pnl_decomp_chart,
         )
     )
     registry.register_definition(PORTFOLIO_REVIEW_DEF)

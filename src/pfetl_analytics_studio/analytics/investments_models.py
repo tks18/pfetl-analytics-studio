@@ -213,6 +213,7 @@ class LotFilter(BaseModel):
     closing_date: date | None = None
     isin: str | None = None
     instrument_class: str | None = None
+    sector: str | None = None
     instrument_type: str | None = None
     instrument_subtype: str | None = None
     currency_id: str | None = None

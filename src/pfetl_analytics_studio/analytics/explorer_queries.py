@@ -17,6 +17,7 @@ from __future__ import annotations
 import re
 import time
 from collections.abc import Mapping, Sequence
+from pathlib import Path
 from typing import Any
 
 from pfetl_analytics_studio.analytics.explorer_models import (
@@ -40,6 +41,7 @@ from pfetl_analytics_studio.data import (
     DuckDBReader,
     SurfaceLayer,
     SurfaceUsageCategory,
+    create_temp_export_path,
     validate_identifier,
 )
 from pfetl_analytics_studio.profile import PFETLProfile
@@ -281,7 +283,11 @@ def fetch_surface_preview(
         )
 
     entry = entries.get(physical_name) if entries is not None else None
-    total_row_count = entry.row_count if entry is not None else None
+    total_row_count = (
+        entry.row_count
+        if entry is not None
+        else (catalog_snapshot.row_count(physical_name) if catalog_snapshot is not None else None)
+    )
 
     if catalog_snapshot is not None and not catalog_snapshot.has_surface(physical_name):
         columns = tuple(entry.columns) if entry is not None else ()
@@ -384,8 +390,8 @@ def export_surface_csv(
     filters: Sequence[SurfaceColumnFilter] = (),
     sort_column: str | None = None,
     sort_desc: bool = False,
-) -> tuple[bytes, int, str]:
-    """Export all rows of a classified PFETL surface (respecting filters) as CSV bytes."""
+) -> tuple[Path, int, str]:
+    """Stream all rows of a classified PFETL surface (respecting filters) to a temp CSV file."""
     spec = SURFACE_ATLAS.get(physical_name)
     if spec is None:
         raise ValueError(
@@ -404,23 +410,28 @@ def export_surface_csv(
             raise ValueError(f"Unknown sort column '{clean_sort}' for '{physical_name}'.")
         order_sql = f' ORDER BY "{clean_sort}" {"DESC" if sort_desc else "ASC"}'
 
+    safe_name = physical_name.replace(".", "_")
+    filename = f"{safe_name}.csv"
+    target_path = create_temp_export_path(filename, default_stem=safe_name)
+
     if spec.layer == SurfaceLayer.CONTROL_PLANE:
         tbl = validate_identifier(physical_name)
-        df = ControlPlaneReader(profile).fetch_df(
+        row_count = ControlPlaneReader(profile).export_csv_file(
             f'SELECT * FROM "{tbl}"{where_sql}{order_sql};',
+            target_path,
             params,
         )
     else:
         schema_name, table_name = physical_name.split(".", 1)
         s_id = validate_identifier(schema_name)
         t_id = validate_identifier(table_name)
-        df = DuckDBReader(profile).fetch_df(
+        row_count = DuckDBReader(profile).export_csv_file(
             f'SELECT * FROM "{s_id}"."{t_id}"{where_sql}{order_sql};',
+            target_path,
             params,
         )
 
-    safe_name = physical_name.replace(".", "_")
-    return df.write_csv().encode("utf-8"), df.height, f"{safe_name}.csv"
+    return target_path, row_count, filename
 
 
 def _filter_column_map_for(dataset: DatasetSpec) -> dict[FilterField, str]:
@@ -880,13 +891,14 @@ def export_sql_csv(
     profile: PFETLProfile,
     sql: str,
     datasource: SqlDatasource = SqlDatasource.DUCKDB,
-) -> tuple[bytes, int, str]:
-    """Execute a validated read-only SQL query without row cap and export as CSV bytes."""
+) -> tuple[Path, int, str]:
+    """Validate and stream an uncapped read-only SQL query to a temp CSV file."""
     normalized = validate_read_only_sql(sql)
     wrapped_sql = f"SELECT * FROM ({normalized}) AS _studio_sql_export;"
-    if datasource == SqlDatasource.CONTROL_PLANE:
-        df = ControlPlaneReader(profile).fetch_df(wrapped_sql)
-    else:
-        df = DuckDBReader(profile).fetch_df(wrapped_sql)
     fname = f"sql_{datasource.value}_export.csv"
-    return df.write_csv().encode("utf-8"), df.height, fname
+    target_path = create_temp_export_path(fname, default_stem=f"sql_{datasource.value}_export")
+    if datasource == SqlDatasource.CONTROL_PLANE:
+        row_count = ControlPlaneReader(profile).export_csv_file(wrapped_sql, target_path)
+    else:
+        row_count = DuckDBReader(profile).export_csv_file(wrapped_sql, target_path)
+    return target_path, row_count, fname

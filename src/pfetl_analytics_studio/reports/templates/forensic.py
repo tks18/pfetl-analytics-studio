@@ -34,6 +34,7 @@ from pfetl_analytics_studio.reports.models import (
     TitleBlock,
 )
 from pfetl_analytics_studio.semantic import FilterField, FilterSet, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.ui import build_ops_forensic_workers_figure
 from pfetl_analytics_studio.ui.theme import StudioColor
 
 if TYPE_CHECKING:
@@ -87,6 +88,10 @@ def _exec_forensic_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
             formatted_value=f"{summary.total_events:,}",
             subtitle=f"Source: {summary.source} · Malformed: {summary.malformed_lines}",
             source_table="cp_runs.execution_log",
+            breakups=(
+                ("Errors", str(error_count)),
+                ("Malformed", str(summary.malformed_lines)),
+            ),
         ),
         ReportKpiItem(
             label="Rows Emitted",
@@ -94,6 +99,10 @@ def _exec_forensic_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIG
             formatted_value=f"{summary.total_rows_emitted:,}",
             subtitle=f"{len(summary.stage_counts)} stages · {len(summary.provider_counts)} providers",
             source_table="cp_runs.execution_log",
+            breakups=(
+                ("Stages", str(len(summary.stage_counts))),
+                ("Providers", str(len(summary.provider_counts))),
+            ),
         ),
         ReportKpiItem(
             label="Retries & Cache",
@@ -393,6 +402,30 @@ def _exec_events_appendix_table(ctx: ReportSourceContext, block_id: str) -> Rend
     )
 
 
+def _exec_forensic_workers_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    summary = OperationsAnalytics.forensic_summary(profile, ctx.report_context.pfetl_run_id)
+    fig = (
+        build_ops_forensic_workers_figure(
+            summary.worker_counts,
+            summary.provider_counts,
+            summary.cache_hits,
+            summary.cache_misses,
+        )
+        if summary.total_events > 0
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="forensic.workers_chart",
+        title=ctx.title_override or "Forensic Worker Activity Breakdown",
+        figure_dict=fig or {},
+        source_tables=("cp_runs.execution_log",),
+    )
+
+
 RUN_FORENSIC_DEF = ReportDefinition(
     id="run_forensic",
     name="Run Forensic Report",
@@ -436,6 +469,11 @@ RUN_FORENSIC_DEF = ReportDefinition(
             block_id="forensic_slow_chart",
             source_id="forensic.slow_ops_chart",
             title="Slow Emitted Operations (duration_ms)",
+        ),
+        ChartBlock(
+            block_id="forensic_workers_chart",
+            source_id="forensic.workers_chart",
+            title="Forensic Worker Activity Breakdown",
         ),
         TableBlock(
             block_id="forensic_lineage_table",
@@ -513,6 +551,15 @@ def register_forensic_sources(registry: ReportRegistry) -> None:
             title="Bounded Forensic Events Appendix",
             source_tables=("cp_runs.execution_log",),
             executor=_exec_events_appendix_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="forensic.workers_chart",
+            kind=ReportSourceKind.CHART,
+            title="Forensic Worker Activity Breakdown",
+            source_tables=("cp_runs.execution_log",),
+            executor=_exec_forensic_workers_chart,
         )
     )
     registry.register_definition(RUN_FORENSIC_DEF)

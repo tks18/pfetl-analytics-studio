@@ -15,6 +15,10 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from pfetl_analytics_studio.analytics import TaxAnalytics
+from pfetl_analytics_studio.reports.comparison import (
+    comparison_period_context,
+    format_delta_kpi_fields,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -29,7 +33,13 @@ from pfetl_analytics_studio.reports.models import (
     TableBlock,
     TitleBlock,
 )
-from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.semantic import FilterSet, MetricFormat, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.ui import (
+    build_tax_completeness_figure,
+    build_tax_composition_donut_figure,
+    build_tax_fy_trend_figure,
+    build_tax_recon_bridge_figure,
+)
 from pfetl_analytics_studio.ui.formatting import format_currency
 from pfetl_analytics_studio.ui.theme import StudioColor
 
@@ -50,6 +60,40 @@ def _exec_tax_pos_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
         cache=ctx.cache,
     )
     cid = snap.currency_id
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    prior_inc: float | None = None
+    prior_gain: float | None = None
+    prior_lbl = comp_ctx.label if comp_ctx else "Prior"
+    if comp_ctx is not None and comp_ctx.end_date is not None:
+        comp_fy = (
+            f"FY{comp_ctx.end_date.year}-{str(comp_ctx.end_date.year + 1)[-2:]}"
+            if comp_ctx.end_date.month >= 4
+            else f"FY{comp_ctx.end_date.year - 1}-{str(comp_ctx.end_date.year)[-2:]}"
+        )
+        prior_snap = TaxAnalytics.fy_summary(
+            profile=profile,
+            fy=comp_fy,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            cache=ctx.cache,
+        )
+        prior_inc = prior_snap.total_ledger_income
+        prior_gain = prior_snap.total_investment_gain_loss
+    inc_d, inc_tone, inc_br = format_delta_kpi_fields(
+        snap.total_ledger_income,
+        prior_inc,
+        MetricFormat.CURRENCY,
+        currency_id=cid,
+        comparison_label=prior_lbl,
+    )
+    gain_d, gain_tone, gain_br = format_delta_kpi_fields(
+        snap.total_investment_gain_loss,
+        prior_gain,
+        MetricFormat.CURRENCY,
+        currency_id=cid,
+        comparison_label=prior_lbl,
+    )
     items = (
         ReportKpiItem(
             label="Total Ledger Income",
@@ -57,6 +101,9 @@ def _exec_tax_pos_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
             formatted_value=format_currency(snap.total_ledger_income, currency_id=cid),
             subtitle=f"{snap.fy or 'Latest'} · Ready: {snap.ready_count}/{snap.total_event_count}",
             source_table="gold.tax_financial_year_summary",
+            delta_text=inc_d,
+            delta_tone=inc_tone,
+            breakups=inc_br,
         ),
         ReportKpiItem(
             label="Investment Gain / Loss",
@@ -64,6 +111,9 @@ def _exec_tax_pos_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
             formatted_value=format_currency(snap.total_investment_gain_loss, currency_id=cid),
             subtitle=f"Check required: {snap.check_required_count}",
             source_table="gold.tax_financial_year_summary",
+            delta_text=gain_d,
+            delta_tone=gain_tone,
+            breakups=gain_br,
         ),
         ReportKpiItem(
             label="Est. Ledger Tax (Indicative)",
@@ -223,6 +273,110 @@ def _exec_tax_reconciliation_table(ctx: ReportSourceContext, block_id: str) -> R
     )
 
 
+def _exec_tax_fy_trend_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    summary = TaxAnalytics.fy_summary(
+        profile=profile,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = (
+        build_tax_fy_trend_figure(summary.all_fy_rows, summary.currency_id)
+        if summary.all_fy_rows
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_pos.fy_trend_chart",
+        title=ctx.title_override or "Multi-FY Tax & Income Trend",
+        figure_dict=fig or {},
+        source_tables=("gold.tax_financial_year_summary",),
+    )
+
+
+def _exec_tax_comp_donut_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    summary = TaxAnalytics.fy_summary(
+        profile=profile,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = build_tax_composition_donut_figure(summary, summary.currency_id) or {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_pos.comp_donut_chart",
+        title=ctx.title_override or f"FY {summary.fy} Tax Composition",
+        figure_dict=fig,
+        source_tables=("gold.tax_financial_year_summary",),
+    )
+
+
+def _exec_tax_recon_bridge_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    summary = TaxAnalytics.fy_summary(
+        profile=profile,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    recon = TaxAnalytics.reconciliation(
+        profile=profile,
+        fy=summary.fy or "FY2025-26",
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = build_tax_recon_bridge_figure(recon.rows, recon.currency_id) if recon.rows else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_pos.recon_bridge_chart",
+        title=ctx.title_override or f"FY {recon.fy} Ledger vs Quant Bridge",
+        figure_dict=fig or {},
+        source_tables=("gold.tax_reconciliation",),
+    )
+
+
+def _exec_tax_readiness_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    summary = TaxAnalytics.fy_summary(
+        profile=profile,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    recon = TaxAnalytics.reconciliation(
+        profile=profile,
+        fy=summary.fy or "FY2025-26",
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = build_tax_completeness_figure(recon.rows) if recon.rows else {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_pos.readiness_chart",
+        title=ctx.title_override or f"FY {recon.fy} Event Readiness by Sub-Head",
+        figure_dict=fig or {},
+        source_tables=("gold.tax_reconciliation",),
+    )
+
+
 TAX_POSITION_REVIEW_DEF = ReportDefinition(
     id="tax_position_review",
     name="Tax Position Review",
@@ -258,6 +412,26 @@ TAX_POSITION_REVIEW_DEF = ReportDefinition(
             block_id="tax_pos_chart",
             source_id="tax_pos.head_breakdown_chart",
             title="Income Head & Sub-Head Tax Breakdown",
+        ),
+        ChartBlock(
+            block_id="tax_pos_fy_trend_chart",
+            source_id="tax_pos.fy_trend_chart",
+            title="Multi-FY Tax & Income Trend",
+        ),
+        ChartBlock(
+            block_id="tax_pos_comp_donut_chart",
+            source_id="tax_pos.comp_donut_chart",
+            title="FY Tax Composition",
+        ),
+        ChartBlock(
+            block_id="tax_pos_recon_bridge_chart",
+            source_id="tax_pos.recon_bridge_chart",
+            title="Ledger vs Quant Reconciliation Bridge",
+        ),
+        ChartBlock(
+            block_id="tax_pos_readiness_chart",
+            source_id="tax_pos.readiness_chart",
+            title="Event Readiness by Sub-Head",
         ),
         PageBreakBlock(block_id="pb_tax_pos_2"),
         TableBlock(
@@ -309,6 +483,42 @@ def register_tax_position_sources(registry: ReportRegistry) -> None:
             title="Tax Reconciliation Table",
             source_tables=("gold.tax_reconciliation",),
             executor=_exec_tax_reconciliation_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_pos.fy_trend_chart",
+            kind=ReportSourceKind.CHART,
+            title="Multi-FY Tax & Income Trend",
+            source_tables=("gold.tax_financial_year_summary",),
+            executor=_exec_tax_fy_trend_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_pos.comp_donut_chart",
+            kind=ReportSourceKind.CHART,
+            title="FY Tax Composition",
+            source_tables=("gold.tax_financial_year_summary",),
+            executor=_exec_tax_comp_donut_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_pos.recon_bridge_chart",
+            kind=ReportSourceKind.CHART,
+            title="Ledger vs Quant Bridge",
+            source_tables=("gold.tax_reconciliation",),
+            executor=_exec_tax_recon_bridge_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_pos.readiness_chart",
+            kind=ReportSourceKind.CHART,
+            title="Event Readiness by Sub-Head",
+            source_tables=("gold.tax_reconciliation",),
+            executor=_exec_tax_readiness_chart,
         )
     )
     registry.register_definition(TAX_POSITION_REVIEW_DEF)

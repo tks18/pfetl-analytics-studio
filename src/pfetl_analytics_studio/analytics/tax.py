@@ -325,6 +325,7 @@ class TaxAnalytics:
         profile: PFETLProfile,
         period_context: PeriodContext | None = None,
         *,
+        isin: str | None = None,
         run_id: str | None = None,
         provenance: RunProvenance | None = None,
         catalog_snapshot: CatalogSnapshot | None = None,
@@ -333,7 +334,7 @@ class TaxAnalytics:
         """Reuse `InvestmentAnalytics.lot_rows` for indicative harvesting & LTCG maturity."""
         harvest_page = InvestmentAnalytics.lot_rows(
             profile,
-            LotFilter(can_harvest_loss=True),
+            LotFilter(can_harvest_loss=True, isin=isin),
             period_context,
             limit=200,
             offset=0,
@@ -344,7 +345,7 @@ class TaxAnalytics:
         )
         maturing_page = InvestmentAnalytics.lot_rows(
             profile,
-            LotFilter(holding_type="STCG", days_to_ltcg_max=90),
+            LotFilter(holding_type="STCG", days_to_ltcg_max=90, isin=isin),
             period_context,
             limit=200,
             offset=0,

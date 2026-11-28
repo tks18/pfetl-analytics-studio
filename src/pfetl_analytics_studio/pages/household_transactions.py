@@ -25,6 +25,7 @@ from pfetl_analytics_studio.analytics import (
     HouseholdTransactionRow,
 )
 from pfetl_analytics_studio.context import AppContext
+from pfetl_analytics_studio.data import create_temp_export_path, write_rows_csv_file
 from pfetl_analytics_studio.semantic import FilterField, FilterSet
 from pfetl_analytics_studio.ui import (
     BadgeTone,
@@ -39,8 +40,8 @@ from pfetl_analytics_studio.ui import (
     format_currency,
     kpi_card,
     loading_state_card,
-    rows_to_csv_bytes,
     status_badge,
+    trigger_file_download,
 )
 
 
@@ -107,27 +108,44 @@ def _format_tx_rows(rows_in: Sequence[HouseholdTransactionRow]) -> list[dict[str
     ]
 
 
-def _export_transactions_csv(
+async def _export_transactions_csv(
     context: AppContext,
     tx_query: HouseholdTransactionQuery,
     cols: Sequence[TableColumn],
     total_count: int,
 ) -> None:
-    """Export all matching Silver transactions (unbounded) as CSV."""
+    """Export all matching Silver transactions (unbounded) via temp CSV file."""
     if context.profile is None:
         return
-    full_res = HouseholdAnalytics.household_transactions(
-        context.profile,
-        tx_query,
-        limit=max(total_count, 100_000),
-        offset=0,
-        catalog_snapshot=context.catalog_snapshot,
-    )
-    full_rows = _format_tx_rows(full_res.rows)
-    csv_bytes = rows_to_csv_bytes(cols, full_rows)
-    ui.download(csv_bytes, filename="household_transactions.csv")
+    profile = context.profile
+
+    def _export_sync() -> tuple[Any, int]:
+        full_res = HouseholdAnalytics.household_transactions(
+            profile,
+            tx_query,
+            limit=max(total_count, 100_000),
+            offset=0,
+            catalog_snapshot=context.catalog_snapshot,
+        )
+        full_rows = _format_tx_rows(full_res.rows)
+        target_path = create_temp_export_path(
+            "household_transactions.csv", default_stem="household_transactions"
+        )
+        headers = [c.label for c in cols]
+        fields = [c.field for c in cols]
+        row_tuples = [[r.get(f, "") for f in fields] for r in full_rows]
+        count = write_rows_csv_file(headers, [row_tuples], target_path)
+        return target_path, count
+
+    try:
+        asyncio.get_running_loop()
+        export_path, count = await run.io_bound(_export_sync)
+    except RuntimeError:
+        export_path, count = _export_sync()
+
+    trigger_file_download(export_path, filename="household_transactions.csv", media_type="text/csv")
     ui.notify(
-        f"Exported {len(full_rows):,} transactions to household_transactions.csv",
+        f"Exported {count:,} transactions to household_transactions.csv",
         type="positive",
     )
 

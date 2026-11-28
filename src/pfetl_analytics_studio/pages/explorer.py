@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     CatalogBrowseResult,
@@ -58,10 +59,20 @@ from pfetl_analytics_studio.ui import (
     error_state_panel,
     format_metric_value,
     kpi_card,
+    loading_state_card,
     status_badge,
+    trigger_file_download,
 )
 
 _EXPLORER_CACHE = QueryCache(max_entries=64)
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 @dataclass(frozen=True)
@@ -249,7 +260,7 @@ def _render_surface_preview_card(
     on_add_filter: Callable[[], None],
     on_clear: Callable[[], None],
     on_refresh: Callable[[], Any],
-    on_download: Callable[[], None],
+    on_download: Callable[[], Any],
 ) -> None:
     """Render the Surface Inspector card, column schema, and bounded preview table."""
     with (
@@ -416,7 +427,7 @@ def _render_catalog_overview(browse: CatalogBrowseResult) -> None:
         )
 
 
-def _render_catalog_tab(
+def _render_catalog_tab(  # pylint: disable=too-many-statements
     profile: PFETLProfile,
     run_id: str,
     catalog_snapshot: CatalogSnapshot | None,
@@ -435,11 +446,13 @@ def _render_catalog_tab(
         "draft_val": "",
         "sort_col": "",
         "sort_desc": False,
+        "cat_gen": 0,
+        "prev_gen": 0,
     }
 
     def _update_filter(key: str, val: Any) -> None:
         state[key] = val
-        _catalog_body.refresh()
+        _refresh_catalog_body()
 
     def _select_table(row: dict[str, Any]) -> None:
         state["selected_table"] = str(row["physical_name"])
@@ -447,11 +460,11 @@ def _render_catalog_tab(
         state["draft_col"] = ""
         state["draft_val"] = ""
         state["sort_col"] = ""
-        _preview_panel.refresh()
+        _refresh_preview_panel()
 
     def _update_limit(val: Any) -> None:
         state["preview_limit"] = int(val)
-        _preview_panel.refresh()
+        _refresh_preview_panel()
 
     def _add_col_filter() -> None:
         col = str(state["draft_col"]).strip()
@@ -468,166 +481,249 @@ def _render_catalog_tab(
         )
         state["col_filters"] = [*state["col_filters"], new_f]
         state["draft_val"] = ""
-        _preview_panel.refresh()
+        _refresh_preview_panel()
 
     def _clear_col_filters() -> None:
         state["col_filters"] = []
         state["sort_col"] = ""
-        _preview_panel.refresh()
+        _refresh_preview_panel()
 
-    def _download_full_surface() -> None:
+    async def _download_full_surface() -> None:
         target = str(state["selected_table"])
+        col_filters = tuple(state["col_filters"])
+        sort_col = str(state["sort_col"]) or None
+        sort_desc = bool(state["sort_desc"])
         try:
-            csv_bytes, row_cnt, filename = ExplorerAnalytics.export_surface_csv(
-                profile,
-                target,
-                filters=tuple(state["col_filters"]),
-                sort_column=str(state["sort_col"]) or None,
-                sort_desc=bool(state["sort_desc"]),
-            )
-            ui.download(csv_bytes, filename=filename)
+            if not _has_running_loop():
+                export_path, row_cnt, filename = ExplorerAnalytics.export_surface_csv(
+                    profile,
+                    target,
+                    filters=col_filters,
+                    sort_column=sort_col,
+                    sort_desc=sort_desc,
+                )
+            else:
+                export_path, row_cnt, filename = await run.io_bound(
+                    ExplorerAnalytics.export_surface_csv,
+                    profile,
+                    target,
+                    filters=col_filters,
+                    sort_column=sort_col,
+                    sort_desc=sort_desc,
+                )
+            trigger_file_download(export_path, filename=filename, media_type="text/csv")
             ui.notify(f"Exported {row_cnt:,} rows to {filename}", type="positive")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             ui.notify(f"Export failed: {exc}", type="negative")
 
-    @ui.refreshable
-    def _preview_panel() -> None:
+    catalog_slot = ui.column().classes("w-full gap-3")
+    preview_slot = ui.column().classes("w-full")
+
+    def _render_preview_content(preview: TablePreviewResult) -> None:
+        preview_slot.clear()
+        with preview_slot:
+            _render_surface_preview_card(
+                preview,
+                state,
+                _update_limit,
+                _add_col_filter,
+                _clear_col_filters,
+                _refresh_preview_panel,
+                _download_full_surface,
+            )
+
+    def _refresh_preview_panel() -> None:
         target = str(state["selected_table"])
         if not target:
             return
-        try:
-            preview = ExplorerAnalytics.preview(
+        state["prev_gen"] = int(state["prev_gen"]) + 1
+        captured_gen = int(state["prev_gen"])
+        limit_val = int(state["preview_limit"])
+        col_filters = tuple(state["col_filters"])
+        sort_col = str(state["sort_col"]) or None
+        sort_desc = bool(state["sort_desc"])
+
+        def _fetch_preview_sync() -> TablePreviewResult:
+            return ExplorerAnalytics.preview(
                 profile,
                 target,
-                limit=int(state["preview_limit"]),
-                filters=tuple(state["col_filters"]),
-                sort_column=str(state["sort_col"]) or None,
-                sort_desc=bool(state["sort_desc"]),
+                limit=limit_val,
+                filters=col_filters,
+                sort_column=sort_col,
+                sort_desc=sort_desc,
                 catalog_snapshot=catalog_snapshot,
                 run_id=run_id,
                 cache=_EXPLORER_CACHE,
             )
-        except (PFETLDataAccessError, ValueError) as exc:
-            error_state_panel(title="Preview Unavailable", message=str(exc))
-            return
-        _render_surface_preview_card(
-            preview,
-            state,
-            _update_limit,
-            _add_col_filter,
-            _clear_col_filters,
-            _preview_panel.refresh,
-            _download_full_surface,
-        )
 
-    @ui.refreshable
-    def _catalog_body() -> None:
+        if not _has_running_loop():
+            try:
+                _render_preview_content(_fetch_preview_sync())
+            except (PFETLDataAccessError, ValueError) as exc:
+                preview_slot.clear()
+                with preview_slot:
+                    error_state_panel(title="Preview Unavailable", message=str(exc))
+            return
+
+        if not preview_slot.default_slot.children:
+            with preview_slot:
+                loading_state_card(f"Loading preview for {target}...")
+
+        async def _load_preview_async() -> None:
+            try:
+                preview = await run.io_bound(_fetch_preview_sync)
+            except (PFETLDataAccessError, ValueError) as exc:
+                if captured_gen == int(state["prev_gen"]):
+                    preview_slot.clear()
+                    with preview_slot:
+                        error_state_panel(title="Preview Unavailable", message=str(exc))
+                return
+            if captured_gen == int(state["prev_gen"]):
+                _render_preview_content(preview)
+
+        ui.timer(0.01, _load_preview_async, once=True)
+
+    def _render_catalog_content(browse: CatalogBrowseResult) -> None:
+        catalog_slot.clear()
+        with catalog_slot:
+            _render_catalog_overview(browse)
+
+            layer_opts: dict[str, str] = {"all": "All Layers"} | {
+                ly.value: ly.value.replace("_", " ").title() for ly in SurfaceLayer
+            }
+            domain_opts: dict[str, str] = {"all": "All Domains"} | {
+                d: d for d in browse.available_domains
+            }
+            usage_opts: dict[str, str] = {"all": "All Classifications"} | {
+                u.value: u.value for u in SurfaceUsageCategory
+            }
+
+            with (
+                ui.card()
+                .classes("w-full p-3")
+                .style(
+                    f"background-color: {StudioColor.CARD}; border: 1px solid {StudioColor.BORDER};"
+                )
+            ):
+                with ui.row().classes("w-full items-center gap-3 flex-wrap"):
+                    (
+                        ui.select(
+                            options=layer_opts,
+                            value=state["layer"],
+                            label="Layer",
+                            on_change=lambda e: _update_filter("layer", e.value),
+                        )
+                        .props("dense outlined dark")
+                        .classes("w-44")
+                    )
+                    (
+                        ui.select(
+                            options=domain_opts,
+                            value=state["domain"],
+                            label="Domain",
+                            on_change=lambda e: _update_filter("domain", e.value),
+                        )
+                        .props("dense outlined dark")
+                        .classes("w-48")
+                    )
+                    (
+                        ui.select(
+                            options=usage_opts,
+                            value=state["usage"],
+                            label="Classification",
+                            on_change=lambda e: _update_filter("usage", e.value),
+                        )
+                        .props("dense outlined dark")
+                        .classes("w-48")
+                    )
+                    (
+                        ui.input(
+                            label="Search table / grain / producer",
+                            value=str(state["search"]),
+                            on_change=lambda e: _update_filter("search", e.value or ""),
+                        )
+                        .props("dense outlined dark clearable")
+                        .classes("w-72")
+                    )
+
+            table_cols = [
+                TableColumn(name="physical_name", label="Physical Surface", field="physical_name"),
+                TableColumn(name="layer", label="Layer", field="layer"),
+                TableColumn(name="domain", label="Domain", field="domain"),
+                TableColumn(name="grain", label="Grain", field="grain"),
+                TableColumn(name="producer", label="Producer", field="producer"),
+                TableColumn(name="classification", label="Usage", field="classification"),
+                TableColumn(name="col_count", label="Cols", field="col_count", align="right"),
+                TableColumn(name="row_count", label="Rows", field="row_count", align="right"),
+            ]
+            table_rows = [
+                {
+                    "physical_name": e.physical_name,
+                    "layer": e.layer.value,
+                    "domain": e.domain,
+                    "grain": e.grain,
+                    "producer": e.producer,
+                    "classification": e.classification.value
+                    if e.classification
+                    else "UNCLASSIFIED",
+                    "col_count": len(e.columns),
+                    "row_count": f"{e.row_count:,}" if e.row_count is not None else "—",
+                }
+                for e in browse.entries
+            ]
+            bounded_data_table(
+                columns=table_cols,
+                rows=table_rows,
+                row_key="physical_name",
+                pagination=15,
+                title="82-Surface Upstream Data Catalog (click row to inspect, filter & export)",
+                on_row_click=_select_table,
+            )
+
+    def _refresh_catalog_body() -> None:
+        state["cat_gen"] = int(state["cat_gen"]) + 1
+        captured_gen = int(state["cat_gen"])
         cat_filter = CatalogFilter(
             layer=SurfaceLayer(state["layer"]) if state["layer"] != "all" else None,
             domain=None if state["domain"] == "all" else str(state["domain"]),
             usage=SurfaceUsageCategory(state["usage"]) if state["usage"] != "all" else None,
             search=str(state["search"]),
         )
-        try:
-            browse = ExplorerAnalytics.catalog_entries(
+
+        def _fetch_cat_sync() -> CatalogBrowseResult:
+            return ExplorerAnalytics.catalog_entries(
                 profile, cat_filter, run_id=run_id, cache=_EXPLORER_CACHE
             )
-        except PFETLDataAccessError as exc:
-            error_state_panel(title="Catalog Unavailable", message=str(exc))
+
+        if not _has_running_loop():
+            try:
+                _render_catalog_content(_fetch_cat_sync())
+            except PFETLDataAccessError as exc:
+                catalog_slot.clear()
+                with catalog_slot:
+                    error_state_panel(title="Catalog Unavailable", message=str(exc))
             return
 
-        _render_catalog_overview(browse)
+        if not catalog_slot.default_slot.children:
+            with catalog_slot:
+                loading_state_card("Discovering 82-surface PFETL Data Catalog...")
 
-        layer_opts: dict[str, str] = {"all": "All Layers"} | {
-            ly.value: ly.value.replace("_", " ").title() for ly in SurfaceLayer
-        }
-        domain_opts: dict[str, str] = {"all": "All Domains"} | {
-            d: d for d in browse.available_domains
-        }
-        usage_opts: dict[str, str] = {"all": "All Classifications"} | {
-            u.value: u.value for u in SurfaceUsageCategory
-        }
+        async def _load_cat_async() -> None:
+            try:
+                browse = await run.io_bound(_fetch_cat_sync)
+            except PFETLDataAccessError as exc:
+                if captured_gen == int(state["cat_gen"]):
+                    catalog_slot.clear()
+                    with catalog_slot:
+                        error_state_panel(title="Catalog Unavailable", message=str(exc))
+                return
+            if captured_gen == int(state["cat_gen"]):
+                _render_catalog_content(browse)
 
-        with (
-            ui.card()
-            .classes("w-full p-3")
-            .style(f"background-color: {StudioColor.CARD}; border: 1px solid {StudioColor.BORDER};")
-        ):
-            with ui.row().classes("w-full items-center gap-3 flex-wrap"):
-                (
-                    ui.select(
-                        options=layer_opts,
-                        value=state["layer"],
-                        label="Layer",
-                        on_change=lambda e: _update_filter("layer", e.value),
-                    )
-                    .props("dense outlined dark")
-                    .classes("w-44")
-                )
-                (
-                    ui.select(
-                        options=domain_opts,
-                        value=state["domain"],
-                        label="Domain",
-                        on_change=lambda e: _update_filter("domain", e.value),
-                    )
-                    .props("dense outlined dark")
-                    .classes("w-48")
-                )
-                (
-                    ui.select(
-                        options=usage_opts,
-                        value=state["usage"],
-                        label="Classification",
-                        on_change=lambda e: _update_filter("usage", e.value),
-                    )
-                    .props("dense outlined dark")
-                    .classes("w-48")
-                )
-                (
-                    ui.input(
-                        label="Search table / grain / producer",
-                        value=str(state["search"]),
-                        on_change=lambda e: _update_filter("search", e.value or ""),
-                    )
-                    .props("dense outlined dark clearable")
-                    .classes("w-72")
-                )
+        ui.timer(0.01, _load_cat_async, once=True)
 
-        table_cols = [
-            TableColumn(name="physical_name", label="Physical Surface", field="physical_name"),
-            TableColumn(name="layer", label="Layer", field="layer"),
-            TableColumn(name="domain", label="Domain", field="domain"),
-            TableColumn(name="grain", label="Grain", field="grain"),
-            TableColumn(name="producer", label="Producer", field="producer"),
-            TableColumn(name="classification", label="Usage", field="classification"),
-            TableColumn(name="col_count", label="Cols", field="col_count", align="right"),
-            TableColumn(name="row_count", label="Rows", field="row_count", align="right"),
-        ]
-        table_rows = [
-            {
-                "physical_name": e.physical_name,
-                "layer": e.layer.value,
-                "domain": e.domain,
-                "grain": e.grain,
-                "producer": e.producer,
-                "classification": e.classification.value if e.classification else "UNCLASSIFIED",
-                "col_count": len(e.columns),
-                "row_count": f"{e.row_count:,}" if e.row_count is not None else "—",
-            }
-            for e in browse.entries
-        ]
-        bounded_data_table(
-            columns=table_cols,
-            rows=table_rows,
-            row_key="physical_name",
-            pagination=15,
-            title="82-Surface Upstream Data Catalog (click row to inspect, filter & export)",
-            on_row_click=_select_table,
-        )
-        _preview_panel()
-
-    _catalog_body()
+    _refresh_catalog_body()
+    _refresh_preview_panel()
 
 
 def _render_guided_results_view(g_state: dict[str, Any]) -> None:
@@ -724,7 +820,7 @@ def _render_guided_builder_card(
     on_dataset_change: Callable[[str], None],
     on_view_mode: Callable[[Any], None],
     on_chart_override: Callable[[Any], None],
-    on_download_csv: Callable[[], None],
+    on_download_csv: Callable[[], Any],
     on_build_query: Callable[[], GuidedQuery],
     on_view_saved: Callable[[], Any] | None,
     on_run_query: Callable[[], None],
@@ -903,6 +999,8 @@ def _render_guided_tab(
         "chart_override": "auto",
         "last_result": None,
         "error": None,
+        "gen": 0,
+        "running": False,
     }
 
     def _build_query() -> GuidedQuery:
@@ -949,19 +1047,47 @@ def _render_guided_tab(
         )
 
     def _run_query(*, refresh_ui: bool = True) -> None:
-        g_state["error"] = None
-        try:
-            g_state["last_result"] = ExplorerAnalytics.execute_guided(
+        g_state["gen"] = int(g_state["gen"]) + 1
+        captured_gen = int(g_state["gen"])
+        query = _build_query()
+
+        def _fetch_guided_sync() -> GuidedQueryResult:
+            return ExplorerAnalytics.execute_guided(
                 profile,
-                _build_query(),
+                query,
                 run_id=run_id,
                 catalog_snapshot=catalog_snapshot,
                 cache=_EXPLORER_CACHE,
             )
-        except Exception as exc:
-            g_state["error"] = str(exc)
-        if refresh_ui:
-            _guided_results.refresh()
+
+        if not _has_running_loop():
+            g_state["error"] = None
+            try:
+                g_state["last_result"] = _fetch_guided_sync()
+            except Exception as exc:  # noqa: BLE001
+                g_state["error"] = str(exc)
+            if refresh_ui:
+                _guided_results.refresh()
+            return
+
+        async def _run_guided_async() -> None:
+            g_state["running"] = True
+            try:
+                res = await run.io_bound(_fetch_guided_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == int(g_state["gen"]):
+                    g_state["error"] = str(exc)
+                    _guided_results.refresh()
+                return
+            finally:
+                if captured_gen == int(g_state["gen"]):
+                    g_state["running"] = False
+            if captured_gen == int(g_state["gen"]):
+                g_state["error"] = None
+                g_state["last_result"] = res
+                _guided_results.refresh()
+
+        ui.timer(0.01, _run_guided_async, once=True)
 
     def _apply_recipe(recipe: _GuidedRecipe) -> None:
         g_state["dataset_id"] = recipe.dataset_id
@@ -987,14 +1113,18 @@ def _render_guided_tab(
         g_state["sort_field"] = new_ds.default_dimensions[0] if new_ds.default_dimensions else ""
         _guided_builder.refresh()
 
-    def _download_guided_csv() -> None:
+    async def _download_guided_csv() -> None:
+        query = _build_query()
         try:
-            csv_bytes, row_cnt, filename = ExplorerAnalytics.export_guided_csv(
-                profile, _build_query()
-            )
-            ui.download(csv_bytes, filename=filename)
+            if not _has_running_loop():
+                export_path, row_cnt, filename = ExplorerAnalytics.export_guided_csv(profile, query)
+            else:
+                export_path, row_cnt, filename = await run.io_bound(
+                    ExplorerAnalytics.export_guided_csv, profile, query
+                )
+            trigger_file_download(export_path, filename=filename, media_type="text/csv")
             ui.notify(f"Exported {row_cnt:,} rows to {filename}", type="positive")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             ui.notify(f"Export failed: {exc}", type="negative")
 
     def _set_view_mode(val: Any) -> None:
@@ -1058,13 +1188,14 @@ def render_explorer_page(context: AppContext) -> None:
     catalog_snapshot = context.catalog_snapshot
 
     with ui.tabs().classes("w-full") as tabs:
-        cat_tab = ui.tab("Data Catalog (82 Surfaces)", icon="dataset")
-        guided_tab = ui.tab("Guided Analytics", icon="query_stats")
-        saved_tab = ui.tab("Saved Views", icon="bookmarks")
-        sql_tab = ui.tab("Advanced SQL (Read-Only)", icon="terminal")
+        cat_tab = ui.tab("catalog", label="Data Catalog (82 Surfaces)", icon="dataset")
+        guided_tab = ui.tab("guided", label="Guided Analytics", icon="query_stats")
+        saved_tab = ui.tab("saved", label="Saved Views", icon="bookmarks")
+        sql_tab = ui.tab("sql", label="Advanced SQL (Read-Only)", icon="terminal")
 
     refresh_saved_ref: list[Callable[[], Any]] = []
     refresh_sql_ref: list[Callable[[], Any]] = []
+    rendered_tabs: set[str] = set()
 
     def _notify_saved() -> None:
         for fn in refresh_saved_ref:
@@ -1076,29 +1207,51 @@ def render_explorer_page(context: AppContext) -> None:
 
     with ui.tab_panels(tabs, value=cat_tab).classes("w-full bg-transparent p-0"):
         with ui.tab_panel(cat_tab).classes("p-0 gap-3"):
-            _render_catalog_tab(profile, run_id, catalog_snapshot)
+            cat_slot = ui.column().classes("w-full gap-3")
         with ui.tab_panel(guided_tab).classes("p-0 gap-3"):
-            _render_guided_tab(
-                profile,
-                run_id,
-                catalog_snapshot,
-                global_period=context.period_request,
-                global_filters=context.filters,
-                on_view_saved=_notify_saved,
-            )
+            guided_slot = ui.column().classes("w-full gap-3")
         with ui.tab_panel(saved_tab).classes("p-0 gap-3"):
-            refresh_saved_ref.append(
-                render_saved_views_tab(
+            saved_slot = ui.column().classes("w-full gap-3")
+        with ui.tab_panel(sql_tab).classes("p-0 gap-3"):
+            sql_slot = ui.column().classes("w-full gap-3")
+
+    def _ensure_tab_rendered(tab_key: str) -> None:
+        if tab_key in rendered_tabs:
+            return
+        rendered_tabs.add(tab_key)
+        if tab_key == "catalog":
+            with cat_slot:
+                _render_catalog_tab(profile, run_id, catalog_snapshot)
+        elif tab_key == "guided":
+            with guided_slot:
+                _render_guided_tab(
                     profile,
                     run_id,
                     catalog_snapshot,
-                    _EXPLORER_CACHE,
                     global_period=context.period_request,
                     global_filters=context.filters,
-                    on_views_changed=_notify_sql,
+                    on_view_saved=_notify_saved,
                 )
-            )
-        with ui.tab_panel(sql_tab).classes("p-0 gap-3"):
-            refresh_sql_ref.append(
-                render_sql_tab(profile, run_id, _EXPLORER_CACHE, on_view_saved=_notify_saved)
-            )
+        elif tab_key == "saved":
+            with saved_slot:
+                refresh_saved_ref.append(
+                    render_saved_views_tab(
+                        profile,
+                        run_id,
+                        catalog_snapshot,
+                        _EXPLORER_CACHE,
+                        global_period=context.period_request,
+                        global_filters=context.filters,
+                        on_views_changed=_notify_sql,
+                    )
+                )
+        elif tab_key == "sql":
+            with sql_slot:
+                refresh_sql_ref.append(
+                    render_sql_tab(profile, run_id, _EXPLORER_CACHE, on_view_saved=_notify_saved)
+                )
+
+    _ensure_tab_rendered("catalog")
+    tabs.on_value_change(
+        lambda e: _ensure_tab_rendered(str(getattr(e, "value", None) or "catalog"))
+    )

@@ -100,8 +100,7 @@ def _base_explorer_dbs(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, 
             """
         )
         con.execute(
-            'INSERT INTO bronze.household_zcategory ("sample_id") '
-            'SELECT range FROM range(1, 601);'
+            'INSERT INTO bronze.household_zcategory ("sample_id") SELECT range FROM range(1, 601);'
         )
     finally:
         con.close()
@@ -194,7 +193,9 @@ def test_preview_bounded_bronze_warning_cp_and_unknown_blocked(
         explorer_profile,
         "bronze.household_zcategory",
         limit=100,
-        filters=(SurfaceColumnFilter(column="sample_id", operator=FilterOperator.CONTAINS, value="599"),),
+        filters=(
+            SurfaceColumnFilter(column="sample_id", operator=FilterOperator.CONTAINS, value="599"),
+        ),
     )
     assert filtered_prev.filtered_row_count == 1
     assert len(filtered_prev.rows) == 1
@@ -212,12 +213,14 @@ def test_preview_bounded_bronze_warning_cp_and_unknown_blocked(
     assert numeric_prev.filtered_row_count == 1
     assert numeric_prev.rows[0]["INSTRUMENT_CLASS"] == "Equity"
 
-    csv_bytes, exported_rows, fname = ExplorerAnalytics.export_surface_csv(
+    export_path, exported_rows, fname = ExplorerAnalytics.export_surface_csv(
         explorer_profile, "bronze.household_zcategory"
     )
     assert exported_rows == 600
     assert fname == "bronze_household_zcategory.csv"
-    assert len(csv_bytes.decode("utf-8").strip().splitlines()) == 601
+    assert export_path.exists()
+    assert len(export_path.read_text(encoding="utf-8").strip().splitlines()) == 601
+    export_path.unlink(missing_ok=True)
 
     with pytest.raises(ValueError, match="not classified"):
         ExplorerAnalytics.export_surface_csv(explorer_profile, "gold.unclassified_future_table")
@@ -270,10 +273,12 @@ def test_guided_query_sums_additive_values_and_stays_read_only(
         metrics=("inv_class_invested_value",),
         limit=1,
     )
-    g_csv, g_cnt, g_name = ExplorerAnalytics.export_guided_csv(explorer_profile, limited_q)
+    g_path, g_cnt, g_name = ExplorerAnalytics.export_guided_csv(explorer_profile, limited_q)
     assert g_cnt == 2
     assert g_name == "guided_investment_by_class.csv"
-    assert len(g_csv.decode("utf-8").strip().splitlines()) == 3
+    assert g_path.exists()
+    assert len(g_path.read_text(encoding="utf-8").strip().splitlines()) == 3
+    g_path.unlink(missing_ok=True)
 
     # Multi-date default dimensions (MONTH_START_DATE + MONTH_END_DATE) still produce TIME_SERIES
     ds_core = DEFAULT_DATASETS.get("core_monthly_fact")
@@ -461,7 +466,10 @@ def test_bounded_data_table_caps_ui_at_500_while_csv_exports_all_rows() -> None:
         bounded_data_table(cols, all_rows, max_rows=5000, title="Large Table")
         table_elems = [el for el in client.elements.values() if isinstance(el, ui.table)]
         assert len(table_elems) == 1
-        rendered_rows = cast(list[dict[str, Any]], getattr(table_elems[0], "rows"))
+        rendered_rows = cast(
+            list[dict[str, Any]],
+            table_elems[0].rows,  # pyright: ignore[reportUnknownMemberType]
+        )
         assert len(rendered_rows) == 500  # hard UI cap at 500
 
 
@@ -503,9 +511,7 @@ def test_read_only_sql_validator_and_db_guards(explorer_profile: PFETLProfile) -
     ok_select = validate_read_only_sql("/* comment */\nSELECT 1 AS x; ")
     assert ok_select == "SELECT 1 AS x"
 
-    ok_cte = validate_read_only_sql(
-        "-- lead comment\nWITH t AS (SELECT 1 AS n) SELECT n FROM t;"
-    )
+    ok_cte = validate_read_only_sql("-- lead comment\nWITH t AS (SELECT 1 AS n) SELECT n FROM t;")
     assert ok_cte.startswith("WITH t AS")
 
     # Semicolon inside string literal is allowed; multi-statement is rejected
@@ -552,14 +558,16 @@ def test_sql_execution_truncation_csv_export_and_saved_view_replay(
     assert sql_res.row_count == 50
     assert sql_res.truncated is True
 
-    csv_bytes, full_cnt, fname = ExplorerAnalytics.export_sql_csv(
+    sql_path, full_cnt, fname = ExplorerAnalytics.export_sql_csv(
         explorer_profile,
         'SELECT "sample_id" FROM "bronze"."household_zcategory"',
         datasource=SqlDatasource.DUCKDB,
     )
     assert full_cnt == 600
     assert fname == "sql_duckdb_export.csv"
-    assert len(csv_bytes.decode("utf-8").strip().splitlines()) == 601
+    assert sql_path.exists()
+    assert len(sql_path.read_text(encoding="utf-8").strip().splitlines()) == 601
+    sql_path.unlink(missing_ok=True)
 
     cp_res = ExplorerAnalytics.execute_sql(
         explorer_profile,

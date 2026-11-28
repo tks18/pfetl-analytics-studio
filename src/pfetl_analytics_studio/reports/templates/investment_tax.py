@@ -14,8 +14,12 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any
 
-from pfetl_analytics_studio.analytics import TaxAnalytics
+from pfetl_analytics_studio.analytics import InvestmentAnalytics, LotFilter, TaxAnalytics
 from pfetl_analytics_studio.analytics.tax_models import TaxEventFilter
+from pfetl_analytics_studio.reports.comparison import (
+    comparison_period_context,
+    format_delta_kpi_fields,
+)
 from pfetl_analytics_studio.reports.models import (
     ChartBlock,
     KPIGroupBlock,
@@ -30,7 +34,18 @@ from pfetl_analytics_studio.reports.models import (
     TableBlock,
     TitleBlock,
 )
-from pfetl_analytics_studio.semantic import FilterSet, PeriodPreset, PeriodRequest
+from pfetl_analytics_studio.semantic import (
+    FilterField,
+    FilterSet,
+    MetricFormat,
+    PeriodPreset,
+    PeriodRequest,
+)
+from pfetl_analytics_studio.ui import (
+    build_inv_realized_fy_pnl_figure,
+    build_lot_days_to_ltcg_figure,
+    build_lot_holding_type_split_figure,
+)
 from pfetl_analytics_studio.ui.formatting import format_currency
 from pfetl_analytics_studio.ui.theme import StudioColor
 
@@ -72,6 +87,41 @@ def _exec_tax_inv_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
         cache=ctx.cache,
     )
     cid = fy_snap.currency_id
+    comp_ctx = comparison_period_context(ctx.report_context.period)
+    prior_gain: float | None = None
+    prior_tax: float | None = None
+    prior_lbl = comp_ctx.label if comp_ctx else "Prior"
+    if comp_ctx is not None and comp_ctx.end_date is not None:
+        comp_fy = (
+            f"FY{comp_ctx.end_date.year}-{str(comp_ctx.end_date.year + 1)[-2:]}"
+            if comp_ctx.end_date.month >= 4
+            else f"FY{comp_ctx.end_date.year - 1}-{str(comp_ctx.end_date.year)[-2:]}"
+        )
+        prior_fy_snap = TaxAnalytics.fy_summary(
+            profile=profile,
+            fy=comp_fy,
+            run_id=ctx.report_context.pfetl_run_id,
+            provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+            catalog_snapshot=ctx.app_context.catalog_snapshot,
+            cache=ctx.cache,
+        )
+        prior_gain = prior_fy_snap.total_investment_gain_loss
+        prior_tax = prior_fy_snap.total_estimated_investment_tax
+    gain_d, gain_tone, gain_br = format_delta_kpi_fields(
+        fy_snap.total_investment_gain_loss,
+        prior_gain,
+        MetricFormat.CURRENCY,
+        currency_id=cid,
+        comparison_label=prior_lbl,
+    )
+    tax_d, tax_tone, tax_br = format_delta_kpi_fields(
+        fy_snap.total_estimated_investment_tax,
+        prior_tax,
+        MetricFormat.CURRENCY,
+        currency_id=cid,
+        comparison_label=prior_lbl,
+        positive_is_good=False,
+    )
     items = (
         ReportKpiItem(
             label="Realized Investment Gain/Loss",
@@ -79,6 +129,9 @@ def _exec_tax_inv_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
             formatted_value=format_currency(fy_snap.total_investment_gain_loss, currency_id=cid),
             subtitle=f"{fy_snap.fy or 'Latest'} · Realized",
             source_table="gold.tax_financial_year_summary",
+            delta_text=gain_d,
+            delta_tone=gain_tone,
+            breakups=gain_br,
         ),
         ReportKpiItem(
             label="Est. Realized Inv. Tax (Indicative)",
@@ -88,6 +141,9 @@ def _exec_tax_inv_kpis(ctx: ReportSourceContext, block_id: str) -> RenderedKPIGr
             ),
             subtitle="Indicative / estimated, not statutory",
             source_table="gold.tax_financial_year_summary",
+            delta_text=tax_d,
+            delta_tone=tax_tone,
+            breakups=tax_br,
         ),
         ReportKpiItem(
             label="Unrealized Tax-If-Sold (Indicative)",
@@ -248,10 +304,15 @@ def _exec_realized_events_table(ctx: ReportSourceContext, block_id: str) -> Rend
         catalog_snapshot=ctx.app_context.catalog_snapshot,
         cache=ctx.cache,
     )
+    isin_filter: str | None = None
+    for spec in ctx.report_context.filters.filters:
+        if spec.field == FilterField.ISIN and spec.value is not None:
+            isin_filter = str(spec.value[0] if isinstance(spec.value, tuple) else spec.value)
+            break
     events = TaxAnalytics.tax_events(
         profile=profile,
         fy=fy_snap.fy or "FY2025-26",
-        filter_spec=TaxEventFilter(),
+        filter_spec=TaxEventFilter(search=isin_filter),
         run_id=ctx.report_context.pfetl_run_id,
         provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
         catalog_snapshot=ctx.app_context.catalog_snapshot,
@@ -280,6 +341,82 @@ def _exec_realized_events_table(ctx: ReportSourceContext, block_id: str) -> Rend
         total_rows=len(events.rows),
         truncated=len(events.rows) > len(rows),
         source_tables=("silver.fact_tax_events",),
+    )
+
+
+def _exec_realized_fy_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    snap = InvestmentAnalytics.realized_and_reconciliation(
+        profile=profile,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = (
+        build_inv_realized_fy_pnl_figure(snap.realized_rows, snap.currency_id)
+        if snap.realized_rows
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_inv.realized_fy_chart",
+        title=ctx.title_override or "Realized LTCG vs STCG P&L by FY",
+        figure_dict=fig or {},
+        source_tables=("silver.fact_investment_realized_events",),
+    )
+
+
+def _exec_holding_split_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    lots = InvestmentAnalytics.lot_rows(
+        profile=profile,
+        lot_filter=LotFilter(),
+        period_context=ctx.report_context.period,
+        limit=50,
+        offset=0,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = build_lot_holding_type_split_figure(lots.summary, lots.currency_id) or {}
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_inv.holding_split_chart",
+        title=ctx.title_override or "LTCG vs STCG Market Value Split",
+        figure_dict=fig,
+        source_tables=("silver.fact_investment_lot_analytics",),
+    )
+
+
+def _exec_maturing_ltcg_chart(ctx: ReportSourceContext, block_id: str) -> RenderedChartBlock:
+    profile = ctx.app_context.profile
+    if profile is None:
+        raise ValueError("No active PFETL profile is selected.")
+    harv = TaxAnalytics.harvesting_snapshot(
+        profile=profile,
+        period_context=ctx.report_context.period,
+        run_id=ctx.report_context.pfetl_run_id,
+        provenance=ctx.app_context.analytical_provenance or ctx.app_context.provenance,
+        catalog_snapshot=ctx.app_context.catalog_snapshot,
+        cache=ctx.cache,
+    )
+    fig = (
+        build_lot_days_to_ltcg_figure(harv.maturing_lots, harv.currency_id)
+        if harv.maturing_lots
+        else {}
+    )
+    return RenderedChartBlock(
+        block_id=block_id,
+        source_id="tax_inv.maturing_ltcg_chart",
+        title=ctx.title_override or "STCG Lots Maturing to LTCG (<= 90 Days)",
+        figure_dict=fig or {},
+        source_tables=("silver.fact_investment_lot_analytics",),
     )
 
 
@@ -318,6 +455,21 @@ INVESTMENT_TAX_HARVESTING_DEF = ReportDefinition(
             block_id="tax_inv_chart",
             source_id="tax_inv.harvest_chart",
             title="Top Harvestable Loss Lots (Indicative)",
+        ),
+        ChartBlock(
+            block_id="tax_inv_realized_fy_chart",
+            source_id="tax_inv.realized_fy_chart",
+            title="Realized LTCG vs STCG P&L by FY",
+        ),
+        ChartBlock(
+            block_id="tax_inv_holding_split_chart",
+            source_id="tax_inv.holding_split_chart",
+            title="LTCG vs STCG Market Value Split",
+        ),
+        ChartBlock(
+            block_id="tax_inv_maturing_chart",
+            source_id="tax_inv.maturing_ltcg_chart",
+            title="STCG Lots Maturing to LTCG (<= 90 Days)",
         ),
         PageBreakBlock(block_id="pb_tax_inv_2"),
         TableBlock(
@@ -381,6 +533,33 @@ def register_investment_tax_sources(registry: ReportRegistry) -> None:
             title="Canonical Tax Events",
             source_tables=("silver.fact_tax_events",),
             executor=_exec_realized_events_table,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_inv.realized_fy_chart",
+            kind=ReportSourceKind.CHART,
+            title="Realized LTCG vs STCG P&L by FY",
+            source_tables=("silver.fact_investment_realized_events",),
+            executor=_exec_realized_fy_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_inv.holding_split_chart",
+            kind=ReportSourceKind.CHART,
+            title="LTCG vs STCG Market Value Split",
+            source_tables=("silver.fact_investment_lot_analytics",),
+            executor=_exec_holding_split_chart,
+        )
+    )
+    registry.register_source(
+        RegisteredBlockSource(
+            source_id="tax_inv.maturing_ltcg_chart",
+            kind=ReportSourceKind.CHART,
+            title="STCG Lots Maturing to LTCG",
+            source_tables=("silver.fact_investment_lot_analytics",),
+            executor=_exec_maturing_ltcg_chart,
         )
     )
     registry.register_definition(INVESTMENT_TAX_HARVESTING_DEF)

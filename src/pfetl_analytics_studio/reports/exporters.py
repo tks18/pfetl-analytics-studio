@@ -357,6 +357,95 @@ def _compute_inr_ticks(
     return tick_vals, tick_text, (low, high)
 
 
+def _prepare_export_trace(
+    trace: dict[str, Any],
+    idx: int,
+    *,
+    is_horizontal: bool,
+    primary_vals: list[float],
+    secondary_y: list[float],
+    x_categories: list[str],
+) -> dict[str, Any]:
+    """Attach crisp export data labels and formatted category labels to a single trace."""
+    t_type = str(trace.get("type") or "scatter").lower()
+    if t_type == "pie":
+        trace.setdefault("textinfo", "label+percent")
+        trace.setdefault("textposition", "auto")
+        trace.setdefault("insidetextorientation", "horizontal")
+        trace["textfont"] = {"size": 10, "color": "#0F172A"}
+        return trace
+    if t_type == "treemap":
+        trace.setdefault("textinfo", "label+value+percent parent")
+        return trace
+
+    if is_horizontal and str(trace.get("orientation") or "").lower() == "h":
+        y_raw_h: Any = trace.get("y")
+        if (
+            y_raw_h is not None
+            and not isinstance(y_raw_h, (str, bytes))
+            and hasattr(y_raw_h, "__iter__")
+        ):
+            trace["y"] = [_format_axis_category_label(yv) for yv in list(y_raw_h)]
+        x_raw_h: Any = trace.get("x")
+        if isinstance(x_raw_h, (str, bytes)) or not hasattr(x_raw_h, "__iter__"):
+            return trace
+        x_vals_h: list[Any] = list(x_raw_h)
+        primary_vals.extend(
+            float(v) for v in x_vals_h if isinstance(v, (int, float)) and not isinstance(v, bool)
+        )
+        n_pts = len(x_vals_h)
+        if n_pts > 0 and "text" not in trace:
+            step = 1 if n_pts <= 16 else max(2, n_pts // 12)
+            trace["text"] = [
+                _format_compact_chart_value(v) if (i % step == 0 or i == n_pts - 1) else ""
+                for i, v in enumerate(x_vals_h)
+            ]
+            trace["textposition"] = "outside"
+            trace["cliponaxis"] = False
+            trace["textfont"] = {"size": 9.5, "color": "#065F46"}
+        return trace
+
+    x_raw: Any = trace.get("x")
+    if x_raw is not None and not isinstance(x_raw, (str, bytes)) and hasattr(x_raw, "__iter__"):
+        formatted_x = [_format_axis_category_label(xv) for xv in list(x_raw)]
+        trace["x"] = formatted_x
+        if not x_categories:
+            x_categories.extend(formatted_x)
+
+    y_raw: Any = trace.get("y")
+    if isinstance(y_raw, (str, bytes)) or not hasattr(y_raw, "__iter__"):
+        return trace
+    y_vals: list[Any] = list(y_raw)
+    n_pts = len(y_vals)
+    if n_pts == 0:
+        return trace
+
+    numeric_y = [
+        float(v) for v in y_vals if isinstance(v, (int, float)) and not isinstance(v, bool)
+    ]
+    target_bucket = secondary_y if str(trace.get("yaxis") or "") == "y2" else primary_vals
+    target_bucket.extend(numeric_y)
+
+    step = 1 if n_pts <= 16 else max(2, n_pts // 12)
+    labels = [
+        _format_compact_chart_value(v) if (i % step == 0 or i == n_pts - 1) else ""
+        for i, v in enumerate(y_vals)
+    ]
+    if t_type in ("bar", "waterfall") and "text" not in trace:
+        trace["text"] = labels
+        trace["textposition"] = "outside"
+        trace["cliponaxis"] = False
+        trace["textfont"] = {"size": 9.5, "color": "#065F46"}
+    elif t_type == "scatter" and "text" not in trace:
+        mode = str(trace.get("mode") or "lines+markers")
+        if "text" not in mode:
+            trace["mode"] = f"{mode}+text"
+        trace["text"] = labels
+        trace["textposition"] = "top center" if idx == 0 else "bottom center"
+        trace["textfont"] = {"size": 9.5, "color": "#1E3A8A" if idx == 0 else "#334155"}
+    return trace
+
+
 def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[str, Any]:
     """Convert a Plotly figure dict into a crisp presentation-grade light chart with data labels."""
     fig: dict[str, Any] = copy.deepcopy(figure_dict)
@@ -365,55 +454,22 @@ def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[s
         dict(cast(dict[str, Any], t)) for t in raw_data if isinstance(t, dict)
     ]
 
-    primary_y: list[float] = []
+    is_horizontal = any(str(t.get("orientation") or "").lower() == "h" for t in traces)
+    primary_vals: list[float] = []
     secondary_y: list[float] = []
     x_categories: list[str] = []
 
-    for idx, trace in enumerate(traces):
-        x_raw: Any = trace.get("x")
-        if x_raw is not None and not isinstance(x_raw, (str, bytes)) and hasattr(x_raw, "__iter__"):
-            formatted_x = [_format_axis_category_label(xv) for xv in list(x_raw)]
-            trace["x"] = formatted_x
-            if not x_categories:
-                x_categories = formatted_x
-
-        y_raw: Any = trace.get("y")
-        if isinstance(y_raw, (str, bytes)) or not hasattr(y_raw, "__iter__"):
-            continue
-        y_vals: list[Any] = list(y_raw)
-        n_pts = len(y_vals)
-        if n_pts == 0:
-            continue
-
-        numeric_y = [
-            float(v) for v in y_vals if isinstance(v, (int, float)) and not isinstance(v, bool)
-        ]
-        if str(trace.get("yaxis") or "") == "y2":
-            secondary_y.extend(numeric_y)
-        else:
-            primary_y.extend(numeric_y)
-
-        step = 1 if n_pts <= 16 else max(2, n_pts // 12)
-        labels = [
-            _format_compact_chart_value(v) if (i % step == 0 or i == n_pts - 1) else ""
-            for i, v in enumerate(y_vals)
-        ]
-        t_type = str(trace.get("type") or "scatter").lower()
-        if t_type == "bar" and "text" not in trace:
-            trace["text"] = labels
-            trace["textposition"] = "outside"
-            trace["cliponaxis"] = False
-            trace["textfont"] = {"size": 9.5, "color": "#065F46"}
-        elif t_type == "scatter" and "text" not in trace:
-            mode = str(trace.get("mode") or "lines+markers")
-            if "text" not in mode:
-                trace["mode"] = f"{mode}+text"
-            trace["text"] = labels
-            trace["textposition"] = "top center" if idx == 0 else "bottom center"
-            trace["textfont"] = {"size": 9.5, "color": "#1E3A8A" if idx == 0 else "#334155"}
-        traces[idx] = trace
-
-    fig["data"] = traces
+    fig["data"] = [
+        _prepare_export_trace(
+            trace,
+            idx,
+            is_horizontal=is_horizontal,
+            primary_vals=primary_vals,
+            secondary_y=secondary_y,
+            x_categories=x_categories,
+        )
+        for idx, trace in enumerate(traces)
+    ]
 
     layout = dict(fig.get("layout") or {})
     layout["paper_bgcolor"] = "#FFFFFF"
@@ -423,13 +479,19 @@ def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[s
         "family": "Segoe UI, Arial, sans-serif",
         "size": 12,
     }
-    layout["title"] = {
-        "text": f"<b>{title}</b>",
-        "font": {"size": 16, "color": "#0F172A"},
-        "x": 0.01,
-        "xanchor": "left",
+    if title:
+        layout["title"] = {
+            "text": f"<b>{title}</b>",
+            "font": {"size": 16, "color": "#0F172A"},
+            "x": 0.01,
+            "xanchor": "left",
+        }
+    layout["margin"] = {
+        "l": 150 if is_horizontal else 82,
+        "r": 82,
+        "t": 84 if title else 56,
+        "b": 84 if (not is_horizontal and len(x_categories) > 6) else 74,
     }
-    layout["margin"] = {"l": 82, "r": 82, "t": 84, "b": 74}
     layout["legend"] = {
         "orientation": "h",
         "y": 1.11,
@@ -438,11 +500,13 @@ def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[s
         "bgcolor": "rgba(255,255,255,0.85)",
     }
 
+    max_cat_len = max((len(c) for c in x_categories), default=0)
     for axis_key in ("xaxis", "yaxis", "yaxis2"):
         ax = dict(layout.get(axis_key) or {}) if axis_key in layout or axis_key == "xaxis" else None
         if ax is None:
             continue
         ax["color"] = "#334155"
+        ax["automargin"] = True
         ax["tickfont"] = {"color": "#334155", "size": 10.5}
         title_val = ax.get("title")
         if isinstance(title_val, str):
@@ -450,20 +514,30 @@ def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[s
         elif isinstance(title_val, dict):
             ax["title"] = {**title_val, "font": {"color": "#0F172A", "size": 11.5}}
         if axis_key == "xaxis":
-            ax["type"] = "category"
             ax["gridcolor"] = "#E2E8F0"
             ax["linecolor"] = "#CBD5E1"
-            if len(x_categories) <= 24:
-                ax["dtick"] = 1
-            if len(x_categories) > 8:
-                ax["tickangle"] = -25
+            if is_horizontal:
+                ax["type"] = "linear"
+                ticks = _compute_inr_ticks(primary_vals, is_secondary=False)
+                if ticks is not None:
+                    ax["tickvals"], ax["ticktext"], x_range = ticks
+                    ax["range"] = list(x_range)
+            else:
+                ax["type"] = "category"
+                if len(x_categories) <= 24:
+                    ax["dtick"] = 1
+                if len(x_categories) > 6 or max_cat_len > 11:
+                    ax["tickangle"] = -35
         elif axis_key == "yaxis":
             ax["gridcolor"] = "#E2E8F0"
             ax["linecolor"] = "#CBD5E1"
-            ticks = _compute_inr_ticks(primary_y, is_secondary=False)
-            if ticks is not None:
-                ax["tickvals"], ax["ticktext"], y_range = ticks
-                ax["range"] = list(y_range)
+            if is_horizontal:
+                ax["type"] = "category"
+            else:
+                ticks = _compute_inr_ticks(primary_vals, is_secondary=False)
+                if ticks is not None:
+                    ax["tickvals"], ax["ticktext"], y_range = ticks
+                    ax["range"] = list(y_range)
         elif axis_key == "yaxis2":
             ticks2 = _compute_inr_ticks(secondary_y, is_secondary=True)
             if ticks2 is not None:
@@ -595,8 +669,9 @@ class ReportExporter:
     ) -> ExportResult:
         """Export a Plotly figure dictionary to a local PNG image via Kaleido."""
         resolved = _prepare_output_path(output_path)
+        prepared = _prepare_pdf_chart_figure(figure_dict, "")
         png_bytes = render_chart_image_bytes(
-            figure_dict,
+            prepared,
             image_format="png",
             width=width,
             height=height,
@@ -616,8 +691,9 @@ class ReportExporter:
     ) -> ExportResult:
         """Export a Plotly figure dictionary to a local SVG image via Kaleido."""
         resolved = _prepare_output_path(output_path)
+        prepared = _prepare_pdf_chart_figure(figure_dict, "")
         svg_bytes = render_chart_image_bytes(
-            figure_dict,
+            prepared,
             image_format="svg",
             width=width,
             height=height,
@@ -746,10 +822,17 @@ class ReportExporter:
                     [
                         Paragraph("Metric", styles["cell_header"]),
                         Paragraph("Value", styles["cell_header_right"]),
-                        Paragraph("Notes", styles["cell_header"]),
+                        Paragraph("Comparison & Notes", styles["cell_header"]),
                     ]
                 ]
                 for item in block.items:
+                    notes_parts: list[str] = []
+                    if item.delta_text:
+                        notes_parts.append(item.delta_text)
+                    if item.breakups:
+                        notes_parts.append(" | ".join(f"{k}: {v}" for k, v in item.breakups[:4]))
+                    if item.subtitle:
+                        notes_parts.append(item.subtitle)
                     kpi_rows.append(
                         [
                             Paragraph(
@@ -761,7 +844,7 @@ class ReportExporter:
                                 styles["cell_right"],
                             ),
                             Paragraph(
-                                _escape_pdf_text(item.subtitle, unicode_ok=unicode_ok),
+                                _escape_pdf_text(" · ".join(notes_parts), unicode_ok=unicode_ok),
                                 styles["cell"],
                             ),
                         ]
@@ -955,12 +1038,16 @@ class ReportExporter:
                     row_idx += 1
                     ws_summary.write(row_idx, 0, "KPI Metric", header_fmt)
                     ws_summary.write(row_idx, 1, "Formatted Value", header_fmt)
-                    ws_summary.write(row_idx, 2, "Notes", header_fmt)
+                    ws_summary.write(row_idx, 2, "Delta / Comparison", header_fmt)
+                    ws_summary.write(row_idx, 3, "Breakups & Notes", header_fmt)
                     row_idx += 1
                     for item in b.items:
+                        br_text = " | ".join(f"{k}: {v}" for k, v in item.breakups[:4])
+                        notes = " · ".join(p for p in (br_text, item.subtitle) if p)
                         ws_summary.write(row_idx, 0, item.label)
                         ws_summary.write(row_idx, 1, item.formatted_value)
-                        ws_summary.write(row_idx, 2, item.subtitle)
+                        ws_summary.write(row_idx, 2, item.delta_text)
+                        ws_summary.write(row_idx, 3, notes)
                         row_idx += 1
 
             if result.warnings:

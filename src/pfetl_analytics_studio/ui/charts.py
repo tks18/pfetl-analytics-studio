@@ -369,6 +369,7 @@ def studio_plotly_layout(
     horizontal_bars: bool = False,
     x_currency_ticks: tuple[list[float], list[str]] | None = None,
     x_axis_type: Literal["date", "category", "linear"] | None = None,
+    x_categories: Sequence[str] | None = None,
     interaction_mode: ChartInteractionMode = "cockpit",
 ) -> dict[str, Any]:
     """Return modern dark Plotly layout with matched ranges and generalized axis semantics."""
@@ -377,7 +378,7 @@ def studio_plotly_layout(
         "gridcolor": "rgba(255, 255, 255, 0.08)",
         "zeroline": False,
         "automargin": True,
-        "ticklabelstandoff": 6,
+        "ticklabelstandoff": 8 if horizontal_bars else 6,
         "tickfont": {"color": StudioColor.TEXT.value, "size": 11.5},
     }
     if not horizontal_bars:
@@ -412,12 +413,23 @@ def studio_plotly_layout(
         xaxis["tickformat"] = date_tick_format
     else:
         xaxis["type"] = resolved_x
+        if resolved_x == "category" and x_categories:
+            cat_strs = [str(c) for c in x_categories]
+            max_len = max((len(c) for c in cat_strs), default=0)
+            if len(cat_strs) > 5 or max_len > 12:
+                xaxis["tickangle"] = -35
+                xaxis["tickfont"] = {"color": StudioColor.TEXT.value, "size": 10.5}
 
     has_y2 = bool(y2_suffix or y2_ticks is not None)
     margin_top = 48 if interaction_mode == "analytical" else 44
     layout: dict[str, Any] = {
         "height": height,
-        "margin": {"l": 20, "r": 24 if not has_y2 else 68, "t": margin_top, "b": 40},
+        "margin": {
+            "l": 28 if horizontal_bars else 20,
+            "r": 24 if not has_y2 else 68,
+            "t": margin_top,
+            "b": 40,
+        },
         "paper_bgcolor": "rgba(0,0,0,0)",
         "plot_bgcolor": "rgba(0,0,0,0)",
         "font": {"color": StudioColor.TEXT.value, "size": 12},

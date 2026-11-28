@@ -171,6 +171,7 @@ from pfetl_analytics_studio.ui.charts_wealth import (
     build_wealth_pnl_fx_figure,
     build_wealth_savings_vs_market_figure,
 )
+from pfetl_analytics_studio.ui.downloads import trigger_file_download
 from pfetl_analytics_studio.ui.filters import filter_chips_bar, period_selector
 from pfetl_analytics_studio.ui.formatting import (
     currency_symbol,
@@ -347,4 +348,5 @@ __all__ = [
     "rows_to_csv_bytes",
     "status_badge",
     "studio_plotly_layout",
+    "trigger_file_download",
 ]

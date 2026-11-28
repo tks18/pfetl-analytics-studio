@@ -83,8 +83,6 @@ def build_catalog_layer_usage_figure(coverage: _CoverageLike) -> dict[str, Any]:
                 "y": counts,
                 "name": "Surfaces",
                 "marker": {"color": list(CHART_SERIES_COLORS[: len(layers)])},
-                "text": [str(c) for c in counts],
-                "textposition": "outside",
             }
         ],
         "layout": studio_plotly_layout(height=300, y_ticks=y_t, x_axis_type="category"),
