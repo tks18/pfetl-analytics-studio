@@ -22,6 +22,7 @@ from pfetl_analytics_studio.data.errors import (
     PFETLDataAccessError,
     ReadOnlyViolationError,
 )
+from pfetl_analytics_studio.data.exports import write_rows_csv_file
 from pfetl_analytics_studio.profile import PFETLProfile
 
 
@@ -205,6 +206,30 @@ class ControlPlaneReader:
                 cursor.execute(sql, params)
                 row = cursor.fetchone()
                 return dict(row) if row is not None else None
+            except sqlite3.Error as exc:
+                self._handle_query_error(exc)
+
+    def export_csv_file(
+        self,
+        sql: str,
+        target_path: Path,
+        params: Sequence[Any] | dict[str, Any] = (),
+    ) -> int:
+        """Stream a read-only Control Plane SQLite query to `target_path` as CSV."""
+        with contextlib.closing(self._open_connection()) as conn:
+            try:
+                cursor = conn.cursor()
+                cursor.execute(sql, params)
+                cols = [desc[0] for desc in cursor.description or []]
+
+                def _iter_chunks() -> Any:
+                    while True:
+                        chunk = cursor.fetchmany(4096)
+                        if not chunk:
+                            break
+                        yield [tuple(row) for row in chunk]
+
+                return write_rows_csv_file(cols, _iter_chunks(), target_path)
             except sqlite3.Error as exc:
                 self._handle_query_error(exc)
 

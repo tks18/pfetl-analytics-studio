@@ -39,6 +39,12 @@ from pfetl_analytics_studio.data.errors import (
     ReadOnlyViolationError,
     WarehouseState,
 )
+from pfetl_analytics_studio.data.exports import (
+    cleanup_old_exports,
+    create_temp_export_path,
+    studio_export_dir,
+    write_rows_csv_file,
+)
 from pfetl_analytics_studio.data.log_reader import ArchivedLogReader, LogReadResult, LogSource
 
 __all__ = [
@@ -72,6 +78,10 @@ __all__ = [
     "SurfaceUsageCategory",
     "WarehouseState",
     "build_cache_key",
+    "cleanup_old_exports",
+    "create_temp_export_path",
     "evaluate_profile_drift",
+    "studio_export_dir",
     "validate_identifier",
+    "write_rows_csv_file",
 ]
