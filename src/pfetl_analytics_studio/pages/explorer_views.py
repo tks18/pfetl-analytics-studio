@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     ChartRecommendation,
@@ -29,7 +30,16 @@ from pfetl_analytics_studio.ui import (
     error_state_panel,
     format_metric_value,
     status_badge,
+    trigger_file_download,
 )
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
 
 
 def open_save_view_dialog(
@@ -225,22 +235,44 @@ def render_sql_tab(
         "limit": 500,
         "last_result": None,
         "error": None,
+        "gen": 0,
     }
 
     def _run_sql() -> None:
-        state["error"] = None
-        try:
-            req = SqlQueryRequest(
-                sql=str(state["sql"]),
-                datasource=SqlDatasource(str(state["datasource"])),
-                limit=int(state["limit"]),
-            )
-            state["last_result"] = ExplorerAnalytics.execute_sql(
-                profile, req, run_id=run_id, cache=cache
-            )
-        except Exception as exc:
-            state["error"] = str(exc)
-        _sql_results.refresh()
+        state["gen"] = int(state["gen"]) + 1
+        captured_gen = int(state["gen"])
+        req = SqlQueryRequest(
+            sql=str(state["sql"]),
+            datasource=SqlDatasource(str(state["datasource"])),
+            limit=int(state["limit"]),
+        )
+
+        def _fetch_sql_sync() -> SqlQueryResult:
+            return ExplorerAnalytics.execute_sql(profile, req, run_id=run_id, cache=cache)
+
+        if not _has_running_loop():
+            state["error"] = None
+            try:
+                state["last_result"] = _fetch_sql_sync()
+            except Exception as exc:  # noqa: BLE001
+                state["error"] = str(exc)
+            _sql_results.refresh()
+            return
+
+        async def _run_sql_async() -> None:
+            try:
+                res = await run.io_bound(_fetch_sql_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == int(state["gen"]):
+                    state["error"] = str(exc)
+                    _sql_results.refresh()
+                return
+            if captured_gen == int(state["gen"]):
+                state["error"] = None
+                state["last_result"] = res
+                _sql_results.refresh()
+
+        ui.timer(0.01, _run_sql_async, once=True)
 
     def _load_view(vw: SavedViewDefinition) -> None:
         state["active_view_id"] = vw.view_id
@@ -276,16 +308,24 @@ def render_sql_tab(
         if on_view_saved is not None:
             on_view_saved()
 
-    def _download_sql_csv() -> None:
+    async def _download_sql_csv() -> None:
+        sql_str = str(state["sql"])
+        ds = SqlDatasource(str(state["datasource"]))
         try:
-            csv_bytes, cnt, fname = ExplorerAnalytics.export_sql_csv(
-                profile,
-                str(state["sql"]),
-                datasource=SqlDatasource(str(state["datasource"])),
-            )
-            ui.download(csv_bytes, filename=fname)
+            if not _has_running_loop():
+                export_path, cnt, fname = ExplorerAnalytics.export_sql_csv(
+                    profile, sql_str, datasource=ds
+                )
+            else:
+                export_path, cnt, fname = await run.io_bound(
+                    ExplorerAnalytics.export_sql_csv,
+                    profile,
+                    sql_str,
+                    datasource=ds,
+                )
+            trigger_file_download(export_path, filename=fname, media_type="text/csv")
             ui.notify(f"Exported {cnt:,} rows to {fname}", type="positive")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             ui.notify(f"SQL export failed: {exc}", type="negative")
 
     def _on_new_sql_saved(saved: SavedViewDefinition) -> None:
@@ -419,13 +459,16 @@ def render_saved_views_tab(
         "replay_view": None,
         "replay_result": None,
         "replay_error": None,
+        "gen": 0,
     }
 
     def _replay(view: SavedViewDefinition) -> None:
+        v_state["gen"] = int(v_state["gen"]) + 1
+        captured_gen = int(v_state["gen"])
         v_state["replay_view"] = view
-        v_state["replay_error"] = None
-        try:
-            v_state["replay_result"] = ExplorerAnalytics.replay_saved_view(
+
+        def _replay_sync() -> GuidedQueryResult | SqlQueryResult:
+            return ExplorerAnalytics.replay_saved_view(
                 profile,
                 view,
                 run_id=run_id,
@@ -434,9 +477,30 @@ def render_saved_views_tab(
                 global_period=global_period,
                 global_filters=global_filters,
             )
-        except Exception as exc:
-            v_state["replay_error"] = str(exc)
-        _replay_panel.refresh()
+
+        if not _has_running_loop():
+            v_state["replay_error"] = None
+            try:
+                v_state["replay_result"] = _replay_sync()
+            except Exception as exc:  # noqa: BLE001
+                v_state["replay_error"] = str(exc)
+            _replay_panel.refresh()
+            return
+
+        async def _replay_async() -> None:
+            try:
+                res = await run.io_bound(_replay_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured_gen == int(v_state["gen"]):
+                    v_state["replay_error"] = str(exc)
+                    _replay_panel.refresh()
+                return
+            if captured_gen == int(v_state["gen"]):
+                v_state["replay_error"] = None
+                v_state["replay_result"] = res
+                _replay_panel.refresh()
+
+        ui.timer(0.01, _replay_async, once=True)
 
     def _delete_view(view: SavedViewDefinition) -> None:
         ExplorerAnalytics.delete_saved_view(view.view_id)

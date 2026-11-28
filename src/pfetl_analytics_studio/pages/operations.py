@@ -1,13 +1,16 @@
+# pylint: disable=too-many-lines
 """Operations page module — runs, sync health, sources/artifacts, providers/failures & snapshot diffs."""
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     ArtifactEventFilter,
@@ -25,7 +28,7 @@ from pfetl_analytics_studio.analytics import (
     WarehouseHealthSnapshot,
 )
 from pfetl_analytics_studio.context import ROUTES_BY_ID, AppContext
-from pfetl_analytics_studio.data import QueryCache
+from pfetl_analytics_studio.data import QueryCache, create_temp_export_path
 from pfetl_analytics_studio.pages import render_domain_workspace
 from pfetl_analytics_studio.profile import PFETLProfile
 from pfetl_analytics_studio.ui import (
@@ -53,8 +56,21 @@ from pfetl_analytics_studio.ui import (
     error_state_panel,
     format_metric_value,
     kpi_card,
+    loading_state_card,
     status_badge,
+    trigger_file_download,
 )
+
+_INLINE_PAYLOAD_THRESHOLD_BYTES = 1_048_576  # 1 MiB
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
 
 _SUB_TABS: tuple[tuple[str, str, str], ...] = (
     ("runs", "Runs & Sync Health", "history"),
@@ -263,88 +279,129 @@ def _open_run_drawer(
 
 
 def _open_file_events_drawer(file_rec: SourceFileRecord, profile: PFETLProfile) -> None:
-    """Show independent freshness timestamps, artifact events, and retained payload download."""
-    ev_snap = OperationsAnalytics.artifact_events(
-        profile, ArtifactEventFilter(file_id=file_rec.file_id, limit=100)
-    )
-    has_payload, byte_len = OperationsAnalytics.has_retained_payload(profile, file_rec.file_id)
+    """Show independent freshness timestamps, artifact events, and size-aware retained payload."""
 
-    def _download_evidence() -> None:
-        res = OperationsAnalytics.source_payload(profile, file_rec.file_id)
-        if not res.available or res.file_bytes is None:
-            ui.notify(
-                res.diagnostics[0] if res.diagnostics else "Retained payload unavailable.",
-                type="warning",
-            )
-            return
-        ui.download(res.file_bytes, filename=res.file_name or f"{file_rec.file_id}.bin")
+    def _fetch_meta_sync() -> tuple[Any, bool, int]:
+        ev_snap = OperationsAnalytics.artifact_events(
+            profile, ArtifactEventFilter(file_id=file_rec.file_id, limit=100)
+        )
+        has_payload, byte_len = OperationsAnalytics.has_retained_payload(profile, file_rec.file_id)
+        return ev_snap, has_payload, byte_len
 
-    with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
-        with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
-            ui.label(f"Artifact Lineage: {file_rec.file_name}").classes("text-h6 font-semibold")
-            with ui.row().classes("items-center gap-2"):
-                status_badge(file_rec.sync_status or "UNKNOWN", tone=BadgeTone.INFO)
-                if has_payload:
-                    status_badge(
-                        f"Retained Payload Available ({_fmt_bytes(byte_len)})",
-                        tone=BadgeTone.INFO,
-                    )
-                    ui.button(
-                        "Download Evidence",
-                        icon="download",
-                        on_click=_download_evidence,
-                    ).props("dense outline color=primary")
-                else:
-                    status_badge("No Retained Payload", tone=BadgeTone.NEUTRAL)
+    def _show_drawer(ev_snap: Any, has_payload: bool, byte_len: int) -> None:
+        def _download_payload_sync() -> tuple[Any, Path | None]:
+            res = OperationsAnalytics.source_payload(profile, file_rec.file_id)
+            if not res.available or res.file_bytes is None:
+                return res, None
+            if len(res.file_bytes) > _INLINE_PAYLOAD_THRESHOLD_BYTES:
+                fname = res.file_name or f"{file_rec.file_id}.bin"
+                temp_path = create_temp_export_path(fname, default_stem=file_rec.file_id)
+                temp_path.write_bytes(res.file_bytes)
+                return res, temp_path
+            return res, None
 
-        with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
-            for lbl, val in (
-                ("Last Seen At", _fmt_ts(file_rec.last_seen_at)),
-                ("Last Changed At", _fmt_ts(file_rec.last_changed_at)),
-                ("Last Synced At", _fmt_ts(file_rec.last_synced_at)),
-                ("Category / Type", f"{file_rec.file_category} / {file_rec.file_type}"),
-                ("File Size", _fmt_bytes(file_rec.file_size_bytes)),
-                ("Content Hash", _short_id(file_rec.file_hash)),
-            ):
-                with (
-                    ui.column()
-                    .classes("gap-0 p-2 rounded")
-                    .style(
-                        "background: rgba(15, 23, 42, 0.55); border: 1px solid rgba(148, 163, 184, 0.12);"
-                    )
+        async def _download_evidence() -> None:
+            if not _has_running_loop():
+                res, temp_path = _download_payload_sync()
+            else:
+                res, temp_path = await run.io_bound(_download_payload_sync)
+            if not res.available or res.file_bytes is None:
+                ui.notify(
+                    res.diagnostics[0] if res.diagnostics else "Retained payload unavailable.",
+                    type="warning",
+                )
+                return
+            fname = res.file_name or f"{file_rec.file_id}.bin"
+            if temp_path is not None:
+                trigger_file_download(temp_path, filename=fname)
+            else:
+                ui.download(res.file_bytes, filename=fname)
+
+        with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
+            with ui.row().classes("w-full items-center justify-between flex-wrap gap-2"):
+                ui.label(f"Artifact Lineage: {file_rec.file_name}").classes("text-h6 font-semibold")
+                with ui.row().classes("items-center gap-2"):
+                    status_badge(file_rec.sync_status or "UNKNOWN", tone=BadgeTone.INFO)
+                    if has_payload:
+                        status_badge(
+                            f"Retained Payload ({_fmt_bytes(byte_len)})",
+                            tone=BadgeTone.INFO,
+                        )
+                        ui.button(
+                            f"Download Evidence ({_fmt_bytes(byte_len)})",
+                            icon="download",
+                            on_click=_download_evidence,
+                        ).props("dense outline color=primary")
+                    else:
+                        status_badge("No Retained Payload", tone=BadgeTone.NEUTRAL)
+
+            with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
+                for lbl, val in (
+                    ("Last Seen At", _fmt_ts(file_rec.last_seen_at)),
+                    ("Last Changed At", _fmt_ts(file_rec.last_changed_at)),
+                    ("Last Synced At", _fmt_ts(file_rec.last_synced_at)),
+                    ("Category / Type", f"{file_rec.file_category} / {file_rec.file_type}"),
+                    ("File Size", _fmt_bytes(file_rec.file_size_bytes)),
+                    ("Content Hash", _short_id(file_rec.file_hash)),
                 ):
-                    ui.label(lbl).classes("text-caption").style("color: var(--studio-text-muted);")
-                    ui.label(val).classes("text-caption font-mono break-all")
+                    with (
+                        ui.column()
+                        .classes("gap-0 p-2 rounded")
+                        .style(
+                            "background: rgba(15, 23, 42, 0.55); border: 1px solid rgba(148, 163, 184, 0.12);"
+                        )
+                    ):
+                        ui.label(lbl).classes("text-caption").style(
+                            "color: var(--studio-text-muted);"
+                        )
+                        ui.label(val).classes("text-caption font-mono break-all")
 
-        if ev_snap.events:
-            cols = [
-                TableColumn(name="event_at", label="Event At", field="event_at"),
-                TableColumn(name="event_type", label="Event Type", field="event_type"),
-                TableColumn(name="transition", label="Status Transition", field="transition"),
-                TableColumn(name="convergence", label="Convergence", field="convergence"),
-                TableColumn(name="affected_table", label="Affected Table", field="affected_table"),
-                TableColumn(name="event_reason", label="Reason", field="event_reason"),
-            ]
-            rows = [
-                {
-                    "event_at": e.event_at_raw or "—",
-                    "event_type": e.event_type,
-                    "transition": f"{e.previous_status or '∅'} → {e.new_status}",
-                    "convergence": e.convergence_result,
-                    "affected_table": e.affected_table or "—",
-                    "event_reason": e.event_reason or "—",
-                }
-                for e in ev_snap.events
-            ]
-            bounded_data_table(
-                columns=cols, rows=rows, row_key="event_at", title="Artifact Run Events"
-            )
-        else:
-            empty_state_panel("No Artifact Events", "No events recorded for this file.")
+            if ev_snap.events:
+                cols = [
+                    TableColumn(name="event_at", label="Event At", field="event_at"),
+                    TableColumn(name="event_type", label="Event Type", field="event_type"),
+                    TableColumn(name="transition", label="Status Transition", field="transition"),
+                    TableColumn(name="convergence", label="Convergence", field="convergence"),
+                    TableColumn(
+                        name="affected_table", label="Affected Table", field="affected_table"
+                    ),
+                    TableColumn(name="event_reason", label="Reason", field="event_reason"),
+                ]
+                rows = [
+                    {
+                        "event_at": e.event_at_raw or "—",
+                        "event_type": e.event_type,
+                        "transition": f"{e.previous_status or '∅'} → {e.new_status}",
+                        "convergence": e.convergence_result,
+                        "affected_table": e.affected_table or "—",
+                        "event_reason": e.event_reason or "—",
+                    }
+                    for e in ev_snap.events
+                ]
+                bounded_data_table(
+                    columns=cols, rows=rows, row_key="event_at", title="Artifact Run Events"
+                )
+            else:
+                empty_state_panel("No Artifact Events", "No events recorded for this file.")
 
-        with ui.row().classes("w-full justify-end"):
-            ui.button("Close", on_click=dlg.close).props("flat color=primary")
-    dlg.open()
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Close", on_click=dlg.close).props("flat color=primary")
+        dlg.open()
+
+    if not _has_running_loop():
+        ev_snap, has_payload, byte_len = _fetch_meta_sync()
+        _show_drawer(ev_snap, has_payload, byte_len)
+        return
+
+    async def _load_drawer() -> None:
+        try:
+            ev_snap, has_payload, byte_len = await run.io_bound(_fetch_meta_sync)
+        except Exception as exc:  # noqa: BLE001
+            ui.notify(f"Unable to load file events: {exc}", type="negative")
+            return
+        _show_drawer(ev_snap, has_payload, byte_len)
+
+    asyncio.ensure_future(_load_drawer())
 
 
 def _open_failure_drawer(failure: RunFailureRecord) -> None:
@@ -465,28 +522,57 @@ def _render_sources_tab(
     cache: QueryCache | None,
 ) -> None:
     state: dict[str, Any] = {"category": None, "status": None, "search": "", "limit": 200}
+    gen_state: dict[str, int] = {"gen": 0}
 
     def _draw() -> None:
+        gen_state["gen"] += 1
+        captured = gen_state["gen"]
+        flt = SourceRegistryFilter(
+            category=state["category"],
+            sync_status=state["status"],
+            search=state["search"] or None,
+            limit=int(state["limit"]),
+        )
+
+        def _fetch_sync() -> tuple[Any, Any]:
+            src = OperationsAnalytics.source_registry(profile, flt, cache=cache)
+            evs = OperationsAnalytics.artifact_events(
+                profile, ArtifactEventFilter(limit=200), cache=cache
+            )
+            return src, evs
+
+        if not _has_running_loop():
+            try:
+                src, evs = _fetch_sync()
+            except Exception as exc:  # noqa: BLE001
+                container.clear()
+                with container:
+                    error_state_panel("Unable to load Sources & Artifacts", str(exc))
+                return
+            _draw_body(src, evs)
+            return
+
+        if not container.default_slot.children:
+            with container:
+                loading_state_card("Loading Sources & Artifacts...")
+
+        async def _load_async() -> None:
+            try:
+                src, evs = await run.io_bound(_fetch_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured == gen_state["gen"]:
+                    container.clear()
+                    with container:
+                        error_state_panel("Unable to load Sources & Artifacts", str(exc))
+                return
+            if captured == gen_state["gen"]:
+                _draw_body(src, evs)
+
+        ui.timer(0.01, _load_async, once=True)
+
+    def _draw_body(src: Any, evs: Any) -> None:
         container.clear()
         with container:
-            try:
-                src = OperationsAnalytics.source_registry(
-                    profile,
-                    SourceRegistryFilter(
-                        category=state["category"],
-                        sync_status=state["status"],
-                        search=state["search"] or None,
-                        limit=int(state["limit"]),
-                    ),
-                    cache=cache,
-                )
-                evs = OperationsAnalytics.artifact_events(
-                    profile, ArtifactEventFilter(limit=200), cache=cache
-                )
-            except Exception as exc:
-                error_state_panel("Unable to load Sources & Artifacts", str(exc))
-                return
-
             if src.state == "unavailable":
                 error_state_panel(
                     "Control Plane Unavailable",
@@ -647,28 +733,58 @@ def _render_providers_tab(
     cache: QueryCache | None,
 ) -> None:
     state: dict[str, Any] = {"provider": None, "status": None, "run_id": None}
+    gen_state: dict[str, int] = {"gen": 0}
 
     def _draw() -> None:
+        gen_state["gen"] += 1
+        captured = gen_state["gen"]
+        flt = ProviderRequestFilter(
+            run_id=state["run_id"],
+            provider=state["provider"],
+            status=state["status"],
+            limit=250,
+        )
+        run_id_val = state["run_id"]
+
+        def _fetch_sync() -> tuple[Any, Any]:
+            prov = OperationsAnalytics.provider_requests(profile, flt, cache=cache)
+            fails = OperationsAnalytics.run_failures(
+                profile, run_id=run_id_val, limit=200, cache=cache
+            )
+            return prov, fails
+
+        if not _has_running_loop():
+            try:
+                prov, fails = _fetch_sync()
+            except Exception as exc:  # noqa: BLE001
+                container.clear()
+                with container:
+                    error_state_panel("Unable to load Providers & Failures", str(exc))
+                return
+            _draw_body(prov, fails)
+            return
+
+        if not container.default_slot.children:
+            with container:
+                loading_state_card("Loading Providers & Failures...")
+
+        async def _load_async() -> None:
+            try:
+                prov, fails = await run.io_bound(_fetch_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured == gen_state["gen"]:
+                    container.clear()
+                    with container:
+                        error_state_panel("Unable to load Providers & Failures", str(exc))
+                return
+            if captured == gen_state["gen"]:
+                _draw_body(prov, fails)
+
+        ui.timer(0.01, _load_async, once=True)
+
+    def _draw_body(prov: Any, fails: Any) -> None:
         container.clear()
         with container:
-            try:
-                prov = OperationsAnalytics.provider_requests(
-                    profile,
-                    ProviderRequestFilter(
-                        run_id=state["run_id"],
-                        provider=state["provider"],
-                        status=state["status"],
-                        limit=250,
-                    ),
-                    cache=cache,
-                )
-                fails = OperationsAnalytics.run_failures(
-                    profile, run_id=state["run_id"], limit=200, cache=cache
-                )
-            except Exception as exc:
-                error_state_panel("Unable to load Providers & Failures", str(exc))
-                return
-
             if prov.state == "unavailable":
                 error_state_panel(
                     "Control Plane Unavailable",
@@ -928,10 +1044,8 @@ def _render_forensics_tab(
     profile: PFETLProfile,
     cache: QueryCache | None,
 ) -> None:
-    runs_snap = OperationsAnalytics.run_history(profile, RunHistoryFilter(limit=50), cache=cache)
-    default_run = runs_snap.runs[0].run_id if runs_snap.runs else ""
     state: dict[str, Any] = {
-        "run_id": default_run,
+        "run_id": "",
         "severity": None,
         "event_code": None,
         "outcome": None,
@@ -944,38 +1058,83 @@ def _render_forensics_tab(
         "failure_domain": None,
         "search": "",
     }
+    runs_ref: dict[str, Any] = {"snap": None}
+    gen_state: dict[str, int] = {"gen": 0}
 
     def _draw() -> None:
-        container.clear()
-        with container:
+        gen_state["gen"] += 1
+        captured = gen_state["gen"]
+        ev_filter = ForensicEventFilter(
+            severity=state["severity"],
+            event_code=state["event_code"],
+            outcome=state["outcome"],
+            stage=state["stage"],
+            component=state["component"],
+            operation=state["operation"],
+            provider=state["provider"],
+            worker_id=state["worker_id"],
+            batch_id=state["batch_id"],
+            failure_domain=state["failure_domain"],
+            search=state["search"] or None,
+            limit=500,
+        )
+
+        def _fetch_sync() -> tuple[Any, str, Any, Any, Any]:
+            if runs_ref["snap"] is None:
+                runs_ref["snap"] = OperationsAnalytics.run_history(
+                    profile, RunHistoryFilter(limit=50), cache=cache
+                )
+            runs_snap_local = runs_ref["snap"]
+            if not state["run_id"] and runs_snap_local.runs:
+                state["run_id"] = runs_snap_local.runs[0].run_id
             run_id = str(state["run_id"] or "")
             if not run_id:
-                empty_state_panel("No Runs Available", "No PFETL runs found to inspect logs.")
-                return
+                return runs_snap_local, "", None, None, None
+            summary = OperationsAnalytics.forensic_summary(profile, run_id)
+            ev_snap = OperationsAnalytics.forensic_events(profile, run_id, ev_filter)
+            tree = OperationsAnalytics.operation_tree(profile, run_id)
+            return runs_snap_local, run_id, summary, ev_snap, tree
 
+        if not _has_running_loop():
             try:
-                summary = OperationsAnalytics.forensic_summary(profile, run_id)
-                ev_snap = OperationsAnalytics.forensic_events(
-                    profile,
-                    run_id,
-                    ForensicEventFilter(
-                        severity=state["severity"],
-                        event_code=state["event_code"],
-                        outcome=state["outcome"],
-                        stage=state["stage"],
-                        component=state["component"],
-                        operation=state["operation"],
-                        provider=state["provider"],
-                        worker_id=state["worker_id"],
-                        batch_id=state["batch_id"],
-                        failure_domain=state["failure_domain"],
-                        search=state["search"] or None,
-                        limit=500,
-                    ),
-                )
-                tree = OperationsAnalytics.operation_tree(profile, run_id)
-            except Exception as exc:
-                error_state_panel("Unable to decode forensic logs", str(exc))
+                runs_snap_local, run_id, summary, ev_snap, tree = _fetch_sync()
+            except Exception as exc:  # noqa: BLE001
+                container.clear()
+                with container:
+                    error_state_panel("Unable to decode forensic logs", str(exc))
+                return
+            _draw_body(runs_snap_local, run_id, summary, ev_snap, tree)
+            return
+
+        if not container.default_slot.children:
+            with container:
+                loading_state_card("Loading forensic logs & operation tree...")
+
+        async def _load_async() -> None:
+            try:
+                runs_snap_local, run_id, summary, ev_snap, tree = await run.io_bound(_fetch_sync)
+            except Exception as exc:  # noqa: BLE001
+                if captured == gen_state["gen"]:
+                    container.clear()
+                    with container:
+                        error_state_panel("Unable to decode forensic logs", str(exc))
+                return
+            if captured == gen_state["gen"]:
+                _draw_body(runs_snap_local, run_id, summary, ev_snap, tree)
+
+        ui.timer(0.01, _load_async, once=True)
+
+    def _draw_body(
+        runs_snap: Any,
+        run_id: str,
+        summary: Any,
+        ev_snap: Any,
+        tree: Any,
+    ) -> None:
+        container.clear()
+        with container:
+            if not run_id:
+                empty_state_panel("No Runs Available", "No PFETL runs found to inspect logs.")
                 return
 
             def _set(key: str, val: Any) -> None:
@@ -1158,7 +1317,7 @@ def _render_forensics_tab(
     _draw()
 
 
-def render_operations_page(
+def render_operations_page(  # pylint: disable=too-many-statements
     context: AppContext,
     *,
     cache: QueryCache | None = None,
@@ -1203,12 +1362,13 @@ def render_operations_page(
         filter_state: dict[str, Any] = {"status": None, "commit_state": None, "limit": 100}
 
         valid_tab = initial_tab if any(t[0] == initial_tab for t in _SUB_TABS) else "runs"
+        rendered_tabs: set[str] = set()
+        runs_gen: dict[str, int] = {"gen": 0}
+
         with ui.tabs().classes("w-full studio-subtabs") as tabs:
             for tab_id, tab_label, tab_icon in _SUB_TABS:
                 ui.tab(tab_id, label=tab_label, icon=tab_icon)
         tabs.set_value(valid_tab)
-        if on_tab_change is not None:
-            tabs.on_value_change(lambda e: on_tab_change(str(e.value)))
 
         with ui.tab_panels(tabs, value=valid_tab).classes("w-full bg-transparent"):
             p_runs = ui.tab_panel("runs").classes("p-0 pt-3")
@@ -1216,33 +1376,61 @@ def render_operations_page(
             p_providers = ui.tab_panel("providers").classes("p-0 pt-3")
             p_forensics = ui.tab_panel("forensics").classes("p-0 pt-3")
 
-        _render_sources_tab(p_sources, profile, cache)
-        _render_providers_tab(p_providers, profile, cache)
-        _render_forensics_tab(p_forensics, profile, cache)
-
         def _render_runs() -> None:
+            runs_gen["gen"] += 1
+            captured = runs_gen["gen"]
+            flt = RunHistoryFilter(
+                limit=int(filter_state["limit"]),
+                status=filter_state["status"],
+                commit_state=filter_state["commit_state"],
+            )
+
+            def _fetch_runs_sync() -> tuple[Any, Any]:
+                snap = OperationsAnalytics.run_history(
+                    profile,
+                    flt,
+                    catalog_snapshot=context.catalog_snapshot,
+                    cache=cache,
+                )
+                warehouse = OperationsAnalytics.warehouse_health(
+                    profile,
+                    catalog_snapshot=context.catalog_snapshot,
+                    cache=cache,
+                )
+                return snap, warehouse
+
+            if not _has_running_loop():
+                try:
+                    snap, warehouse = _fetch_runs_sync()
+                except Exception as exc:  # noqa: BLE001
+                    p_runs.clear()
+                    with p_runs:
+                        error_state_panel("Unable to load Operations telemetry", str(exc))
+                    return
+                _render_runs_body(snap, warehouse)
+                return
+
+            if not p_runs.default_slot.children:
+                with p_runs:
+                    loading_state_card("Loading Operations & Warehouse health...")
+
+            async def _load_runs_async() -> None:
+                try:
+                    snap, warehouse = await run.io_bound(_fetch_runs_sync)
+                except Exception as exc:  # noqa: BLE001
+                    if captured == runs_gen["gen"]:
+                        p_runs.clear()
+                        with p_runs:
+                            error_state_panel("Unable to load Operations telemetry", str(exc))
+                    return
+                if captured == runs_gen["gen"]:
+                    _render_runs_body(snap, warehouse)
+
+            ui.timer(0.01, _load_runs_async, once=True)
+
+        def _render_runs_body(snap: Any, warehouse: Any) -> None:
             p_runs.clear()
             with p_runs:
-                try:
-                    snap = OperationsAnalytics.run_history(
-                        profile,
-                        RunHistoryFilter(
-                            limit=int(filter_state["limit"]),
-                            status=filter_state["status"],
-                            commit_state=filter_state["commit_state"],
-                        ),
-                        catalog_snapshot=context.catalog_snapshot,
-                        cache=cache,
-                    )
-                    warehouse = OperationsAnalytics.warehouse_health(
-                        profile,
-                        catalog_snapshot=context.catalog_snapshot,
-                        cache=cache,
-                    )
-                except Exception as exc:
-                    error_state_panel("Unable to load Operations telemetry", str(exc))
-                    return
-
                 if snap.state == "unavailable":
                     error_state_panel(
                         "Control Plane Unavailable",
@@ -1406,4 +1594,25 @@ def render_operations_page(
 
                 _render_warehouse_section(warehouse)
 
-        _render_runs()
+        def _ensure_tab_rendered(tab_key: str) -> None:
+            if tab_key in rendered_tabs:
+                return
+            rendered_tabs.add(tab_key)
+            if tab_key == "runs":
+                _render_runs()
+            elif tab_key == "sources":
+                _render_sources_tab(p_sources, profile, cache)
+            elif tab_key == "providers":
+                _render_providers_tab(p_providers, profile, cache)
+            elif tab_key == "forensics":
+                _render_forensics_tab(p_forensics, profile, cache)
+
+        _ensure_tab_rendered(valid_tab)
+
+        def _handle_tab_change(evt: Any) -> None:
+            tab_key = str(getattr(evt, "value", None) or "runs")
+            _ensure_tab_rendered(tab_key)
+            if on_tab_change is not None:
+                on_tab_change(tab_key)
+
+        tabs.on_value_change(_handle_tab_change)

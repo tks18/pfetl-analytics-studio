@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from collections.abc import Callable
 from typing import Any, cast
 
-from nicegui import ui
+from nicegui import run, ui
 
 from pfetl_analytics_studio.analytics import (
     FireAnalytics,
@@ -42,9 +43,19 @@ from pfetl_analytics_studio.ui import (
     format_months,
     format_percent,
     kpi_card,
+    loading_state_card,
     locked_warehouse_banner,
     status_badge,
 )
+
+
+def _has_running_loop() -> bool:
+    try:
+        asyncio.get_running_loop()
+        return True
+    except RuntimeError:
+        return False
+
 
 _SUB_TABS: tuple[tuple[str, str, str], ...] = (
     ("trajectory", "FI Trajectory & Targets", "trending_up"),
@@ -641,8 +652,9 @@ def render_fire_page(
             )
             return
 
-        try:
-            snap = FireAnalytics.summary(
+        def _fetch_fire_sync() -> FireSummarySnapshot:
+            assert context.profile is not None
+            return FireAnalytics.summary(
                 context.profile,
                 context.period_context,
                 run_id=context.effective_run_id,
@@ -650,50 +662,129 @@ def render_fire_page(
                 catalog_snapshot=context.catalog_snapshot,
                 cache=cache,
             )
-        except Exception as exc:
-            error_state_panel("Unable to load FIRE Analytics", str(exc))
+
+        def _render_fire_body(snap: FireSummarySnapshot) -> None:
+            if snap.state == "locked":
+                locked_warehouse_banner(
+                    snap.diagnostics[0] if snap.diagnostics else "DuckDB warehouse is locked."
+                )
+                return
+            if snap.state == "no_run":
+                error_state_panel(
+                    "No Completed PFETL Run",
+                    snap.diagnostics[0]
+                    if snap.diagnostics
+                    else "Run PFETL before viewing FIRE data.",
+                )
+                return
+            if snap.state == "empty" or snap.latest is None:
+                empty_state_panel(
+                    "No FIRE Analytics Available",
+                    snap.diagnostics[0]
+                    if snap.diagnostics
+                    else "No rows found for selected period.",
+                )
+                return
+
+            _render_kpi_grid(snap.kpis, snap.currency_id)
+
+            valid_tab = initial_tab if any(t[0] == initial_tab for t in _SUB_TABS) else "trajectory"
+            rendered_tabs: set[str] = set()
+            prov_gen: dict[str, int] = {"gen": 0}
+
+            with ui.tabs().classes("w-full studio-subtabs") as tabs:
+                for tab_id, tab_label, tab_icon in _SUB_TABS:
+                    ui.tab(tab_id, label=tab_label, icon=tab_icon)
+            tabs.set_value(valid_tab)
+
+            with ui.tab_panels(tabs, value=valid_tab).classes("w-full bg-transparent"):
+                p_traj = ui.tab_panel("trajectory").classes("p-0 pt-3")
+                p_runway = ui.tab_panel("runway").classes("p-0 pt-3")
+                p_prov = ui.tab_panel("provenance").classes("p-0 pt-3")
+
+            def _load_provenance_tab() -> None:
+                prov_gen["gen"] += 1
+                captured = prov_gen["gen"]
+
+                def _fetch_sim_sync() -> SimulationHistorySnapshot:
+                    assert context.profile is not None
+                    return FireAnalytics.simulation_history(
+                        context.profile,
+                        run_id=context.effective_run_id,
+                        provenance=context.provenance,
+                        catalog_snapshot=context.catalog_snapshot,
+                        cache=cache,
+                    )
+
+                if not _has_running_loop():
+                    with p_prov:
+                        _render_provenance_tab(_fetch_sim_sync())
+                    return
+
+                p_prov.clear()
+                with p_prov:
+                    loading_state_card("Loading simulation provenance & rules...")
+
+                async def _load_prov_async() -> None:
+                    try:
+                        sim_snap = await run.io_bound(_fetch_sim_sync)
+                    except Exception as exc:  # noqa: BLE001
+                        if captured == prov_gen["gen"]:
+                            p_prov.clear()
+                            with p_prov:
+                                error_state_panel("Unable to load Simulation Provenance", str(exc))
+                        return
+                    if captured == prov_gen["gen"]:
+                        p_prov.clear()
+                        with p_prov:
+                            _render_provenance_tab(sim_snap)
+
+                ui.timer(0.01, _load_prov_async, once=True)
+
+            def _ensure_tab_rendered(tab_key: str) -> None:
+                if tab_key in rendered_tabs:
+                    return
+                rendered_tabs.add(tab_key)
+                if tab_key == "trajectory":
+                    with p_traj:
+                        _render_trajectory_tab(snap)
+                elif tab_key == "runway":
+                    with p_runway:
+                        _render_runway_tab(snap)
+                elif tab_key == "provenance":
+                    _load_provenance_tab()
+
+            _ensure_tab_rendered(valid_tab)
+
+            def _handle_tab_change(evt: Any) -> None:
+                tab_key = str(getattr(evt, "value", None) or "trajectory")
+                _ensure_tab_rendered(tab_key)
+                if on_tab_change is not None:
+                    on_tab_change(tab_key)
+
+            tabs.on_value_change(_handle_tab_change)
+
+        if not _has_running_loop():
+            try:
+                _render_fire_body(_fetch_fire_sync())
+            except Exception as exc:  # noqa: BLE001
+                error_state_panel("Unable to load FIRE Analytics", str(exc))
             return
 
-        if snap.state == "locked":
-            locked_warehouse_banner(
-                snap.diagnostics[0] if snap.diagnostics else "DuckDB warehouse is locked."
-            )
-            return
-        if snap.state == "no_run":
-            error_state_panel(
-                "No Completed PFETL Run",
-                snap.diagnostics[0] if snap.diagnostics else "Run PFETL before viewing FIRE data.",
-            )
-            return
-        if snap.state == "empty" or snap.latest is None:
-            empty_state_panel(
-                "No FIRE Analytics Available",
-                snap.diagnostics[0] if snap.diagnostics else "No rows found for selected period.",
-            )
-            return
+        body_slot = ui.column().classes("w-full gap-4")
+        with body_slot:
+            loading_state_card("Loading FIRE trajectory & simulation cockpit...")
 
-        sim_snap = FireAnalytics.simulation_history(
-            context.profile,
-            run_id=context.effective_run_id,
-            provenance=context.provenance,
-            catalog_snapshot=context.catalog_snapshot,
-            cache=cache,
-        )
+        async def _load_fire_async() -> None:
+            try:
+                snap = await run.io_bound(_fetch_fire_sync)
+            except Exception as exc:  # noqa: BLE001
+                body_slot.clear()
+                with body_slot:
+                    error_state_panel("Unable to load FIRE Analytics", str(exc))
+                return
+            body_slot.clear()
+            with body_slot:
+                _render_fire_body(snap)
 
-        _render_kpi_grid(snap.kpis, snap.currency_id)
-
-        valid_tab = initial_tab if any(t[0] == initial_tab for t in _SUB_TABS) else "trajectory"
-        with ui.tabs().classes("w-full studio-subtabs") as tabs:
-            for tab_id, tab_label, tab_icon in _SUB_TABS:
-                ui.tab(tab_id, label=tab_label, icon=tab_icon)
-        tabs.set_value(valid_tab)
-        if on_tab_change is not None:
-            tabs.on_value_change(lambda e: on_tab_change(str(e.value)))
-
-        with ui.tab_panels(tabs, value=valid_tab).classes("w-full bg-transparent"):
-            with ui.tab_panel("trajectory").classes("p-0 pt-3"):
-                _render_trajectory_tab(snap)
-            with ui.tab_panel("runway").classes("p-0 pt-3"):
-                _render_runway_tab(snap)
-            with ui.tab_panel("provenance").classes("p-0 pt-3"):
-                _render_provenance_tab(sim_snap)
+        ui.timer(0.01, _load_fire_async, once=True)
