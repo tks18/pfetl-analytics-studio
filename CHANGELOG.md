@@ -2,6 +2,23 @@
 
 All notable changes to this project will be documented in this file. See [standard-version](https://github.com/conventional-changelog/standard-version) for commit guidelines.
 
+## [1.1.0](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.5...1.1.0) (2026-11-28)
+
+
+### Others 🔧
+
+* **assets:** compress social preview image ([862f341](https://github.com/tks18/pfetl-analytics-studio/commit/862f341b56e26d677a303872378aee3406091c6c))
+
+
+### Bug Fixes 🛠
+
+* remove version from tests ([272a854](https://github.com/tks18/pfetl-analytics-studio/commit/272a8541ee6b67430915ba0c1541ae48ba7c73b7))
+
+
+### Docs 📃
+
+* remove plan docs ([506caed](https://github.com/tks18/pfetl-analytics-studio/commit/506caed304e0316a5cb9adde1369db684225040e))
+
 ### [1.0.5](https://github.com/tks18/pfetl-analytics-studio/compare/1.0.4...1.0.5) (2026-11-28)
 
 

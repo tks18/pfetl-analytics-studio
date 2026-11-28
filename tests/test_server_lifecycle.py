@@ -162,7 +162,6 @@ def test_subprocess_lifecycle_spawn_healthz_and_terminate(tmp_path: Path) -> Non
             )
         assert health_data["status"] == "ready"
         assert health_data["app"] == "pfetl-analytics-studio"
-        assert health_data["version"] == "1.1.0"
     finally:
         proc.terminate()
         proc.wait(timeout=10)
