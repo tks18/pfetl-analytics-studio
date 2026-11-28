@@ -139,14 +139,14 @@ def _render_kpi_grid(kpis: tuple[OverviewKPI, ...]) -> None:
 
 
 def _open_run_drawer(
-    run: OperationRunRecord,
+    selected_run: OperationRunRecord,
     all_runs: tuple[OperationRunRecord, ...],
     profile: PFETLProfile,
     cache: QueryCache | None,
 ) -> None:
     """Open modal run-detail drawer with snapshot viewer & diff to previous successful run."""
     prev_success = next(
-        (r for r in all_runs if r.run_id != run.run_id and r.status.upper() == "SUCCESS"),
+        (r for r in all_runs if r.run_id != selected_run.run_id and r.status.upper() == "SUCCESS"),
         None,
     )
     with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
@@ -154,21 +154,24 @@ def _open_run_drawer(
             with ui.row().classes("items-center gap-2"):
                 ui.icon("fact_check", size="22px").style("color: var(--studio-accent);")
                 ui.label("Run Detail & Snapshot Provenance").classes("text-h6 font-semibold")
-            status_badge(run.status or "UNKNOWN", tone=BadgeTone.INFO)
+            status_badge(selected_run.status or "UNKNOWN", tone=BadgeTone.INFO)
 
         fields: list[tuple[str, str]] = [
-            ("Run ID", run.run_id),
-            ("Status", run.status or "—"),
-            ("Commit State", run.commit_state or "—"),
-            ("Started At", run.started_at_raw or "—"),
-            ("Finished At", run.finished_at_raw or "In Progress / Unfinished"),
-            ("Duration", _fmt_duration(run)),
-            ("Core Version", run.application_version or "—"),
-            ("Schema Version", run.schema_version or "—"),
-            ("Execution Log", "Available (BLOB)" if run.has_execution_log else "Missing"),
-            ("Settings Snapshot", _short_id(run.settings_snapshot_id)),
-            ("Rules Snapshot", _short_id(run.rules_snapshot_id)),
-            ("Sync Status", run.sync.sync_status if run.sync else "No Sync Summary"),
+            ("Run ID", selected_run.run_id),
+            ("Status", selected_run.status or "—"),
+            ("Commit State", selected_run.commit_state or "—"),
+            ("Started At", selected_run.started_at_raw or "—"),
+            ("Finished At", selected_run.finished_at_raw or "In Progress / Unfinished"),
+            ("Duration", _fmt_duration(selected_run)),
+            ("Core Version", selected_run.application_version or "—"),
+            ("Schema Version", selected_run.schema_version or "—"),
+            ("Execution Log", "Available (BLOB)" if selected_run.has_execution_log else "Missing"),
+            ("Settings Snapshot", _short_id(selected_run.settings_snapshot_id)),
+            ("Rules Snapshot", _short_id(selected_run.rules_snapshot_id)),
+            (
+                "Sync Status",
+                selected_run.sync.sync_status if selected_run.sync else "No Sync Summary",
+            ),
         ]
         with ui.grid().classes("w-full grid-cols-1 md:grid-cols-3 gap-2"):
             for lbl, val in fields:
@@ -182,26 +185,29 @@ def _open_run_drawer(
                     ui.label(lbl).classes("text-caption").style("color: var(--studio-text-muted);")
                     ui.label(val).classes("text-caption font-mono break-all")
 
-        if run.sync is not None:
+        if selected_run.sync is not None:
             with ui.row().classes("w-full items-center gap-2 flex-wrap"):
-                status_badge(f"Actionable: {run.sync.actionable_count}", tone=BadgeTone.NEUTRAL)
-                status_badge(f"Synced: {run.sync.synced_count}", tone=BadgeTone.INFO)
-                status_badge(f"Healed: {run.sync.healed_count}", tone=BadgeTone.INFO)
                 status_badge(
-                    f"Failed: {run.sync.failed_count}",
-                    tone=BadgeTone.WARNING if run.sync.failed_count > 0 else BadgeTone.NEUTRAL,
+                    f"Actionable: {selected_run.sync.actionable_count}", tone=BadgeTone.NEUTRAL
                 )
-                status_badge(f"Deferred: {run.sync.deferred_count}", tone=BadgeTone.NEUTRAL)
+                status_badge(f"Synced: {selected_run.sync.synced_count}", tone=BadgeTone.INFO)
+                status_badge(f"Healed: {selected_run.sync.healed_count}", tone=BadgeTone.INFO)
+                status_badge(
+                    f"Failed: {selected_run.sync.failed_count}",
+                    tone=BadgeTone.WARNING
+                    if selected_run.sync.failed_count > 0
+                    else BadgeTone.NEUTRAL,
+                )
+                status_badge(
+                    f"Deferred: {selected_run.sync.deferred_count}", tone=BadgeTone.NEUTRAL
+                )
 
         diff_box = ui.column().classes("w-full gap-2")
+        diff_gen = {"gen": 0}
 
-        def _render_diff(kind: str) -> None:
+        def _draw_diff_body(kind: str, target_prev: str, diff: Any) -> None:
             diff_box.clear()
             with diff_box:
-                target_prev = prev_success.run_id if prev_success else run.run_id
-                diff = OperationsAnalytics.snapshot_diff(
-                    profile, target_prev, run.run_id, kind=kind, cache=cache
-                )
                 if diff.state == "parse_error":
                     error_state_panel(
                         f"Malformed {kind.title()} Snapshot JSON",
@@ -261,6 +267,47 @@ def _open_run_drawer(
                         language="json",
                     ).classes("w-full text-caption")
 
+        def _render_diff(kind: str) -> None:
+            diff_gen["gen"] += 1
+            captured = diff_gen["gen"]
+            target_prev = prev_success.run_id if prev_success else selected_run.run_id
+
+            def _fetch_diff_sync() -> Any:
+                return OperationsAnalytics.snapshot_diff(
+                    profile, target_prev, selected_run.run_id, kind=kind, cache=cache
+                )
+
+            if not _has_running_loop():
+                try:
+                    diff = _fetch_diff_sync()
+                except Exception as exc:  # noqa: BLE001
+                    diff_box.clear()
+                    with diff_box:
+                        error_state_panel(f"Unable to load {kind.title()} Snapshot Diff", str(exc))
+                    return
+                _draw_diff_body(kind, target_prev, diff)
+                return
+
+            diff_box.clear()
+            with diff_box:
+                loading_state_card(f"Loading {kind.title()} Snapshot & Diff...")
+
+            async def _load_diff_async() -> None:
+                try:
+                    diff = await run.io_bound(_fetch_diff_sync)
+                except Exception as exc:  # noqa: BLE001
+                    if captured == diff_gen["gen"]:
+                        diff_box.clear()
+                        with diff_box:
+                            error_state_panel(
+                                f"Unable to load {kind.title()} Snapshot Diff", str(exc)
+                            )
+                    return
+                if captured == diff_gen["gen"]:
+                    _draw_diff_body(kind, target_prev, diff)
+
+            ui.timer(0.01, _load_diff_async, once=True)
+
         with ui.row().classes("w-full items-center gap-2"):
             ui.button("Rules Snapshot & Diff", on_click=lambda: _render_diff("rules")).props(
                 "dense outline color=primary"
@@ -290,6 +337,8 @@ def _open_file_events_drawer(file_rec: SourceFileRecord, profile: PFETLProfile) 
 
     def _show_drawer(ev_snap: Any, has_payload: bool, byte_len: int) -> None:
         def _download_payload_sync() -> tuple[Any, Path | None]:
+            if byte_len > _INLINE_PAYLOAD_THRESHOLD_BYTES:
+                return OperationsAnalytics.export_source_payload_to_file(profile, file_rec.file_id)
             res = OperationsAnalytics.source_payload(profile, file_rec.file_id)
             if not res.available or res.file_bytes is None:
                 return res, None
@@ -305,7 +354,7 @@ def _open_file_events_drawer(file_rec: SourceFileRecord, profile: PFETLProfile) 
                 res, temp_path = _download_payload_sync()
             else:
                 res, temp_path = await run.io_bound(_download_payload_sync)
-            if not res.available or res.file_bytes is None:
+            if not res.available or (temp_path is None and res.file_bytes is None):
                 ui.notify(
                     res.diagnostics[0] if res.diagnostics else "Retained payload unavailable.",
                     type="warning",
@@ -314,7 +363,7 @@ def _open_file_events_drawer(file_rec: SourceFileRecord, profile: PFETLProfile) 
             fname = res.file_name or f"{file_rec.file_id}.bin"
             if temp_path is not None:
                 trigger_file_download(temp_path, filename=fname)
-            else:
+            elif res.file_bytes is not None:
                 ui.download(res.file_bytes, filename=fname)
 
         with ui.dialog() as dlg, ui.card().classes("studio-card w-full max-w-4xl p-5 gap-4"):
