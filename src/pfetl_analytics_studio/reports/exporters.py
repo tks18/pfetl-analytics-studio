@@ -307,10 +307,18 @@ def _format_pdf_cell_value(value: Any, *, unicode_ok: bool) -> tuple[str, bool]:
     return _escape_pdf_text(str(value), unicode_ok=unicode_ok), False
 
 
-def _format_compact_chart_value(val: Any) -> str:
-    """Format numeric chart values into compact INR labels for presentation legibility."""
+def _format_compact_chart_value(
+    val: Any,
+    *,
+    is_percent: bool = False,
+    scale_ratio: bool = False,
+) -> str:
+    """Format numeric chart values into compact INR or percentage labels."""
     if not isinstance(val, (int, float)) or isinstance(val, bool):
         return ""
+    if is_percent:
+        pct = float(val) * 100.0 if scale_ratio else float(val)
+        return f"{pct:.1f}%"
     abs_v = abs(float(val))
     sign = "-" if val < 0 else ""
     if abs_v >= 1e7:
@@ -321,7 +329,18 @@ def _format_compact_chart_value(val: Any) -> str:
         return f"{sign}₹{abs_v / 1e3:.0f}K"
     if abs_v >= 100:
         return f"{sign}₹{abs_v:.0f}"
-    return f"{val:.1f}"
+    if abs_v < 2.0:
+        return f"{float(val):.2f}"
+    return f"{float(val):.1f}"
+
+
+def check_static_export_capability() -> tuple[bool, str]:
+    """Check whether Kaleido/Chromium static chart export is available."""
+    import importlib.util  # noqa: PLC0415
+
+    if importlib.util.find_spec("kaleido") is None:
+        return False, "Kaleido static chart rendering package is unavailable."
+    return True, "Kaleido static chart rendering available"
 
 
 def _format_axis_category_label(val: Any) -> str:
@@ -361,12 +380,14 @@ def _prepare_export_trace(
     trace: dict[str, Any],
     idx: int,
     *,
+    total_traces: int,
     is_horizontal: bool,
+    y_is_pct: bool,
     primary_vals: list[float],
     secondary_y: list[float],
     x_categories: list[str],
 ) -> dict[str, Any]:
-    """Attach crisp export data labels and formatted category labels to a single trace."""
+    """Attach crisp, thinned export data labels and formatted category labels to a single trace."""
     t_type = str(trace.get("type") or "scatter").lower()
     if t_type == "pie":
         trace.setdefault("textinfo", "label+percent")
@@ -395,14 +416,14 @@ def _prepare_export_trace(
         )
         n_pts = len(x_vals_h)
         if n_pts > 0 and "text" not in trace:
-            step = 1 if n_pts <= 16 else max(2, n_pts // 12)
+            step = 1 if n_pts <= 12 else max(2, (n_pts + 7) // 8)
             trace["text"] = [
                 _format_compact_chart_value(v) if (i % step == 0 or i == n_pts - 1) else ""
                 for i, v in enumerate(x_vals_h)
             ]
             trace["textposition"] = "outside"
             trace["cliponaxis"] = False
-            trace["textfont"] = {"size": 9.5, "color": "#065F46"}
+            trace["textfont"] = {"size": 9.0, "color": "#065F46"}
         return trace
 
     x_raw: Any = trace.get("x")
@@ -423,26 +444,39 @@ def _prepare_export_trace(
     numeric_y = [
         float(v) for v in y_vals if isinstance(v, (int, float)) and not isinstance(v, bool)
     ]
-    target_bucket = secondary_y if str(trace.get("yaxis") or "") == "y2" else primary_vals
+    is_y2 = str(trace.get("yaxis") or "") == "y2"
+    target_bucket = secondary_y if is_y2 else primary_vals
     target_bucket.extend(numeric_y)
 
-    step = 1 if n_pts <= 16 else max(2, n_pts // 12)
+    trace_name_l = str(trace.get("name") or "").lower()
+    trace_is_pct = (
+        y_is_pct or "%" in trace_name_l or "prob" in trace_name_l or "coverage" in trace_name_l
+    )
+    max_abs = max((abs(v) for v in numeric_y), default=0.0)
+    scale_ratio = trace_is_pct and max_abs <= 1.5
+
+    suppress_dense = total_traces >= 3 and n_pts > 6
+    step = 1 if n_pts <= 7 else max(2, (n_pts + 4) // 5)
     labels = [
-        _format_compact_chart_value(v) if (i % step == 0 or i == n_pts - 1) else ""
+        (
+            _format_compact_chart_value(v, is_percent=trace_is_pct, scale_ratio=scale_ratio)
+            if (not suppress_dense and (i % step == 0 or i == n_pts - 1))
+            else ""
+        )
         for i, v in enumerate(y_vals)
     ]
-    if t_type in ("bar", "waterfall") and "text" not in trace:
+    if t_type in ("bar", "waterfall") and "text" not in trace and not suppress_dense:
         trace["text"] = labels
         trace["textposition"] = "outside"
         trace["cliponaxis"] = False
-        trace["textfont"] = {"size": 9.5, "color": "#065F46"}
-    elif t_type == "scatter" and "text" not in trace:
+        trace["textfont"] = {"size": 9.0, "color": "#065F46"}
+    elif t_type == "scatter" and "text" not in trace and not suppress_dense:
         mode = str(trace.get("mode") or "lines+markers")
         if "text" not in mode:
             trace["mode"] = f"{mode}+text"
         trace["text"] = labels
-        trace["textposition"] = "top center" if idx == 0 else "bottom center"
-        trace["textfont"] = {"size": 9.5, "color": "#1E3A8A" if idx == 0 else "#334155"}
+        trace["textposition"] = "top center" if idx % 2 == 0 else "bottom center"
+        trace["textfont"] = {"size": 9.0, "color": "#1E3A8A" if idx == 0 else "#334155"}
     return trace
 
 
@@ -453,6 +487,11 @@ def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[s
     traces: list[dict[str, Any]] = [
         dict(cast(dict[str, Any], t)) for t in raw_data if isinstance(t, dict)
     ]
+    raw_layout: dict[str, Any] = dict(fig.get("layout") or {})
+    yaxis_meta: dict[str, Any] = dict(raw_layout.get("yaxis") or {})
+    y_is_pct = "%" in str(yaxis_meta.get("ticksuffix") or "") or any(
+        "%" in str(t) for t in (yaxis_meta.get("ticktext") or ())
+    )
 
     is_horizontal = any(str(t.get("orientation") or "").lower() == "h" for t in traces)
     primary_vals: list[float] = []
@@ -463,7 +502,9 @@ def _prepare_pdf_chart_figure(figure_dict: dict[str, Any], title: str) -> dict[s
         _prepare_export_trace(
             trace,
             idx,
+            total_traces=len(traces),
             is_horizontal=is_horizontal,
+            y_is_pct=y_is_pct,
             primary_vals=primary_vals,
             secondary_y=secondary_y,
             x_categories=x_categories,
